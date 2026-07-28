@@ -8,11 +8,12 @@ import 'package:flute_example/pages/settings_page.dart';
 import 'package:flute_example/data/audio_handler.dart';
 import 'mp_sidebar.dart';
 
-/// 一级页面导航壳：推动式侧边栏
+/// 一级页面导航壳：拼接式侧边栏
 ///
 /// - 左上角 toc 按钮 + 当前一级页面名称（仅一级页面显示）
-/// - 点击按钮或在页面内容上向右滑动，整个页面跟随向右滑动，
-///   左侧露出宽度为屏幕 50% 的侧边栏
+/// - 侧边栏与主页横向拼接为一块画布：关闭时主页铺满屏幕、侧边栏藏在左外侧；
+///   点击按钮或在主页上向右滑动，侧边栏与主页整体一起向右滑动，
+///   左侧露出宽度为屏幕 50% 的侧边栏，二者并排不重叠
 /// - 六个一级页面用 IndexedStack 保活切换
 class MPNavScaffold extends StatefulWidget {
   /// 全局 key：供二级页面（如播放列表页）右滑返回并打开侧边栏
@@ -71,21 +72,6 @@ class MPNavScaffoldState extends State<MPNavScaffold>
     closeSidebar();
   }
 
-  void _onDragUpdate(DragUpdateDetails d, double sidebarWidth) {
-    _controller.value += d.delta.dx / sidebarWidth;
-  }
-
-  void _onDragEnd(DragEndDetails d) {
-    final v = d.primaryVelocity ?? 0.0;
-    if (v > 250) {
-      openSidebar();
-    } else if (v < -250) {
-      closeSidebar();
-    } else {
-      _controller.value > 0.5 ? openSidebar() : closeSidebar();
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
@@ -111,58 +97,64 @@ class MPNavScaffoldState extends State<MPNavScaffold>
 
     final body = AnimatedBuilder(
         animation: _controller,
-        // 将页面树作为 child 传入：侧边栏平移动画每帧重建时复用该 Element，
-        // 不再重建四个一级页面，从而保留列表滚动位置、消除「刷新」观感。
+        // 将页面树作为 child 传入：动画每帧重建时复用该 Element，
+        // 主页内容（含列表滚动位置）保持不变，仅随画布整体平移，不重绘刷新。
         child: pages,
         builder: (context, child) {
           final t = _controller.value;
-          final dx = sidebarWidth * t;
-          return Stack(
-            children: [
-              // 左侧固定侧边栏
-              SizedBox(
-                width: sidebarWidth,
-                height: double.infinity,
-                child: MPSidebar(
-                  currentIndex: _pageIndex,
-                  onSelect: selectPage,
-                ),
-              ),
-              // 页面内容层：整体向右平移，跟随手势
-              Transform.translate(
-                offset: Offset(dx, 0),
-                child: GestureDetector(
-                  onHorizontalDragUpdate: (d) =>
-                      _onDragUpdate(d, sidebarWidth),
-                  onHorizontalDragEnd: _onDragEnd,
-                  // 侧边栏展开时，点击内容区收起
-                  onTap: t > 0.5 ? closeSidebar : null,
-                  child: AbsorbPointer(
-                    // 展开时吸收内容区的点击（避免误触页面内交互）
-                    absorbing: t > 0.5,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        borderRadius:
-                            BorderRadius.circular(t * 18.0),
-                        boxShadow: t > 0.01
-                            ? [
-                                BoxShadow(
-                                  color: Colors.black
-                                      .withOpacity(0.35 * t),
-                                  blurRadius: 16.0,
-                                  offset: const Offset(-4, 0),
-                                ),
-                              ]
-                            : null,
-                      ),
-                      clipBehavior:
-                          t > 0.01 ? Clip.antiAlias : Clip.none,
-                      child: child,
-                    ),
+          // 拼接画布：侧边栏在左、主页在右，二者横向拼接为一块画布整体平移。
+          // 关闭(t=0)：画布左移 sidebarWidth，主页铺满屏幕、侧边栏藏在左外侧；
+          // 打开(t=1)：画布归位，侧边栏占左半屏、主页占右半屏（拼接，不重叠）。
+          final dx = -sidebarWidth * (1.0 - t);
+
+          // Stack 填满屏幕，hit-test 范围覆盖整屏，主页任意位置均可交互。
+          // ClipRect 裁剪侧边栏关闭时超出屏幕左侧的绘制区域。
+          return ClipRect(
+            child: Stack(
+              children: [
+                // 侧边栏
+                Positioned(
+                  left: dx,
+                  top: 0,
+                  bottom: 0,
+                  width: sidebarWidth,
+                  child: MPSidebar(
+                    currentIndex: _pageIndex,
+                    onSelect: selectPage,
                   ),
                 ),
-              ),
-            ],
+                // 右侧主页：GestureDetector 的 HorizontalDragGestureRecognizer
+                // 自动与子组件 ListView 的纵向滚动在手势竞技场中竞争。
+                // 横向优先时赢下竞技场（驱动侧边栏、阻止纵向滚动），
+                // 纵向优先时主动退出（允许页面 ListView 正常滚动）。
+                Positioned(
+                  left: dx + sidebarWidth,
+                  top: 0,
+                  bottom: 0,
+                  width: screenWidth,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onHorizontalDragUpdate: (details) {
+                      _controller.value += details.delta.dx / sidebarWidth;
+                    },
+                    onHorizontalDragEnd: (details) {
+                      final vx = details.velocity.pixelsPerSecond.dx;
+                      if (vx > 500) {
+                        openSidebar();
+                      } else if (vx < -500) {
+                        closeSidebar();
+                      } else {
+                        _controller.value > 0.4
+                            ? openSidebar()
+                            : closeSidebar();
+                      }
+                    },
+                    child: child,
+                  ),
+                ),
+
+              ],
+            ),
           );
         },
       );

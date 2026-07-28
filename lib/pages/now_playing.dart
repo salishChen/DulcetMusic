@@ -133,7 +133,7 @@ class NowPlaying extends StatefulWidget {
   _NowPlayingState createState() => _NowPlayingState();
 }
 
-class _NowPlayingState extends State<NowPlaying> {
+class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
   late Song _song;
   late final bool _empty;
   bool _playing = false;
@@ -141,7 +141,6 @@ class _NowPlayingState extends State<NowPlaying> {
   Duration? _duration;
   Duration _position = Duration.zero;
 
-  bool _lyricsOpen = false;
   List<LrcLine> _lyricLines = const [];
   int _activeLine = -1;
   final ScrollController _lyricScroll = ScrollController();
@@ -150,6 +149,9 @@ class _NowPlayingState extends State<NowPlaying> {
   bool _isClosing = false;
   bool _popped = false;
   bool _playlistDraggingToNow = false;
+
+  /// 歌词面板展开进度控制器（0 关闭 -> 1 全开）
+  late final AnimationController _lyricsController;
 
   PlaylistData? _playlistData;
 
@@ -167,6 +169,10 @@ class _NowPlayingState extends State<NowPlaying> {
     if (!_empty) _parseLyrics(_song);
     _pageController =
         PageController(initialPage: widget.showPlaylist ? 1 : 0);
+    _lyricsController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
 
     final h = audioHandler;
     if (h != null) {
@@ -224,6 +230,7 @@ class _NowPlayingState extends State<NowPlaying> {
     // 避免微任务时序不确定导致底部栏恢复滞后。
     _lyricScroll.dispose();
     _pageController.dispose();
+    _lyricsController.dispose();
     super.dispose();
   }
 
@@ -276,7 +283,7 @@ class _NowPlayingState extends State<NowPlaying> {
     }
     if (idx != _activeLine) {
       _activeLine = idx;
-      if (_lyricsOpen) _scrollToActive();
+      if (_lyricsController.value > 0.5) _scrollToActive();
     }
   }
 
@@ -300,6 +307,25 @@ class _NowPlayingState extends State<NowPlaying> {
     return _pageController.animateToPage(0,
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeOutCubic);
+  }
+
+  /// 打开歌词面板
+  void _openLyrics() {
+    _lyricsController.animateTo(1.0, curve: Curves.easeOutCubic);
+  }
+
+  /// 关闭歌词面板
+  void _closeLyrics() {
+    _lyricsController.animateTo(0.0, curve: Curves.easeOutCubic);
+  }
+
+  /// 切换歌词面板
+  void _toggleLyrics() {
+    if (_lyricsController.value > 0.5) {
+      _closeLyrics();
+    } else {
+      _openLyrics();
+    }
   }
 
   /// 收起播放页并退出：同步清理状态并 pop 路由。
@@ -394,14 +420,7 @@ class _NowPlayingState extends State<NowPlaying> {
             ),
           );
 
-    final mainPlayer = GestureDetector(
-      // 本页任意位置左划进入歌词详情（竖向滑动交由 PageView 控制页面切换）
-      onHorizontalDragEnd: (d) {
-        if (d.velocity.pixelsPerSecond.dx < -300) {
-          setState(() => _lyricsOpen = true);
-        }
-      },
-      child: SafeArea(
+    final mainPlayer = SafeArea(
         top: true,
         bottom: false,
         child: Column(
@@ -440,26 +459,10 @@ class _NowPlayingState extends State<NowPlaying> {
                     ),
                   ),
                 ),
-                // 封面（放大 50%）
+                // 中间内容：封面+迷你歌词 ↔ 详细歌词（可左右滑动）
                 Expanded(
-                  flex: 5,
-                  child: Center(
-                    child: AlbumUI(_song, _duration, _position, size: 375.0),
-                  ),
+                  child: _buildMiddleContent(theme, h),
                 ),
-                // 空状态：显示「暂无歌曲」，不可点击进入歌词详情
-                _empty
-                    ? const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 28.0),
-                        child: Text('暂无歌曲',
-                            style: TextStyle(
-                                color: Colors.white54, fontSize: 14.0)),
-                      )
-                    : GestureDetector(
-                        onTap: () => setState(() => _lyricsOpen = true),
-                        child: _miniLyrics(),
-                      ),
-                const Spacer(flex: 1),
                 // 播放条 + 主控整体上移 30px
                 Transform.translate(
                   offset: const Offset(0, -30.0),
@@ -545,8 +548,7 @@ class _NowPlayingState extends State<NowPlaying> {
                 ),
               ],
             ),
-          ),
-    );
+          );
 
     return WillPopScope(
       onWillPop: () async {
@@ -620,13 +622,12 @@ class _NowPlayingState extends State<NowPlaying> {
                 scrollDirection: Axis.vertical,
                 controller: _pageController,
                 children: [
-                  // 第 0 页：正在播放
+                  // 第 0 页：播放页（中间区域可左右滑动切换封面/歌词）
                   mainPlayer,
-                  // 第 1 页：播放列表（与正在播放页拼接到一起）
+                  // 第 1 页：播放列表
                   _buildPlaylistPage(),
                 ],
               ),
-              if (_lyricsOpen) _buildLyricsPanel(theme, h),
             ],
           ),
         ),
@@ -692,81 +693,140 @@ class _NowPlayingState extends State<NowPlaying> {
     );
   }
 
-  /// 详细歌词面板：可滚动、点击跳转、左滑关闭
-  Widget _buildLyricsPanel(ThemeData theme, MpAudioHandler? h) {
-    final hasTimed = _lyricLines.any((l) => l.time > Duration.zero);
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        MpArtwork(_song.path, fit: BoxFit.cover),
-        blurFilter(),
-        Container(color: Colors.black.withOpacity(0.55)),
-        Column(
-          children: [
-            SizedBox(height: MediaQuery.of(context).padding.top + 8.0),
-            Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back, color: Colors.white),
-                  onPressed: () => setState(() => _lyricsOpen = false),
+
+
+  /// 中间内容区域：封面+迷你歌词 ↔ 详细歌词（可左右滑动）
+  ///
+  /// 默认(t=0)：封面+迷你歌词显示；
+  /// 左滑(t增大)：封面+迷你歌词向左滑出，详细歌词从右侧滑入取代；
+  /// 完全打开(t=1)：详细歌词铺满中间区域。
+  Widget _buildMiddleContent(ThemeData theme, MpAudioHandler? h) {
+    final screenWidth = MediaQuery.of(context).size.width;
+
+    // 默认内容：封面+迷你歌词
+    final defaultContent = _empty
+        ? const Center(
+            child: Text('暂无歌曲',
+                style: TextStyle(color: Colors.white54, fontSize: 14.0)),
+          )
+        : Column(
+            children: [
+              // 封面（放大 50%）
+              Expanded(
+                flex: 5,
+                child: Center(
+                  child:
+                      AlbumUI(_song, _duration, _position, size: 375.0),
                 ),
-                const Expanded(
-                  child: Text('歌词',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 16.0,
-                          fontWeight: FontWeight.w600)),
-                ),
-                const SizedBox(width: 48.0),
-              ],
-            ),
-            Expanded(
-              child: GestureDetector(
-                onPanEnd: (d) {
-                  if ((d.velocity.pixelsPerSecond.dx) < -300) {
-                    setState(() => _lyricsOpen = false);
-                  }
-                },
-                child: _lyricLines.isEmpty
-                    ? const Center(
-                        child: Text('暂无歌词',
-                            style: TextStyle(color: Colors.white70)))
-                    : ListView.builder(
-                        controller: _lyricScroll,
-                        padding: const EdgeInsets.symmetric(vertical: 40.0),
-                        itemCount: _lyricLines.length,
-                        itemBuilder: (context, i) {
-                          final line = _lyricLines[i];
-                          final active = i == _activeLine;
-                          return InkWell(
-                            onTap: hasTimed ? () => h?.seek(line.time) : null,
-                            child: Container(
-                              height: 56.0,
-                              alignment: Alignment.center,
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 24.0),
-                              child: Text(
-                                line.text,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: active
-                                      ? Colors.white
-                                      : Colors.white.withOpacity(0.45),
-                                  fontSize: active ? 17.0 : 15.0,
-                                  fontWeight: active
-                                      ? FontWeight.w600
-                                      : FontWeight.w400,
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
               ),
-            ),
-          ],
+              // 三行迷你歌词
+              GestureDetector(
+                onTap: _openLyrics,
+                child: _miniLyrics(),
+              ),
+              const Spacer(flex: 1),
+            ],
+          );
+
+    return AnimatedBuilder(
+      animation: _lyricsController,
+      builder: (context, child) {
+        final t = _lyricsController.value;
+
+        return ClipRect(
+          child: Stack(
+            children: [
+              // 默认内容：封面+迷你歌词向左滑出并淡出
+              Positioned.fill(
+                child: Transform.translate(
+                  offset: Offset(-screenWidth * t, 0),
+                  child: Opacity(
+                    opacity: (1.0 - t).clamp(0.0, 1.0),
+                    child: defaultContent,
+                  ),
+                ),
+              ),
+              // 详细歌词：从右侧滑入
+              Positioned.fill(
+                child: Transform.translate(
+                  offset: Offset(screenWidth * (1.0 - t), 0),
+                  child: _buildLyricsPage(theme, h),
+                ),
+              ),
+              // 左滑手势检测层（覆盖整个区域）
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragUpdate: (details) {
+                    // 左滑（负值）打开歌词，右滑（正值）关闭歌词
+                    _lyricsController.value -=
+                        details.delta.dx / screenWidth;
+                  },
+                  onHorizontalDragEnd: (details) {
+                    final vx = details.velocity.pixelsPerSecond.dx;
+                    if (vx < -500) {
+                      _openLyrics();
+                    } else if (vx > 500) {
+                      _closeLyrics();
+                    } else {
+                      _lyricsController.value > 0.5
+                          ? _openLyrics()
+                          : _closeLyrics();
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// 歌词页（右侧）
+  Widget _buildLyricsPage(ThemeData theme, MpAudioHandler? h) {
+    final hasTimed = _lyricLines.any((l) => l.time > Duration.zero);
+    return Column(
+      children: [
+        Expanded(
+          child: _lyricLines.isEmpty
+              ? const Center(
+                  child: Text('暂无歌词',
+                      style: TextStyle(color: Colors.white70)))
+              : ListView.builder(
+                  controller: _lyricScroll,
+                  padding: const EdgeInsets.symmetric(vertical: 40.0),
+                  itemCount: _lyricLines.length,
+                  itemBuilder: (context, i) {
+                    final line = _lyricLines[i];
+                    final active = i == _activeLine;
+                    return InkWell(
+                      onTap: hasTimed ? () => h?.seek(line.time) : null,
+                      child: Container(
+                        height: 56.0,
+                        alignment: Alignment.center,
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 24.0),
+                        child: Text(
+                          line.text,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: active
+                                ? Colors.white
+                                : Colors.white.withOpacity(0.45),
+                            fontSize: active ? 17.0 : 15.0,
+                            fontWeight: active
+                                ? FontWeight.w600
+                                : FontWeight.w400,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
         ),
+        // 底部上移50px
+        const SizedBox(height: 50.0),
       ],
     );
   }
