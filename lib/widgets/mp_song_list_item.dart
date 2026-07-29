@@ -55,6 +55,7 @@ class MpSongListItem extends StatelessWidget {
         tag: song.path,
         child: MpArtwork(
           song.path,
+          cachedArtworkPath: song.cachedArtworkPath,
           width: 50.0,
           height: 50.0,
           borderRadius: BorderRadius.circular(12.0),

@@ -241,12 +241,15 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
 
   void _onSongChanged() {
     final s = audioHandler?.currentSong.value;
-    if (s != null && !_empty && s.path != _song.path) {
-      if (mounted) {
-        setState(() {
-          _song = s;
-          _parseLyrics(s);
-        });
+    if (s != null && !_empty) {
+      // 歌曲切换或歌词异步更新时刷新
+      if (s.path != _song.path || s.lyrics != _song.lyrics) {
+        if (mounted) {
+          setState(() {
+            _song = s;
+            _parseLyrics(s);
+          });
+        }
       }
     }
   }
@@ -614,6 +617,7 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
               // 正在播放页与播放列表页共用，且不会随竖向翻页而移动。
               MpArtwork(
                 _song.path,
+                cachedArtworkPath: _song.cachedArtworkPath,
                 fit: BoxFit.cover,
               ),
               blurFilter(),
@@ -921,6 +925,7 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                         child: ListTile(
                           leading: MpArtwork(
                             s.path,
+                            cachedArtworkPath: s.cachedArtworkPath,
                             width: 48.0,
                             height: 48.0,
                             borderRadius: BorderRadius.circular(6.0),
@@ -973,6 +978,7 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
           children: [
             MpArtwork(
               s.path,
+              cachedArtworkPath: s.cachedArtworkPath,
               width: 48.0,
               height: 48.0,
               borderRadius: BorderRadius.circular(8.0),

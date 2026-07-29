@@ -267,6 +267,7 @@ class _Bar extends StatelessWidget {
     final artwork = hasSong
         ? MpArtwork(
             song!.path,
+            cachedArtworkPath: song?.cachedArtworkPath,
             width: 52.0,
             height: 52.0,
             borderRadius: BorderRadius.circular(12.0),

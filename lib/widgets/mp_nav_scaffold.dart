@@ -4,6 +4,7 @@ import 'package:flute_example/pages/albums_page.dart';
 import 'package:flute_example/pages/artists_page.dart';
 import 'package:flute_example/pages/playlists_page.dart';
 import 'package:flute_example/pages/scan_page.dart';
+import 'package:flute_example/pages/subsonic_config_page.dart';
 import 'package:flute_example/pages/settings_page.dart';
 import 'package:flute_example/data/audio_handler.dart';
 import 'mp_sidebar.dart';
@@ -78,7 +79,7 @@ class MPNavScaffoldState extends State<MPNavScaffold>
     // 侧边栏宽度为屏幕宽度的 50%
     final sidebarWidth = screenWidth * 0.5;
 
-    // 六个一级页面（IndexedStack 保活）
+    // 七个一级页面（IndexedStack 保活）
     // RepaintBoundary：侧边栏平移动画期间将内容层缓存为独立图层，
     // 避免每帧重绘整棵页面树，显著提升滑动丝滑度。
     final pages = RepaintBoundary(
@@ -90,6 +91,7 @@ class MPNavScaffoldState extends State<MPNavScaffold>
           ArtistsPage(),
           PlaylistsPage(),
           ScanPage(),
+          SubsonicConfigPage(),
           SettingsPage(),
         ],
       ),

@@ -1,6 +1,9 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flute_example/data/cache_service.dart';
 import 'package:flute_example/data/metadata_service.dart';
+import 'package:flute_example/data/subsonic_service.dart';
+import 'package:flute_example/data/database_helper.dart';
 import 'package:flute_example/widgets/mp_inherited.dart';
 import 'package:flute_example/widgets/mp_nav_scaffold.dart';
 
@@ -69,6 +72,183 @@ class _ScanPageState extends State<ScanPage> {
     );
     if (dir == null) return;
     await _run(() => _service.scanFolder(dir, onProgress: _onProgress));
+  }
+
+  Future<void> _scanRemote() async {
+    if (!SubsonicService.instance.isConfigured) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('请先在"远程配置"页面配置 Subsonic 服务器'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _scanning = true;
+      _processed = 0;
+      _total = 0;
+      _failed = 0;
+      _lastResult = null;
+    });
+
+    try {
+      final songs = await SubsonicService.instance.getAllSongs();
+      if (!mounted) return;
+
+      setState(() => _total = songs.length);
+
+      int added = 0;
+      int failed = 0;
+      const batchSize = 50;
+
+      for (int i = 0; i < songs.length; i += batchSize) {
+        final end = (i + batchSize).clamp(0, songs.length);
+        final batch = songs.sublist(i, end);
+
+        try {
+          final songData = MPInheritedWidget.of(context).songData;
+          if (songData == null) {
+            failed += batch.length;
+            continue;
+          }
+          final affected =
+              await songData.dbHelper.insertSongs(batch, source: 'subsonic');
+          added += affected;
+        } catch (e) {
+          failed += batch.length;
+          print('ScanPage: 远程扫描批次失败: $e');
+        }
+
+        if (mounted) {
+          setState(() {
+            _processed = end;
+            _failed = failed;
+          });
+        }
+      }
+
+      // 刷新全局歌曲列表（此时封面缓存尚未完成）
+      if (mounted) {
+        await MPInheritedWidget.of(context).songData?.reload();
+      }
+
+      // 后台下载封面，完成后再次刷新列表以更新 cachedArtworkPath
+      _cacheArtworkInBackground().then((_) async {
+        if (mounted) {
+          await MPInheritedWidget.of(context).songData?.reload();
+        }
+      });
+
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+          _lastResult = ScanResult(
+            total: songs.length,
+            added: added,
+            failed: failed,
+          );
+        });
+      }
+    } catch (e) {
+      print('ScanPage: 远程扫描失败: $e');
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+          _lastResult = ScanResult(total: 0, added: 0, failed: 1);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('扫描失败: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  /// 后台批量缓存远程歌曲封面
+  Future<void> _cacheArtworkInBackground() async {
+    try {
+      // 查询所有有 coverArtId 但没有缓存封面的远程歌曲
+      final db = DatabaseHelper.instance;
+      final allSongs = await db.queryAllSongs();
+      final remoteSongs = allSongs
+          .where((s) =>
+              s.sourceType == 'subsonic' &&
+              s.coverArtId != null &&
+              s.cachedArtworkPath == null)
+          .toList();
+
+      if (remoteSongs.isEmpty) return;
+
+      for (final song in remoteSongs) {
+        await CacheService.instance.cacheArtwork(song);
+      }
+    } catch (e) {
+      print('ScanPage: 后台缓存封面失败: $e');
+    }
+  }
+
+  /// 清空所有已入库歌曲
+  Future<void> _clearAllSongs() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清空音乐库'),
+        content: const Text('确定要清空所有已扫描入库的音乐吗？\n\n此操作不可撤销，将删除所有歌曲记录（包括本地和远程歌曲）。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _scanning = true);
+
+    try {
+      await DatabaseHelper.instance.clearSongs();
+      if (mounted) {
+        await MPInheritedWidget.of(context).songData?.reload();
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('已清空所有音乐'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      print('ScanPage: 清空失败: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('清空失败: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+          _lastResult = null;
+        });
+      }
+    }
   }
 
   Widget _sourceCard({
@@ -213,12 +393,43 @@ class _ScanPageState extends State<ScanPage> {
             colors: const [Color(0xFF18D2C7), Color(0xFF7C4DFF)],
             onTap: _scanning ? null : _scanFolder,
           ),
+          const SizedBox(height: 12.0),
+          _sourceCard(
+            icon: Icons.cloud_download,
+            title: '扫描远程音乐',
+            subtitle: SubsonicService.instance.isConfigured
+                ? '从 Subsonic 服务器扫描音乐并入库'
+                : '请先在"远程配置"中配置服务器',
+            colors: const [Color(0xFFFF6B6B), Color(0xFFFF8E53)],
+            onTap: _scanning ? null : _scanRemote,
+          ),
           if (_scanning) _progressView(),
           if (_lastResult != null) _resultView(_lastResult!),
           const SizedBox(height: 24.0),
+          // 清空按钮
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _scanning ? null : _clearAllSongs,
+              icon: const Icon(Icons.delete_sweep, color: Colors.red),
+              label: const Text(
+                '清空音乐库',
+                style: TextStyle(color: Colors.red),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.red),
+                padding: const EdgeInsets.symmetric(vertical: 14.0),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12.0),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16.0),
           const Text(
             '说明：歌曲的歌名、艺术家、专辑、时长、比特率、采样率等信息'
-            '均直接从音频文件中读取并存入本地数据库，播放时使用数据库内的路径。',
+            '均直接从音频文件中读取并存入本地数据库，播放时使用数据库内的路径。\n\n'
+            '远程歌曲的封面会在扫描后自动缓存到本地，播放时优先使用缓存封面。',
             style: TextStyle(fontSize: 12.0, color: Color(0xFF8A8A99)),
           ),
         ],

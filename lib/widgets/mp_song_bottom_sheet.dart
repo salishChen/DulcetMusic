@@ -63,6 +63,7 @@ class _SongSheetContent extends StatelessWidget {
             children: [
               MpArtwork(
                 song.path,
+                cachedArtworkPath: song.cachedArtworkPath,
                 width: 40.0,
                 height: 40.0,
                 borderRadius: BorderRadius.circular(8.0),

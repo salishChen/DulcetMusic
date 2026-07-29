@@ -5,6 +5,7 @@ import 'models/song.dart';
 import 'models/album.dart';
 import 'models/artist.dart';
 import 'models/playlist.dart';
+import 'models/subsonic_config.dart';
 
 /// SQLite 数据库单例
 ///
@@ -17,7 +18,7 @@ class DatabaseHelper {
   DatabaseHelper._();
 
   static const _dbName = 'music_player.db';
-  static const _dbVersion = 3;
+  static const _dbVersion = 5;
 
   Database? _db;
 
@@ -83,6 +84,26 @@ class DatabaseHelper {
         ''');
         await db.execute('CREATE INDEX idx_songs_album ON songs(album)');
         await db.execute('CREATE INDEX idx_songs_artist ON songs(artist)');
+        // Subsonic 远程音乐支持字段
+        await db.execute('ALTER TABLE songs ADD COLUMN sourceType TEXT DEFAULT "local"');
+        await db.execute('ALTER TABLE songs ADD COLUMN remoteId TEXT');
+        await db.execute('ALTER TABLE songs ADD COLUMN remoteStreamUrl TEXT');
+        await db.execute('ALTER TABLE songs ADD COLUMN cachedPath TEXT');
+        await db.execute('ALTER TABLE songs ADD COLUMN cacheTimestamp INTEGER');
+        await db.execute('ALTER TABLE songs ADD COLUMN cachedArtworkPath TEXT');
+        await db.execute('ALTER TABLE songs ADD COLUMN coverArtId TEXT');
+        // Subsonic 服务器配置表
+        await db.execute('''
+          CREATE TABLE subsonic_config (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            intranetUrl TEXT NOT NULL,
+            publicUrl TEXT NOT NULL,
+            username TEXT NOT NULL,
+            password TEXT NOT NULL,
+            serverName TEXT,
+            isActive INTEGER DEFAULT 1
+          )
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -90,6 +111,30 @@ class DatabaseHelper {
         }
         if (oldVersion < 3) {
           await db.execute('ALTER TABLE songs ADD COLUMN source TEXT');
+        }
+        if (oldVersion < 4) {
+          // Subsonic 远程音乐支持
+          await db.execute('ALTER TABLE songs ADD COLUMN sourceType TEXT DEFAULT "local"');
+          await db.execute('ALTER TABLE songs ADD COLUMN remoteId TEXT');
+          await db.execute('ALTER TABLE songs ADD COLUMN remoteStreamUrl TEXT');
+          await db.execute('ALTER TABLE songs ADD COLUMN cachedPath TEXT');
+          await db.execute('ALTER TABLE songs ADD COLUMN cacheTimestamp INTEGER');
+          await db.execute('''
+            CREATE TABLE subsonic_config (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              intranetUrl TEXT NOT NULL,
+              publicUrl TEXT NOT NULL,
+              username TEXT NOT NULL,
+              password TEXT NOT NULL,
+              serverName TEXT,
+              isActive INTEGER DEFAULT 1
+            )
+          ''');
+        }
+        if (oldVersion < 5) {
+          // 远程封面缓存支持
+          await db.execute('ALTER TABLE songs ADD COLUMN cachedArtworkPath TEXT');
+          await db.execute('ALTER TABLE songs ADD COLUMN coverArtId TEXT');
         }
       },
     );
@@ -384,5 +429,115 @@ class DatabaseHelper {
     await db.delete('playlist_songs',
         where: 'playlistId = ? AND songId = ?',
         whereArgs: [playlistId, songId]);
+  }
+
+  // ======================== Subsonic 配置 ========================
+
+  /// 查询当前活跃的 Subsonic 配置
+  Future<SubsonicConfig?> querySubsonicConfig() async {
+    final db = await database;
+    final rows = await db.query('subsonic_config',
+        where: 'isActive = ?', whereArgs: [1], limit: 1);
+    return rows.isEmpty ? null : SubsonicConfig.fromMap(rows.first);
+  }
+
+  /// 保存 Subsonic 配置（存在则更新，不存在则插入）
+  Future<void> saveSubsonicConfig(SubsonicConfig config) async {
+    final db = await database;
+    final existing = await querySubsonicConfig();
+    if (existing != null) {
+      await db.update('subsonic_config', config.toMap(),
+          where: 'id = ?', whereArgs: [existing.id]);
+    } else {
+      await db.insert('subsonic_config', config.toMap());
+    }
+  }
+
+  /// 删除 Subsonic 配置
+  Future<void> deleteSubsonicConfig(int id) async {
+    final db = await database;
+    await db.delete('subsonic_config', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // ======================== 远程歌曲缓存 ========================
+
+  /// 更新歌曲的缓存路径和时间戳
+  Future<void> updateSongCache(int songId, String cachedPath) async {
+    final db = await database;
+    await db.update(
+      'songs',
+      {
+        'cachedPath': cachedPath,
+        'cacheTimestamp': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [songId],
+    );
+    _invalidateCache();
+  }
+
+  /// 查询所有已缓存的远程歌曲
+  Future<List<Song>> queryCachedSongs() async {
+    final db = await database;
+    final rows = await db.query('songs',
+        where: 'cachedPath IS NOT NULL AND sourceType = ?',
+        whereArgs: ['subsonic'],
+        orderBy: 'cacheTimestamp DESC');
+    return rows.map(Song.fromMap).toList();
+  }
+
+  /// 清除歌曲的缓存
+  Future<void> clearSongCache(int songId) async {
+    final db = await database;
+    await db.update(
+      'songs',
+      {'cachedPath': null, 'cacheTimestamp': null},
+      where: 'id = ?',
+      whereArgs: [songId],
+    );
+    _invalidateCache();
+  }
+
+  /// 查询缓存时间最早的歌曲（用于 LRU 淘汰）
+  Future<Song?> queryOldestCachedSong() async {
+    final db = await database;
+    final rows = await db.query('songs',
+        where: 'cachedPath IS NOT NULL AND sourceType = ?',
+        whereArgs: ['subsonic'],
+        orderBy: 'cacheTimestamp ASC',
+        limit: 1);
+    return rows.isEmpty ? null : Song.fromMap(rows.first);
+  }
+
+  /// 查询远程歌曲（按 remoteId 查找）
+  Future<Song?> querySongByRemoteId(String remoteId) async {
+    final db = await database;
+    final rows = await db.query('songs',
+        where: 'remoteId = ?', whereArgs: [remoteId], limit: 1);
+    return rows.isEmpty ? null : Song.fromMap(rows.first);
+  }
+
+  /// 更新歌曲的封面缓存路径
+  Future<void> updateArtworkCache(int songId, String artworkPath) async {
+    final db = await database;
+    await db.update(
+      'songs',
+      {'cachedArtworkPath': artworkPath},
+      where: 'id = ?',
+      whereArgs: [songId],
+    );
+    _invalidateCache();
+  }
+
+  /// 更新歌曲的歌词内容
+  Future<void> updateSongLyrics(int songId, String lyrics) async {
+    final db = await database;
+    await db.update(
+      'songs',
+      {'lyrics': lyrics},
+      where: 'id = ?',
+      whereArgs: [songId],
+    );
+    _invalidateCache();
   }
 }

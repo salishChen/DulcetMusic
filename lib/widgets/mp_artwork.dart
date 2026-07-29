@@ -21,17 +21,30 @@ class ArtworkCache {
   static bool has(String path) => _cache.containsKey(path);
 
   /// 异步加载封面字节（自动去重并发请求）
-  static Future<Uint8List?> load(String path) {
-    if (_cache.containsKey(path)) return Future.value(_cache[path]);
-    return _pending.putIfAbsent(path, () async {
+  ///
+  /// [cachedArtworkPath] 远程歌曲的本地缓存封面路径（优先使用）。
+  static Future<Uint8List?> load(String path, {String? cachedArtworkPath}) {
+    final cacheKey = cachedArtworkPath ?? path;
+    if (_cache.containsKey(cacheKey)) return Future.value(_cache[cacheKey]);
+    return _pending.putIfAbsent(cacheKey, () async {
       Uint8List? bytes;
       try {
-        bytes = await compute(readArtworkBytes, path);
+        // 优先使用缓存的封面文件
+        if (cachedArtworkPath != null && cachedArtworkPath.isNotEmpty) {
+          final file = File(cachedArtworkPath);
+          if (await file.exists()) {
+            bytes = await file.readAsBytes();
+          }
+        }
+        // 回退到从音频文件读取内嵌封面
+        if (bytes == null) {
+          bytes = await compute(readArtworkBytes, path);
+        }
       } catch (e) {
         print('ArtworkCache: 读取封面失败 $path: $e');
       }
-      _cache[path] = bytes;
-      _pending.remove(path);
+      _cache[cacheKey] = bytes;
+      _pending.remove(cacheKey);
       return bytes;
     });
   }
@@ -53,9 +66,14 @@ Uint8List? readArtworkBytes(String path) {
 /// 通用封面组件：替代原 QueryArtworkWidget
 ///
 /// 从音频文件内嵌封面读取并做内存缓存；无封面时显示渐变占位。
+/// 支持远程歌曲的缓存封面文件。
 class MpArtwork extends StatelessWidget {
   /// 歌曲文件路径（null 或文件不存在时显示占位）
   final String? path;
+
+  /// 远程歌曲的本地缓存封面路径（优先于 path 读取）
+  final String? cachedArtworkPath;
+
   final double? width;
   final double? height;
   final BorderRadius borderRadius;
@@ -67,6 +85,7 @@ class MpArtwork extends StatelessWidget {
   const MpArtwork(
     this.path, {
     Key? key,
+    this.cachedArtworkPath,
     this.width,
     this.height,
     this.borderRadius = BorderRadius.zero,
@@ -110,14 +129,16 @@ class MpArtwork extends StatelessWidget {
     final path = this.path;
     if (path == null || path.isEmpty) return _placeholder();
 
+    final cacheKey = cachedArtworkPath ?? path;
+
     // 命中内存缓存：直接同步渲染，避免闪烁
-    if (ArtworkCache.has(path)) {
-      final bytes = ArtworkCache.peek(path);
+    if (ArtworkCache.has(cacheKey)) {
+      final bytes = ArtworkCache.peek(cacheKey);
       return bytes == null ? _placeholder() : _image(bytes);
     }
 
     return FutureBuilder<Uint8List?>(
-      future: ArtworkCache.load(path),
+      future: ArtworkCache.load(path, cachedArtworkPath: cachedArtworkPath),
       builder: (context, snapshot) {
         final bytes = snapshot.data;
         if (bytes == null) return _placeholder();

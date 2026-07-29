@@ -86,6 +86,15 @@ class PlaylistData {
     }
   }
 
+  /// 更新指定路径的歌曲对象（用于异步获取歌词/封面后刷新）
+  void updateSong(Song updatedSong) {
+    final idx = _playlist.indexWhere((s) => s.path == updatedSong.path);
+    if (idx >= 0) {
+      _playlist[idx] = updatedSong;
+      _notify();
+    }
+  }
+
   /// 清空播放列表
   void clear() {
     _playlist.clear();

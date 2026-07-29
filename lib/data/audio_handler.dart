@@ -5,6 +5,9 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flute_example/data/audio_player_instance.dart';
 import 'package:flute_example/data/models/song.dart';
 import 'package:flute_example/data/playlist_data.dart';
+import 'package:flute_example/data/subsonic_service.dart';
+import 'package:flute_example/data/cache_service.dart';
+import 'package:flute_example/data/database_helper.dart';
 import 'package:flute_example/widgets/mp_artwork.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
@@ -74,6 +77,11 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
   // ===================== 对外控制 =====================
 
   /// 播放指定歌曲（重新定位到列表中的索引后播放）
+  ///
+  /// 支持三种播放源：
+  /// 1. 已缓存的远程歌曲 -> 本地文件播放
+  /// 2. 未缓存的远程歌曲 -> 流式播放 + 后台缓存
+  /// 3. 本地歌曲 -> 本地文件播放
   Future<bool> playSong(Song song) async {
     final songs = playlistData.songs;
     final idx = songs.indexWhere((s) => s.path == song.path);
@@ -85,7 +93,24 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
     positionN.value = Duration.zero;
     _publishMediaItem(song);
     try {
-      await player.play(DeviceFileSource(song.path));
+      // 1. 已缓存的远程歌曲：优先本地播放
+      if (song.isRemote && song.isCached) {
+        final cachedFile = File(song.cachedPath!);
+        if (await cachedFile.exists()) {
+          await player.play(DeviceFileSource(song.cachedPath!));
+        } else {
+          // 缓存文件丢失，走流式播放
+          await _playRemoteAndCache(song);
+        }
+      }
+      // 2. 未缓存的远程歌曲：流式播放 + 后台缓存
+      else if (song.isRemote) {
+        await _playRemoteAndCache(song);
+      }
+      // 3. 本地歌曲
+      else {
+        await player.play(DeviceFileSource(song.path));
+      }
       isPlaying.value = true;
       return true;
     } catch (e) {
@@ -93,6 +118,53 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
       isPlaying.value = false;
       currentSong.value = null;
       return false;
+    }
+  }
+
+  /// 流式播放远程歌曲并后台缓存
+  Future<void> _playRemoteAndCache(Song song) async {
+    // 重新解析连接（可能内网/公网切换）
+    SubsonicService.instance.resetConnection();
+    final streamUrl = SubsonicService.instance.getStreamUrl(song.remoteId!);
+    print('MpAudioHandler: 开始流式播放 - ${song.title} (${song.artist})');
+    await player.play(UrlSource(streamUrl));
+    // 后台开始缓存音频
+    CacheService.instance.startCaching(song);
+    // 后台获取歌词（如果歌曲没有歌词）
+    if (song.lyrics == null || song.lyrics!.isEmpty) {
+      print('MpAudioHandler: 后台获取歌词 - ${song.title}');
+      _fetchLyricsInBackground(song);
+    } else {
+      print('MpAudioHandler: 歌曲已有歌词 - ${song.title}');
+    }
+  }
+
+  /// 后台获取远程歌曲歌词
+  Future<void> _fetchLyricsInBackground(Song song) async {
+    if (song.artist == null || song.id == null) {
+      print('MpAudioHandler: 无法获取歌词 - 缺少 artist 或 id');
+      return;
+    }
+    try {
+      print('MpAudioHandler: 正在获取歌词 - ${song.artist} - ${song.title}');
+      final lyrics = await SubsonicService.instance.getLyrics(
+        song.artist!,
+        song.title,
+      );
+      if (lyrics != null && lyrics.isNotEmpty) {
+        print('MpAudioHandler: 歌词获取成功，长度: ${lyrics.length}');
+        // 更新数据库
+        await DatabaseHelper.instance.updateSongLyrics(song.id!, lyrics);
+        // 更新当前歌曲通知 UI
+        final updatedSong = song.copyWith(lyrics: lyrics);
+        currentSong.value = updatedSong;
+        // 更新播放列表中对应的歌曲对象并通知刷新
+        playlistData.updateSong(updatedSong);
+      } else {
+        print('MpAudioHandler: 歌词获取失败或为空');
+      }
+    } catch (e) {
+      print('MpAudioHandler: 歌词获取异常: $e');
     }
   }
 
@@ -288,7 +360,7 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
 
   Future<void> _loadArt(Song song) async {
     try {
-      final bytes = await ArtworkCache.load(song.path);
+      final bytes = await ArtworkCache.load(song.path, cachedArtworkPath: song.cachedArtworkPath);
       if (bytes == null) return;
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/art_${song.path.hashCode}.png');
