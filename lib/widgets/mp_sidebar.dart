@@ -8,20 +8,22 @@ class SidebarItem {
   const SidebarItem(this.title, this.icon);
 }
 
-/// 七个一级页面入口
+/// 九个一级页面入口
 const List<SidebarItem> kSidebarItems = [
   SidebarItem('歌曲', Icons.music_note),
   SidebarItem('专辑', Icons.album),
   SidebarItem('艺术家', Icons.people),
   SidebarItem('歌单', Icons.playlist_play),
+  SidebarItem('喜欢', Icons.favorite),
   SidebarItem('扫描音乐', Icons.manage_search),
   SidebarItem('远程配置', Icons.cloud),
+  SidebarItem('统计', Icons.bar_chart),
   SidebarItem('设置', Icons.settings),
 ];
 
-/// 分组：音乐相关（索引 0-3）/ 设置相关（索引 4,5,6）
-const List<int> kMusicGroup = [0, 1, 2, 3];
-const List<int> kSettingsGroup = [4, 5, 6];
+/// 分组：音乐相关（索引 0-4）/ 设置相关（索引 5,6,7,8）
+const List<int> kMusicGroup = [0, 1, 2, 3, 4];
+const List<int> kSettingsGroup = [5, 6, 7, 8];
 
 /// 侧边栏内容：上方 Logo，其下两张无标题卡片（音乐 / 设置），当前页高亮
 class MPSidebar extends StatelessWidget {

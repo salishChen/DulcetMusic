@@ -2,9 +2,9 @@ import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:flute_example/data/audio_player_instance.dart';
 import 'package:flute_example/data/models/song.dart';
 import 'package:flute_example/data/playlist_data.dart';
+import 'package:flute_example/data/song_data.dart';
 import 'package:flute_example/data/subsonic_service.dart';
 import 'package:flute_example/data/cache_service.dart';
 import 'package:flute_example/data/database_helper.dart';
@@ -37,6 +37,7 @@ late AnimationController nowPlayingController;
 class MpAudioHandler extends BaseAudioHandler with SeekHandler {
   final AudioPlayer player;
   final PlaylistData playlistData;
+  SongData? songData; // 可选的歌曲数据引用，用于更新歌曲列表
 
   final ValueNotifier<Song?> currentSong = ValueNotifier(null);
   final ValueNotifier<bool> isPlaying = ValueNotifier(false);
@@ -88,16 +89,23 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
     if (idx < 0) return false;
     _index = idx;
     if (playlistData.playMode == PlayMode.random) _syncShufflePos();
+    
+    // 立即使用传入的 song 对象，不等待数据库查询（避免延迟）。
+    // 注意：不在此处异步重查数据库，否则会与后台歌词获取产生竞态，
+    // 用无歌词的旧数据覆盖已更新的 currentSong，导致歌词不显示。
     currentSong.value = song;
     durationN.value = null;
     positionN.value = Duration.zero;
     _publishMediaItem(song);
+    
     try {
       // 1. 已缓存的远程歌曲：优先本地播放
       if (song.isRemote && song.isCached) {
         final cachedFile = File(song.cachedPath!);
         if (await cachedFile.exists()) {
           await player.play(DeviceFileSource(song.cachedPath!));
+          // 检查并获取歌词（如果歌曲没有歌词）
+          _checkAndFetchLyricsIfNeeded(song);
         } else {
           // 缓存文件丢失，走流式播放
           await _playRemoteAndCache(song);
@@ -112,6 +120,12 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
         await player.play(DeviceFileSource(song.path));
       }
       isPlaying.value = true;
+      // 递增播放次数（后台执行，不阻塞播放）
+      if (song.id != null) {
+        DatabaseHelper.instance.incrementPlayCount(song.id!);
+      }
+      // 预缓存下一首
+      _precacheNext();
       return true;
     } catch (e) {
       print('MpAudioHandler: 播放失败 $e');
@@ -128,38 +142,77 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
     final streamUrl = SubsonicService.instance.getStreamUrl(song.remoteId!);
     print('MpAudioHandler: 开始流式播放 - ${song.title} (${song.artist})');
     await player.play(UrlSource(streamUrl));
-    // 后台开始缓存音频
-    CacheService.instance.startCaching(song);
-    // 后台获取歌词（如果歌曲没有歌词）
-    if (song.lyrics == null || song.lyrics!.isEmpty) {
-      print('MpAudioHandler: 后台获取歌词 - ${song.title}');
+    // 后台缓存音频 + 封面，缓存完成后刷新 currentSong 和播放列表中的对象
+    CacheService.instance.startCaching(song, onCached: (updated) {
+      _mergeCurrentSong(updated, mergeArtwork: true, mergeLyrics: true);
+    });
+    // 后台获取歌词（无论歌曲对象是否已有歌词，数据库可能更新过）
+    print('MpAudioHandler: 后台获取歌词 - ${song.title}');
+    _fetchLyricsInBackground(song);
+  }
+  
+  /// 检查并获取远程歌曲的歌词（如果歌曲没有歌词）
+  void _checkAndFetchLyricsIfNeeded(Song song) {
+    if (song.isRemote && (song.lyrics == null || song.lyrics!.isEmpty)) {
+      print('MpAudioHandler: 歌曲无歌词，后台获取 - ${song.title}');
       _fetchLyricsInBackground(song);
-    } else {
-      print('MpAudioHandler: 歌曲已有歌词 - ${song.title}');
     }
   }
 
+  /// 将异步更新的 Song 字段合并到 currentSong，避免互相覆盖
+  void _mergeCurrentSong(Song updated,
+      {bool mergeArtwork = false, bool mergeLyrics = false}) {
+    final cur = currentSong.value;
+    if (cur == null || cur.path != updated.path) {
+      playlistData.updateSong(updated);
+      songData?.updateSong(updated);
+      return;
+    }
+    // 只合并指定字段，保留其他字段的最新状态
+    final merged = cur.copyWith(
+      cachedPath: mergeArtwork ? (updated.cachedPath ?? cur.cachedPath) : null,
+      cachedArtworkPath:
+          mergeArtwork ? (updated.cachedArtworkPath ?? cur.cachedArtworkPath) : null,
+      lyrics: mergeLyrics ? (updated.lyrics ?? cur.lyrics) : null,
+    );
+    currentSong.value = merged;
+    // 清除 ArtworkCache 中旧 key，让 UI 重新加载新封面
+    if (mergeArtwork && updated.cachedArtworkPath != null &&
+        updated.cachedArtworkPath != cur.cachedArtworkPath) {
+      ArtworkCache.invalidate(cur.path);
+      ArtworkCache.invalidateByPathPrefix(updated.cachedArtworkPath!);
+    }
+    // 更新播放列表和歌曲列表中的歌曲对象
+    playlistData.updateSong(merged);
+    songData?.updateSong(merged);
+  }
+
   /// 后台获取远程歌曲歌词
+  ///
+  /// 注意：歌词获取仅依赖 artist 与 title，不依赖 song.id。
+  /// 初次从在线（Subsonic）列表播放的歌曲尚未入库，id 为 null，
+  /// 若在此处强校验 id 会导致歌词永远无法获取。
   Future<void> _fetchLyricsInBackground(Song song) async {
-    if (song.artist == null || song.id == null) {
-      print('MpAudioHandler: 无法获取歌词 - 缺少 artist 或 id');
+    final artist = song.artist;
+    if (artist == null || artist.trim().isEmpty || song.title.trim().isEmpty) {
+      print('MpAudioHandler: 无法获取歌词 - 缺少 artist 或 title');
       return;
     }
     try {
-      print('MpAudioHandler: 正在获取歌词 - ${song.artist} - ${song.title}');
+      print('MpAudioHandler: 正在获取歌词 - $artist - ${song.title}');
       final lyrics = await SubsonicService.instance.getLyrics(
-        song.artist!,
+        artist,
         song.title,
       );
       if (lyrics != null && lyrics.isNotEmpty) {
         print('MpAudioHandler: 歌词获取成功，长度: ${lyrics.length}');
-        // 更新数据库
-        await DatabaseHelper.instance.updateSongLyrics(song.id!, lyrics);
-        // 更新当前歌曲通知 UI
+        // 有数据库 id 才写库；否则仅更新 currentSong（初次播放的在线歌曲）
+        if (song.id != null) {
+          await DatabaseHelper.instance.updateSongLyrics(song.id!, lyrics);
+        }
+        // 合并到 currentSong，只更新 lyrics 字段
         final updatedSong = song.copyWith(lyrics: lyrics);
-        currentSong.value = updatedSong;
-        // 更新播放列表中对应的歌曲对象并通知刷新
-        playlistData.updateSong(updatedSong);
+        _mergeCurrentSong(updatedSong, mergeArtwork: false, mergeLyrics: true);
       } else {
         print('MpAudioHandler: 歌词获取失败或为空');
       }
@@ -313,6 +366,29 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
     } else {
       isPlaying.value = false;
       _publishState();
+    }
+  }
+
+  /// 停止播放并清空播放列表（用于"清空播放列表"按钮）
+  Future<void> stopAndClear() async {
+    await player.stop();
+    isPlaying.value = false;
+    currentSong.value = null;
+    durationN.value = null;
+    positionN.value = Duration.zero;
+    playlistData.clear();
+    _publishState();
+  }
+
+  /// 预缓存队列中的下一首远程歌曲
+  void _precacheNext() {
+    final songs = playlistData.songs;
+    if (songs.isEmpty) return;
+    final nextIdx = (_index + 1) % songs.length;
+    final nextSong = songs[nextIdx];
+    if (nextSong.isRemote && !nextSong.isCached) {
+      print('MpAudioHandler: 预缓存下一首 - ${nextSong.title}');
+      CacheService.instance.startCaching(nextSong);
     }
   }
 

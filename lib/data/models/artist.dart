@@ -7,10 +7,22 @@ class Artist {
   /// 用于取封面的歌曲路径（任一歌曲）
   final String? coverSongPath;
 
+  /// 缓存的封面路径
+  final String? coverArtworkPath;
+
   const Artist({
     required this.name,
     this.songCount = 0,
     this.albumCount = 0,
     this.coverSongPath,
+    this.coverArtworkPath,
   });
+
+  factory Artist.fromMap(Map<String, dynamic> m) => Artist(
+        name: (m['name'] as String?) ?? '未知艺术家',
+        songCount: (m['songCount'] as int?) ?? 0,
+        albumCount: (m['albumCount'] as int?) ?? 0,
+        coverSongPath: m['coverSongPath'] as String?,
+        coverArtworkPath: m['coverArtworkPath'] as String?,
+      );
 }

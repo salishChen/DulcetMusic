@@ -5,6 +5,9 @@ import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'package:flute_example/data/cache_service.dart';
+import 'package:flute_example/data/database_helper.dart';
+
 /// 封面字节内存缓存：以歌曲文件路径为 key
 ///
 /// 首次读取文件内嵌封面（后台 isolate），之后走内存缓存，
@@ -19,6 +22,18 @@ class ArtworkCache {
   static Uint8List? peek(String path) => _cache[path];
 
   static bool has(String path) => _cache.containsKey(path);
+
+  /// 清除指定 key 的缓存（封面缓存路径变更时使用）
+  static void invalidate(String key) {
+    _cache.remove(key);
+    _pending.remove(key);
+  }
+
+  /// 清除所有以 path 为 key 的 null 缓存（远程歌曲封面缓存完成后使用）
+  static void invalidateByPathPrefix(String path) {
+    _cache.remove(path);
+    _pending.remove(path);
+  }
 
   /// 异步加载封面字节（自动去重并发请求）
   ///
@@ -67,12 +82,19 @@ Uint8List? readArtworkBytes(String path) {
 ///
 /// 从音频文件内嵌封面读取并做内存缓存；无封面时显示渐变占位。
 /// 支持远程歌曲的缓存封面文件。
-class MpArtwork extends StatelessWidget {
+/// 对于远程歌曲，若无内嵌封面且无缓存封面，会自动触发后台缓存并在完成后刷新。
+class MpArtwork extends StatefulWidget {
   /// 歌曲文件路径（null 或文件不存在时显示占位）
   final String? path;
 
   /// 远程歌曲的本地缓存封面路径（优先于 path 读取）
   final String? cachedArtworkPath;
+
+  /// 歌曲数据库 id（远程歌曲后台缓存封面时需要）
+  final int? songId;
+
+  /// 远程歌曲的 coverArtId（用于后台缓存封面）
+  final String? coverArtId;
 
   final double? width;
   final double? height;
@@ -86,6 +108,8 @@ class MpArtwork extends StatelessWidget {
     this.path, {
     Key? key,
     this.cachedArtworkPath,
+    this.songId,
+    this.coverArtId,
     this.width,
     this.height,
     this.borderRadius = BorderRadius.zero,
@@ -93,11 +117,80 @@ class MpArtwork extends StatelessWidget {
     this.placeholderIconSize,
   }) : super(key: key);
 
+  @override
+  State<MpArtwork> createState() => _MpArtworkState();
+}
+
+class _MpArtworkState extends State<MpArtwork> {
+  Future<Uint8List?>? _cacheFuture;
+  bool _backgroundCached = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initLoad();
+  }
+
+  @override
+  void didUpdateWidget(MpArtwork oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path ||
+        oldWidget.cachedArtworkPath != widget.cachedArtworkPath) {
+      _initLoad();
+    }
+  }
+
+  void _initLoad() {
+    final path = widget.path;
+    if (path == null || path.isEmpty) {
+      _cacheFuture = null;
+      return;
+    }
+    final cacheKey = widget.cachedArtworkPath ?? path;
+
+    // 已有内存缓存，不需要 FutureBuilder
+    if (ArtworkCache.has(cacheKey)) {
+      _cacheFuture = null;
+      // 如果内存缓存为 null 且是远程歌曲，尝试后台缓存
+      if (ArtworkCache.peek(cacheKey) == null && !_backgroundCached) {
+        _tryBackgroundCache();
+      }
+      return;
+    }
+
+    _cacheFuture = ArtworkCache.load(path, cachedArtworkPath: widget.cachedArtworkPath);
+    // 如果加载结果为 null 且是远程歌曲，FutureBuilder 结束后尝试后台缓存
+  }
+
+  /// 远程歌曲无封面时，后台从 Subsonic 缓存封面文件并刷新 UI
+  void _tryBackgroundCache() {
+    if (_backgroundCached) return;
+    if (widget.songId == null || widget.coverArtId == null) return;
+    _backgroundCached = true;
+
+    Future.microtask(() async {
+      try {
+        // 从数据库获取完整的 Song 对象
+        final song = await DatabaseHelper.instance.querySongById(widget.songId!);
+        if (song == null) return;
+        final artworkPath = await CacheService.instance.cacheArtwork(song);
+        if (artworkPath != null && mounted) {
+          // 清除旧的 null 缓存，下次 build 会重新加载
+          final oldKey = widget.cachedArtworkPath ?? widget.path!;
+          ArtworkCache.invalidate(oldKey);
+          if (mounted) setState(() {});
+        }
+      } catch (e) {
+        print('MpArtwork: 后台缓存封面失败: $e');
+      }
+    });
+  }
+
   Widget _placeholder() => Container(
-        width: width,
-        height: height,
+        width: widget.width,
+        height: widget.height,
         decoration: BoxDecoration(
-          borderRadius: borderRadius,
+          borderRadius: widget.borderRadius,
           gradient: const LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
@@ -107,18 +200,18 @@ class MpArtwork extends StatelessWidget {
         child: Icon(
           Icons.music_note,
           color: Colors.white70,
-          size: placeholderIconSize ??
-              ((width != null && width! < 60) ? 24.0 : 48.0),
+          size: widget.placeholderIconSize ??
+              ((widget.width != null && widget.width! < 60) ? 24.0 : 48.0),
         ),
       );
 
   Widget _image(Uint8List bytes) => ClipRRect(
-        borderRadius: borderRadius,
+        borderRadius: widget.borderRadius,
         child: Image.memory(
           bytes,
-          width: width,
-          height: height,
-          fit: fit,
+          width: widget.width,
+          height: widget.height,
+          fit: widget.fit,
           gaplessPlayback: true,
           errorBuilder: (_, __, ___) => _placeholder(),
         ),
@@ -126,23 +219,42 @@ class MpArtwork extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final path = this.path;
+    final path = widget.path;
     if (path == null || path.isEmpty) return _placeholder();
 
-    final cacheKey = cachedArtworkPath ?? path;
+    final cacheKey = widget.cachedArtworkPath ?? path;
 
     // 命中内存缓存：直接同步渲染，避免闪烁
     if (ArtworkCache.has(cacheKey)) {
       final bytes = ArtworkCache.peek(cacheKey);
-      return bytes == null ? _placeholder() : _image(bytes);
+      if (bytes == null) {
+        // 内存缓存为 null（无封面），但可能后台正在缓存
+        // 如果后台缓存完成会 setState 触发重建
+        return _placeholder();
+      }
+      return _image(bytes);
     }
 
+    // 尚未加载：用 FutureBuilder 异步加载
+    final future = _cacheFuture ??
+        ArtworkCache.load(path, cachedArtworkPath: widget.cachedArtworkPath);
+
     return FutureBuilder<Uint8List?>(
-      future: ArtworkCache.load(path, cachedArtworkPath: cachedArtworkPath),
+      future: future,
       builder: (context, snapshot) {
-        final bytes = snapshot.data;
-        if (bytes == null) return _placeholder();
-        return _image(bytes);
+        if (snapshot.connectionState == ConnectionState.done) {
+          final bytes = snapshot.data;
+          if (bytes == null) {
+            // 加载无果 → 尝试后台缓存（仅一次）
+            if (!_backgroundCached) _tryBackgroundCache();
+            return _placeholder();
+          }
+          return _image(bytes);
+        }
+        // 加载中：先尝试同步缓存，有的话直接显示
+        final peek = ArtworkCache.peek(cacheKey);
+        if (peek != null) return _image(peek);
+        return _placeholder();
       },
     );
   }

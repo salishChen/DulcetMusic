@@ -6,6 +6,7 @@ import 'package:flute_example/pages/artist_detail_page.dart';
 import 'package:flute_example/widgets/mp_artwork.dart';
 import 'package:flute_example/widgets/mp_inherited.dart';
 import 'package:flute_example/widgets/mp_nav_scaffold.dart';
+import 'package:flute_example/widgets/entity_action_sheet.dart';
 
 /// 艺术家一级页面：列出所有艺术家
 class ArtistsPage extends StatefulWidget {
@@ -49,6 +50,14 @@ class _ArtistsPageState extends State<ArtistsPage> {
     });
   }
 
+  void _showArtistActions(BuildContext context, Artist artist) {
+    EntityActionSheet.showForArtist(
+      context: context,
+      artist: artist,
+      onRefresh: _load,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -67,6 +76,7 @@ class _ArtistsPageState extends State<ArtistsPage> {
                       leading: ClipOval(
                         child: MpArtwork(
                           artist.coverSongPath,
+                          cachedArtworkPath: artist.coverArtworkPath,
                           width: 48.0,
                           height: 48.0,
                           borderRadius: BorderRadius.circular(24.0),
@@ -79,8 +89,11 @@ class _ArtistsPageState extends State<ArtistsPage> {
                         style: const TextStyle(
                             fontSize: 12.0, color: Color(0xFF8A8A99)),
                       ),
-                      trailing: const Icon(Icons.chevron_right,
-                          color: Color(0xFF8A8A99)),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.more_vert,
+                            color: Color(0xFF8A8A99)),
+                        onPressed: () => _showArtistActions(context, artist),
+                      ),
                       onTap: () {
                         Navigator.push(
                           context,

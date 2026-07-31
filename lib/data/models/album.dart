@@ -12,6 +12,9 @@ class Album {
   /// 用于取封面的歌曲路径
   final String? coverSongPath;
 
+  /// 缓存的封面路径
+  final String? coverArtworkPath;
+
   /// 专辑内歌曲数
   final int songCount;
 
@@ -20,8 +23,18 @@ class Album {
     this.artist,
     this.coverSongId,
     this.coverSongPath,
+    this.coverArtworkPath,
     this.songCount = 0,
   });
+
+  factory Album.fromMap(Map<String, dynamic> m) => Album(
+        title: (m['title'] as String?) ?? '未知专辑',
+        artist: m['artist'] as String?,
+        coverSongId: m['coverSongId'] as int?,
+        coverSongPath: m['coverSongPath'] as String?,
+        coverArtworkPath: m['coverArtworkPath'] as String?,
+        songCount: (m['songCount'] as int?) ?? 0,
+      );
 
   String get displayArtist =>
       (artist == null || artist!.trim().isEmpty) ? '未知艺术家' : artist!;

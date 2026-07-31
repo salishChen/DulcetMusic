@@ -14,6 +14,7 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   int _cacheSizeMB = 2048;
+  int _actualCacheMB = 0;
   bool _loadingCache = true;
 
   @override
@@ -22,13 +23,29 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadCacheSettings();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 每次页面显示时刷新实际缓存大小
+    _loadActualCacheSize();
+  }
+
   Future<void> _loadCacheSettings() async {
     final sizeMB = await CacheService.instance.getCacheSizeMB();
+    final actualMB = await CacheService.instance.getCacheSizeMBActual();
     if (mounted) {
       setState(() {
         _cacheSizeMB = sizeMB;
+        _actualCacheMB = actualMB;
         _loadingCache = false;
       });
+    }
+  }
+
+  Future<void> _loadActualCacheSize() async {
+    final actualMB = await CacheService.instance.getCacheSizeMBActual();
+    if (mounted) {
+      setState(() => _actualCacheMB = actualMB);
     }
   }
 
@@ -88,7 +105,7 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('缓存池大小'),
             subtitle: _loadingCache
                 ? const Text('加载中...')
-                : Text(CacheService.formatSizeMB(_cacheSizeMB)),
+                : Text('已用 ${CacheService.formatSizeMB(_actualCacheMB)} / 上限 ${CacheService.formatSizeMB(_cacheSizeMB)}'),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0),

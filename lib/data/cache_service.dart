@@ -135,10 +135,25 @@ class CacheService {
   }
 
   /// 后台缓存歌曲（不阻塞播放）
-  void startCaching(Song song) {
-    // 在后台异步执行缓存
+  ///
+  /// 同时缓存音频和封面，缓存完成后通过 [onCached] 回调通知调用方。
+  void startCaching(Song song, {void Function(Song updated)? onCached}) {
     Future.microtask(() async {
-      await cacheSong(song);
+      // 缓存音频
+      final cachedPath = await cacheSong(song);
+      // 缓存封面
+      String? artworkPath;
+      if (song.coverArtId != null && song.id != null) {
+        artworkPath = await cacheArtwork(song);
+      }
+      // 回调通知：合并更新后的 Song 对象
+      if (onCached != null && (cachedPath != null || artworkPath != null)) {
+        final updated = song.copyWith(
+          cachedPath: cachedPath ?? song.cachedPath,
+          cachedArtworkPath: artworkPath ?? song.cachedArtworkPath,
+        );
+        onCached(updated);
+      }
     });
   }
 

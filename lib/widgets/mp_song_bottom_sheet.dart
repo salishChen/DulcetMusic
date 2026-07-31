@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flute_example/data/audio_handler.dart';
+import 'package:flute_example/data/cache_service.dart';
 import 'package:flute_example/data/database_helper.dart';
 import 'package:flute_example/data/models/playlist.dart';
 import 'package:flute_example/data/models/song.dart';
 import 'package:flute_example/pages/album_detail_page.dart';
 import 'package:flute_example/pages/artist_detail_page.dart';
 import 'package:flute_example/widgets/mp_artwork.dart';
+import 'package:flute_example/widgets/mp_inherited.dart';
 
 /// 底部功能弹框：点击 more_vert 或长按歌曲时弹出
 ///
@@ -23,7 +26,7 @@ Future<void> showSongBottomSheet(
   return showModalBottomSheet(
     context: context,
     backgroundColor: Colors.transparent,
-    isScrollControlled: false,
+    isScrollControlled: true,
     builder: (sheetContext) => _SongSheetContent(
       song: song,
       parentContext: context,
@@ -64,6 +67,8 @@ class _SongSheetContent extends StatelessWidget {
               MpArtwork(
                 song.path,
                 cachedArtworkPath: song.cachedArtworkPath,
+                songId: song.id,
+                coverArtId: song.coverArtId,
                 width: 40.0,
                 height: 40.0,
                 borderRadius: BorderRadius.circular(8.0),
@@ -123,6 +128,41 @@ class _SongSheetContent extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // 喜欢/取消喜欢
+          _actionTile(context,
+              song.isLiked ? Icons.favorite : Icons.favorite_border,
+              song.isLiked ? '取消喜欢' : '喜欢', () async {
+            Navigator.pop(context);
+            if (song.id != null) {
+              await DatabaseHelper.instance.toggleLikeSong(song.id!);
+              if (parentContext.mounted) {
+                ScaffoldMessenger.of(parentContext).showSnackBar(SnackBar(
+                    content: Text(song.isLiked ? '已取消喜欢' : '已添加到喜欢'),
+                    duration: const Duration(seconds: 1)));
+              }
+            }
+          }),
+          // 添加到播放队列
+          _actionTile(context, Icons.queue_music, '添加到播放队列', () {
+            Navigator.pop(context);
+            audioHandler?.playlistData.addSong(song);
+            if (parentContext.mounted) {
+              ScaffoldMessenger.of(parentContext).showSnackBar(SnackBar(
+                  content: Text('已添加到播放队列'),
+                  duration: const Duration(seconds: 1)));
+            }
+          }),
+          // 缓存歌曲（仅远程未缓存歌曲显示）
+          if (song.isRemote && !song.isCached)
+            _actionTile(context, Icons.download, '缓存歌曲', () {
+              Navigator.pop(context);
+              CacheService.instance.startCaching(song);
+              if (parentContext.mounted) {
+                ScaffoldMessenger.of(parentContext).showSnackBar(SnackBar(
+                    content: Text('开始缓存「${song.title}」'),
+                    duration: const Duration(seconds: 1)));
+              }
+            }),
           _actionTile(context, Icons.playlist_add, '添加到歌单', () {
             Navigator.pop(context);
             _showAddToPlaylistDialog(parentContext, song);
@@ -149,6 +189,20 @@ class _SongSheetContent extends StatelessWidget {
             Navigator.pop(context);
             _showSongInfoDialog(parentContext, song);
           }),
+          // 永久删除
+          _actionTile(context, Icons.delete_forever, '永久删除', () async {
+            final navigator = Navigator.of(context);
+            if (song.id != null) {
+              await DatabaseHelper.instance.deleteSong(song.id!);
+              if (parentContext.mounted) {
+                await MPInheritedWidget.of(parentContext).songData?.reload();
+                ScaffoldMessenger.of(parentContext).showSnackBar(SnackBar(
+                    content: Text('已删除「${song.title}」'),
+                    duration: const Duration(seconds: 1)));
+              }
+            }
+            navigator.pop();
+          }, color: const Color(0xFFFF5252)),
           // 歌单详情页中额外显示"从本歌单删除"
           if (playlistId != null)
             _actionTile(context, Icons.delete_outline, '从本歌单删除', () async {
@@ -169,22 +223,24 @@ class _SongSheetContent extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // 顶部拖拽指示条
-          Container(
-            width: 40.0,
-            height: 4.0,
-            margin: const EdgeInsets.only(bottom: 10.0),
-            decoration: BoxDecoration(
-              color: theme.dividerColor,
-              borderRadius: BorderRadius.circular(2.0),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 顶部拖拽指示条
+            Container(
+              width: 40.0,
+              height: 4.0,
+              margin: const EdgeInsets.only(bottom: 10.0),
+              decoration: BoxDecoration(
+                color: theme.dividerColor,
+                borderRadius: BorderRadius.circular(2.0),
+              ),
             ),
-          ),
-          _infoCard(context),
-          _actionCard(context),
-        ],
+            _infoCard(context),
+            _actionCard(context),
+          ],
+        ),
       ),
     );
   }

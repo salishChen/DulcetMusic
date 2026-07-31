@@ -6,6 +6,7 @@ import 'package:flute_example/pages/album_detail_page.dart';
 import 'package:flute_example/widgets/mp_artwork.dart';
 import 'package:flute_example/widgets/mp_inherited.dart';
 import 'package:flute_example/widgets/mp_nav_scaffold.dart';
+import 'package:flute_example/widgets/entity_action_sheet.dart';
 
 /// 专辑一级页面：分列出所有专辑（网格布局）
 class AlbumsPage extends StatefulWidget {
@@ -98,46 +99,80 @@ class _AlbumCard extends StatelessWidget {
           ),
         ).then((_) => onChanged());
       },
+      onLongPress: () => _showActions(context),
       child: Container(
         decoration: BoxDecoration(
           color: theme.cardColor,
           borderRadius: BorderRadius.circular(16.0),
         ),
         clipBehavior: Clip.antiAlias,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Stack(
           children: [
-            Expanded(
-              child: SizedBox(
-                width: double.infinity,
-                child: MpArtwork(
-                  album.coverSongPath,
-                  fit: BoxFit.cover,
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: MpArtwork(
+                      album.coverSongPath,
+                      cachedArtworkPath: album.coverArtworkPath,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
                 ),
-              ),
+                Padding(
+                  padding: const EdgeInsets.all(10.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(album.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 14.0, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 2.0),
+                      Text('${album.displayArtist} · ${album.songCount} 首',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 12.0, color: Color(0xFF8A8A99))),
+                    ],
+                  ),
+                ),
+              ],
             ),
-            Padding(
-              padding: const EdgeInsets.all(10.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(album.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 14.0, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 2.0),
-                  Text('${album.displayArtist} · ${album.songCount} 首',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 12.0, color: Color(0xFF8A8A99))),
-                ],
+            // 右上角三点按钮
+            Positioned(
+              top: 4,
+              right: 4,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.5),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.more_vert, color: Colors.white, size: 20),
+                  onPressed: () => _showActions(context),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 32,
+                    minHeight: 32,
+                  ),
+                ),
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  void _showActions(BuildContext context) {
+    EntityActionSheet.showForAlbum(
+      context: context,
+      album: album,
+      onRefresh: onChanged,
     );
   }
 }

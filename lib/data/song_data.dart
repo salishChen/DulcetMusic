@@ -40,6 +40,22 @@ class SongData {
     _currentSongIndex = index;
   }
 
+  /// 更新歌曲列表（外部传入新列表，用于删除后刷新）
+  void updateSongs(List<Song> newSongs) {
+    _songs = newSongs;
+    if (_currentSongIndex >= _songs.length) _currentSongIndex = -1;
+    notifier.value = List.unmodifiable(_songs);
+  }
+  
+  /// 更新指定歌曲对象（用于异步获取歌词/封面后刷新列表中的歌曲）
+  void updateSong(Song updatedSong) {
+    final idx = _songs.indexWhere((s) => s.path == updatedSong.path);
+    if (idx >= 0) {
+      _songs[idx] = updatedSong;
+      notifier.value = List.unmodifiable(_songs);
+    }
+  }
+
   int get currentIndex => _currentSongIndex;
 
   Song? get nextSong {

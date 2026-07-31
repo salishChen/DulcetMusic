@@ -94,25 +94,44 @@ class _CloseDragRecognizer extends VerticalDragGestureRecognizer {
   final bool Function() canClose;
 
   bool _decided = false;
+  double _accumulatedDy = 0.0;
+
+  /// 方向锁定阈值：只有竖向位移累积超过该值才锁定为竖向手势。
+  /// 与全局 40px touch slop 保持一致，避免斜向/微小幅度的滑动
+  /// 在未达到阈值时就提前抢占方向，误触下滑关闭或翻页。
+  static const double _lockThreshold = 40.0;
 
   @override
   void addPointer(PointerDownEvent event) {
     _decided = false;
+    _accumulatedDy = 0.0;
     super.addPointer(event);
   }
 
   @override
   void handleEvent(PointerEvent event) {
-    // 在首个有方向的移动事件上提前裁决：
-    // - 下划且允许关闭 → 立即宣布胜出（先于 PageView 越过 touch slop），
+    // 只有累积竖向位移超过 40px 阈值才裁决方向：
+    // - 下划且允许关闭 → 宣布胜出（先于 PageView 越过 touch slop），
     //   接管后基类会双向派发 onUpdate（上划取消也跟手）；
     // - 否则（上划翻播放列表 / 不在 page0）→ 主动退出竞技场，交还 PageView。
+    // 未达到阈值前不 resolve，让横向手势（如歌词切换）有机会在竞技场中竞争。
     if (!_decided && event is PointerMoveEvent && event.delta.dy != 0.0) {
+      _accumulatedDy += event.delta.dy;
+      if (_accumulatedDy.abs() < _lockThreshold) {
+        super.handleEvent(event);
+        return;
+      }
       _decided = true;
-      if (event.delta.dy > 0 && canClose()) {
+      if (_accumulatedDy > 0 && canClose()) {
+        // 宣布胜出。resolve 是异步生效的，此时基类状态仍是 ready，
+        // 直接再调用 super.handleEvent 会触发 'ready' 断言，
+        // 因此本 move 事件不再派发给基类，后续事件由基类正常接管。
         resolve(GestureDisposition.accepted);
+        return;
       } else {
+        // 主动退出竞技场，交还 PageView。本 move 事件同样不再派发。
         resolve(GestureDisposition.rejected);
+        return;
       }
     }
     super.handleEvent(event);
@@ -165,7 +184,14 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _empty = widget.song == null;
-    _song = widget.song ?? Song(title: '暂无歌曲', path: '');
+    // 若当前正在播放同一首歌，优先采用 audioHandler.currentSong 的最新状态
+    // （可能已异步获取到歌词/封面），避免打开播放页时显示过期数据。
+    final cur = audioHandler?.currentSong.value;
+    if (cur != null && !_empty && cur.path == widget.song?.path) {
+      _song = cur;
+    } else {
+      _song = widget.song ?? Song(title: '暂无歌曲', path: '');
+    }
     if (!_empty) _parseLyrics(_song);
     _pageController =
         PageController(initialPage: widget.showPlaylist ? 1 : 0);
@@ -240,16 +266,15 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
   }
 
   void _onSongChanged() {
+    if (!mounted) return;
     final s = audioHandler?.currentSong.value;
     if (s != null && !_empty) {
-      // 歌曲切换或歌词异步更新时刷新
-      if (s.path != _song.path || s.lyrics != _song.lyrics) {
-        if (mounted) {
-          setState(() {
-            _song = s;
-            _parseLyrics(s);
-          });
-        }
+      // 歌曲切换、歌词异步更新、封面缓存完成时刷新
+      if (s.path != _song.path || s.lyrics != _song.lyrics || s.cachedArtworkPath != _song.cachedArtworkPath) {
+        setState(() {
+          _song = s;
+          _parseLyrics(s);
+        });
       }
     }
   }
@@ -618,6 +643,8 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
               MpArtwork(
                 _song.path,
                 cachedArtworkPath: _song.cachedArtworkPath,
+                songId: _song.id,
+                coverArtId: _song.coverArtId,
                 fit: BoxFit.cover,
               ),
               blurFilter(),
@@ -869,9 +896,9 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                 IconButton(
                   icon: const Icon(Icons.delete_sweep, color: Colors.white),
                   tooltip: '清空播放列表',
-                  onPressed: () {
-                    _playlistData?.clear();
-                    setState(() {});
+                  onPressed: () async {
+                    await audioHandler?.stopAndClear();
+                    _closeAndPop();
                   },
                 ),
               ],
@@ -926,6 +953,8 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                           leading: MpArtwork(
                             s.path,
                             cachedArtworkPath: s.cachedArtworkPath,
+                            songId: s.id,
+                            coverArtId: s.coverArtId,
                             width: 48.0,
                             height: 48.0,
                             borderRadius: BorderRadius.circular(6.0),
@@ -979,6 +1008,8 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
             MpArtwork(
               s.path,
               cachedArtworkPath: s.cachedArtworkPath,
+              songId: s.id,
+              coverArtId: s.coverArtId,
               width: 48.0,
               height: 48.0,
               borderRadius: BorderRadius.circular(8.0),

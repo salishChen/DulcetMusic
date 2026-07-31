@@ -1,5 +1,6 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flute_example/data/audio_handler.dart';
 import 'package:flute_example/data/cache_service.dart';
 import 'package:flute_example/data/metadata_service.dart';
 import 'package:flute_example/data/subsonic_service.dart';
@@ -219,7 +220,12 @@ class _ScanPageState extends State<ScanPage> {
     setState(() => _scanning = true);
 
     try {
+      // 先停止播放并清空当前播放列表（歌曲记录删除后索引会失效）
+      await audioHandler?.stopAndClear();
+      // 清空歌曲表（统计 playCount/lastPlayed 随歌曲记录一并清除）
       await DatabaseHelper.instance.clearSongs();
+      // 同时清除所有缓存文件
+      await CacheService.instance.clearAllCache();
       if (mounted) {
         await MPInheritedWidget.of(context).songData?.reload();
       }
@@ -308,6 +314,7 @@ class _ScanPageState extends State<ScanPage> {
   }
 
   Widget _progressView() {
+    final theme = Theme.of(context);
     final progress = _total > 0 ? _processed / _total : null;
     return Column(
       children: [
@@ -322,9 +329,8 @@ class _ScanPageState extends State<ScanPage> {
               CircularProgressIndicator(
                 value: progress,
                 strokeWidth: 8.0,
-                backgroundColor: const Color(0xFF1F1F2E),
-                valueColor:
-                    const AlwaysStoppedAnimation<Color>(Color(0xFF7C4DFF)),
+                backgroundColor: theme.colorScheme.surfaceVariant,
+                valueColor: AlwaysStoppedAnimation<Color>(theme.colorScheme.primary),
               ),
               Center(
                 child: Text(
@@ -338,22 +344,23 @@ class _ScanPageState extends State<ScanPage> {
         ),
         const SizedBox(height: 16.0),
         Text('正在扫描入库…（失败 $_failed）',
-            style: const TextStyle(color: Color(0xFFB3B3C2))),
+            style: TextStyle(color: theme.textTheme.bodySmall?.color)),
       ],
     );
   }
 
   Widget _resultView(ScanResult r) {
+    final theme = Theme.of(context);
     return Container(
       margin: const EdgeInsets.only(top: 24.0),
       padding: const EdgeInsets.all(16.0),
       decoration: BoxDecoration(
-        color: const Color(0xFF1F1F2E),
+        color: theme.cardColor,
         borderRadius: BorderRadius.circular(16.0),
       ),
       child: Row(
         children: [
-          const Icon(Icons.check_circle, color: Color(0xFF1ED760)),
+          Icon(Icons.check_circle, color: theme.colorScheme.primary),
           const SizedBox(width: 12.0),
           Expanded(
             child: Text(
@@ -373,9 +380,9 @@ class _ScanPageState extends State<ScanPage> {
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
-          const Text(
+          Text(
             '选择扫描来源',
-            style: TextStyle(fontSize: 14.0, color: Color(0xFFB3B3C2)),
+            style: TextStyle(fontSize: 14.0, color: Theme.of(context).textTheme.bodySmall?.color),
           ),
           const SizedBox(height: 12.0),
           _sourceCard(
@@ -426,11 +433,11 @@ class _ScanPageState extends State<ScanPage> {
             ),
           ),
           const SizedBox(height: 16.0),
-          const Text(
+          Text(
             '说明：歌曲的歌名、艺术家、专辑、时长、比特率、采样率等信息'
             '均直接从音频文件中读取并存入本地数据库，播放时使用数据库内的路径。\n\n'
             '远程歌曲的封面会在扫描后自动缓存到本地，播放时优先使用缓存封面。',
-            style: TextStyle(fontSize: 12.0, color: Color(0xFF8A8A99)),
+            style: TextStyle(fontSize: 12.0, color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.6)),
           ),
         ],
       ),

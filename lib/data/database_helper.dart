@@ -18,7 +18,7 @@ class DatabaseHelper {
   DatabaseHelper._();
 
   static const _dbName = 'music_player.db';
-  static const _dbVersion = 5;
+  static const _dbVersion = 6;
 
   Database? _db;
 
@@ -92,6 +92,20 @@ class DatabaseHelper {
         await db.execute('ALTER TABLE songs ADD COLUMN cacheTimestamp INTEGER');
         await db.execute('ALTER TABLE songs ADD COLUMN cachedArtworkPath TEXT');
         await db.execute('ALTER TABLE songs ADD COLUMN coverArtId TEXT');
+        await db.execute('ALTER TABLE songs ADD COLUMN playCount INTEGER DEFAULT 0');
+        await db.execute('ALTER TABLE songs ADD COLUMN isLiked INTEGER DEFAULT 0');
+        await db.execute('ALTER TABLE songs ADD COLUMN lastPlayed INTEGER');
+        // 艺术家元数据表
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS artists_meta (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            artistId TEXT,
+            coverArtId TEXT,
+            cachedArtworkPath TEXT,
+            isLiked INTEGER DEFAULT 0
+          )
+        ''');
         // Subsonic 服务器配置表
         await db.execute('''
           CREATE TABLE subsonic_config (
@@ -135,6 +149,23 @@ class DatabaseHelper {
           // 远程封面缓存支持
           await db.execute('ALTER TABLE songs ADD COLUMN cachedArtworkPath TEXT');
           await db.execute('ALTER TABLE songs ADD COLUMN coverArtId TEXT');
+        }
+        if (oldVersion < 6) {
+          // 播放统计和喜欢功能
+          await db.execute('ALTER TABLE songs ADD COLUMN playCount INTEGER DEFAULT 0');
+          await db.execute('ALTER TABLE songs ADD COLUMN isLiked INTEGER DEFAULT 0');
+          await db.execute('ALTER TABLE songs ADD COLUMN lastPlayed INTEGER');
+          // 艺术家元数据表
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS artists_meta (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL UNIQUE,
+              artistId TEXT,
+              coverArtId TEXT,
+              cachedArtworkPath TEXT,
+              isLiked INTEGER DEFAULT 0
+            )
+          ''');
         }
       },
     );
@@ -269,21 +300,14 @@ class DatabaseHelper {
              COALESCE(MAX(albumArtist), MAX(artist)) AS artist,
              MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
              MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
+             MAX(cachedArtworkPath) AS coverArtworkPath,
              COUNT(*) AS songCount
       FROM songs
       WHERE album IS NOT NULL AND album != ''
       GROUP BY album
       ORDER BY album COLLATE NOCASE ASC
     ''');
-    _cachedAlbums = rows
-        .map((m) => Album(
-              title: m['title'] as String,
-              artist: m['artist'] as String?,
-              coverSongId: m['coverSongId'] as int?,
-              coverSongPath: m['coverSongPath'] as String?,
-              songCount: (m['songCount'] as int?) ?? 0,
-            ))
-        .toList();
+    _cachedAlbums = rows.map(Album.fromMap).toList();
     return _cachedAlbums!;
   }
 
@@ -307,20 +331,14 @@ class DatabaseHelper {
       SELECT artist AS name,
              COUNT(*) AS songCount,
              COUNT(DISTINCT album) AS albumCount,
-             MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath
+             MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
+             MAX(cachedArtworkPath) AS coverArtworkPath
       FROM songs
       WHERE artist IS NOT NULL AND artist != ''
       GROUP BY artist
       ORDER BY artist COLLATE NOCASE ASC
     ''');
-    _cachedArtists = rows
-        .map((m) => Artist(
-              name: m['name'] as String,
-              songCount: (m['songCount'] as int?) ?? 0,
-              albumCount: (m['albumCount'] as int?) ?? 0,
-              coverSongPath: m['coverSongPath'] as String?,
-            ))
-        .toList();
+    _cachedArtists = rows.map(Artist.fromMap).toList();
     return _cachedArtists!;
   }
 
@@ -342,21 +360,14 @@ class DatabaseHelper {
              COALESCE(MAX(albumArtist), MAX(artist)) AS artist,
              MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
              MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
+             MAX(cachedArtworkPath) AS coverArtworkPath,
              COUNT(*) AS songCount
       FROM songs
       WHERE artist = ? AND album IS NOT NULL AND album != ''
       GROUP BY album
       ORDER BY album COLLATE NOCASE ASC
     ''', [artist]);
-    return rows
-        .map((m) => Album(
-              title: m['title'] as String,
-              artist: m['artist'] as String?,
-              coverSongId: m['coverSongId'] as int?,
-              coverSongPath: m['coverSongPath'] as String?,
-              songCount: (m['songCount'] as int?) ?? 0,
-            ))
-        .toList();
+    return rows.map(Album.fromMap).toList();
   }
 
   // ======================== 歌单 ========================
@@ -539,5 +550,165 @@ class DatabaseHelper {
       whereArgs: [songId],
     );
     _invalidateCache();
+  }
+
+  /// 查询封面尚未缓存的远程歌曲（coverArtId 有值但 cachedArtworkPath 为空）
+  Future<List<Song>> querySongsNeedingArtworkCache() async {
+    final db = await database;
+    final rows = await db.query('songs',
+        where: 'sourceType = ? AND coverArtId IS NOT NULL AND (cachedArtworkPath IS NULL OR cachedArtworkPath = ?)',
+        whereArgs: ['subsonic', ''],
+        orderBy: 'id ASC');
+    return rows.map(Song.fromMap).toList();
+  }
+
+  // ======================== 播放统计 ========================
+
+  /// 递增歌曲播放次数并更新最后播放时间
+  Future<void> incrementPlayCount(int songId) async {
+    final db = await database;
+    await db.rawUpdate(
+      'UPDATE songs SET playCount = playCount + 1, lastPlayed = ? WHERE id = ?',
+      [DateTime.now().millisecondsSinceEpoch, songId],
+    );
+    _invalidateCache();
+  }
+
+  /// 查询最常播放的歌曲（Top N）
+  Future<List<Song>> queryTopPlayed({int limit = 20}) async {
+    final db = await database;
+    final rows = await db.query('songs',
+        where: 'playCount > 0',
+        orderBy: 'playCount DESC',
+        limit: limit);
+    return rows.map(Song.fromMap).toList();
+  }
+
+  /// 查询最近播放的歌曲
+  Future<List<Song>> queryRecentlyPlayed({int limit = 50}) async {
+    final db = await database;
+    final rows = await db.query('songs',
+        where: 'lastPlayed IS NOT NULL',
+        orderBy: 'lastPlayed DESC',
+        limit: limit);
+    return rows.map(Song.fromMap).toList();
+  }
+
+  // ======================== 喜欢功能 ========================
+
+  /// 切换歌曲喜欢状态
+  Future<void> toggleLikeSong(int songId) async {
+    final db = await database;
+    await db.rawUpdate(
+      'UPDATE songs SET isLiked = CASE WHEN isLiked = 1 THEN 0 ELSE 1 END WHERE id = ?',
+      [songId],
+    );
+    _invalidateCache();
+  }
+
+  /// 查询喜欢的歌曲
+  Future<List<Song>> queryLikedSongs() async {
+    final db = await database;
+    final rows = await db.query('songs',
+        where: 'isLiked = 1',
+        orderBy: 'title COLLATE NOCASE ASC');
+    return rows.map(Song.fromMap).toList();
+  }
+
+  /// 查询喜欢的专辑（通过歌曲聚合）
+  Future<List<Album>> queryLikedAlbums() async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT album AS title,
+             COALESCE(MAX(albumArtist), MAX(artist)) AS artist,
+             MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
+             MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
+             MAX(cachedArtworkPath) AS coverArtworkPath,
+             COUNT(*) AS songCount
+      FROM songs
+      WHERE album IS NOT NULL AND album != '' AND isLiked = 1
+      GROUP BY album
+      ORDER BY album COLLATE NOCASE ASC
+    ''');
+    return rows.map(Album.fromMap).toList();
+  }
+
+  /// 查询喜欢的艺术家
+  Future<List<Artist>> queryLikedArtists() async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT artist AS name,
+             COUNT(*) AS songCount,
+             COUNT(DISTINCT album) AS albumCount,
+             MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
+             MAX(cachedArtworkPath) AS coverArtworkPath
+      FROM songs
+      WHERE artist IS NOT NULL AND artist != '' AND isLiked = 1
+      GROUP BY artist
+      ORDER BY artist COLLATE NOCASE ASC
+    ''');
+    return rows.map(Artist.fromMap).toList();
+  }
+
+  // ======================== 艺术家元数据 ========================
+
+  /// 插入或更新艺术家元数据
+  Future<void> upsertArtistMeta({
+    required String name,
+    String? artistId,
+    String? coverArtId,
+  }) async {
+    final db = await database;
+    await db.rawInsert(
+      'INSERT OR REPLACE INTO artists_meta (name, artistId, coverArtId) VALUES (?, ?, ?)',
+      [name, artistId, coverArtId],
+    );
+  }
+
+  /// 批量插入艺术家元数据
+  Future<void> upsertArtistMetaBatch(List<Map<String, String?>> artists) async {
+    final db = await database;
+    final batch = db.batch();
+    for (final a in artists) {
+      batch.rawInsert(
+        'INSERT OR REPLACE INTO artists_meta (name, artistId, coverArtId) VALUES (?, ?, ?)',
+        [a['name'], a['artistId'], a['coverArtId']],
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// 更新艺术家封面缓存路径
+  Future<void> updateArtistArtworkCache(String artistName, String artworkPath) async {
+    final db = await database;
+    await db.update(
+      'artists_meta',
+      {'cachedArtworkPath': artworkPath},
+      where: 'name = ?',
+      whereArgs: [artistName],
+    );
+  }
+
+  /// 切换艺术家喜欢状态
+  Future<void> toggleLikeArtist(String artistName) async {
+    final db = await database;
+    await db.rawUpdate(
+      'UPDATE artists_meta SET isLiked = CASE WHEN isLiked = 1 THEN 0 ELSE 1 END WHERE name = ?',
+      [artistName],
+    );
+  }
+
+  /// 查询艺术家元数据
+  Future<Map<String, dynamic>?> queryArtistMeta(String name) async {
+    final db = await database;
+    final rows = await db.query('artists_meta',
+        where: 'name = ?', whereArgs: [name], limit: 1);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  /// 查询所有艺术家元数据
+  Future<List<Map<String, dynamic>>> queryAllArtistMeta() async {
+    final db = await database;
+    return db.query('artists_meta', orderBy: 'name COLLATE NOCASE ASC');
   }
 }

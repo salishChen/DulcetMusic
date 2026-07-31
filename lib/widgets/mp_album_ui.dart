@@ -53,9 +53,12 @@ class AlbumUIState extends State<AlbumUI> with SingleTickerProviderStateMixin {
         elevation: 5.0,
         color: Colors.transparent,
         child: MpArtwork(
-          // 用歌曲路径作为 key，切歌时强制重建并重新取封面
-          key: ValueKey(widget.song.path),
+          // 用 path + cachedArtworkPath 组合 key，封面缓存完成时强制重建
+          key: ValueKey('${widget.song.path}_${widget.song.cachedArtworkPath}'),
           widget.song.path,
+          cachedArtworkPath: widget.song.cachedArtworkPath,
+          songId: widget.song.id,
+          coverArtId: widget.song.coverArtId,
           borderRadius: BorderRadius.circular(12.0),
           fit: BoxFit.cover,
         ),

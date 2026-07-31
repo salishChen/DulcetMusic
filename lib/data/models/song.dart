@@ -77,6 +77,15 @@ class Song {
   /// Subsonic 封面 ID（如 "al-123"，用于按需获取封面）
   final String? coverArtId;
 
+  /// 播放次数
+  final int playCount;
+
+  /// 是否喜欢
+  final bool isLiked;
+
+  /// 最后播放时间戳（毫秒）
+  final int? lastPlayed;
+
   const Song({
     this.id,
     required this.title,
@@ -104,6 +113,9 @@ class Song {
     this.cacheTimestamp,
     this.cachedArtworkPath,
     this.coverArtId,
+    this.playCount = 0,
+    this.isLiked = false,
+    this.lastPlayed,
   });
 
   factory Song.fromMap(Map<String, dynamic> m) => Song(
@@ -133,6 +145,9 @@ class Song {
         cacheTimestamp: m['cacheTimestamp'] as int?,
         cachedArtworkPath: m['cachedArtworkPath'] as String?,
         coverArtId: m['coverArtId'] as String?,
+        playCount: (m['playCount'] as int?) ?? 0,
+        isLiked: (m['isLiked'] as int? ?? 0) == 1,
+        lastPlayed: m['lastPlayed'] as int?,
       );
 
   Map<String, dynamic> toMap() => {
@@ -162,6 +177,9 @@ class Song {
         'cacheTimestamp': cacheTimestamp,
         'cachedArtworkPath': cachedArtworkPath,
         'coverArtId': coverArtId,
+        'playCount': playCount,
+        'isLiked': isLiked ? 1 : 0,
+        'lastPlayed': lastPlayed,
       };
 
   Song copyWith({
@@ -175,6 +193,9 @@ class Song {
     String? cachedArtworkPath,
     String? coverArtId,
     String? lyrics,
+    int? playCount,
+    bool? isLiked,
+    int? lastPlayed,
   }) =>
       Song(
         id: id ?? this.id,
@@ -203,6 +224,9 @@ class Song {
         cacheTimestamp: cacheTimestamp ?? this.cacheTimestamp,
         cachedArtworkPath: cachedArtworkPath ?? this.cachedArtworkPath,
         coverArtId: coverArtId ?? this.coverArtId,
+        playCount: playCount ?? this.playCount,
+        isLiked: isLiked ?? this.isLiked,
+        lastPlayed: lastPlayed ?? this.lastPlayed,
       );
 
   /// 归一化的歌曲身份键（用于跨来源判定"同一首歌"）：标题|艺术家|专辑

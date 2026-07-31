@@ -1,7 +1,9 @@
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flute_example/data/audio_handler.dart';
 import 'package:flute_example/data/audio_player_instance.dart';
+import 'package:flute_example/data/cache_service.dart';
 import 'package:flute_example/data/database_helper.dart';
 import 'package:flute_example/data/models/song.dart';
 import 'package:flute_example/data/playlist_data.dart';
@@ -29,6 +31,14 @@ void main() async {
       notificationColor: kBrandPurple,
     ),
   );
+  // 强制 Android 将耳机媒体按键（播放/暂停/上一曲/下一曲）路由到本应用的
+  // 媒体会话。某些设备/蓝牙耳机上媒体按键可能不被自动路由，显式启用
+  // 可确保按键事件被 AudioService 捕获并分发到 MpAudioHandler。
+  try {
+    await AudioService.androidForceEnableMediaButtons();
+  } catch (e) {
+    print('启用媒体按键监听失败: $e');
+  }
   runApp(const MyMaterialApp());
 }
 
@@ -83,6 +93,31 @@ class MyMaterialAppState extends State<MyMaterialApp>
       songData = SongData(songs, dbHelper: dbHelper);
       _isLoading = false;
     });
+    
+    // 将 songData 设置到 audioHandler，以便更新歌曲列表中的歌曲对象
+    audioHandler?.songData = songData;
+
+    // 后台继续缓存未完成的封面（启动时不阻塞 UI）
+    _cachePendingArtwork();
+  }
+
+  /// 检查并缓存未完成的封面（coverArtId 有值但 cachedArtworkPath 为空的歌曲）
+  Future<void> _cachePendingArtwork() async {
+    try {
+      final pendingSongs = await dbHelper.querySongsNeedingArtworkCache();
+      if (pendingSongs.isEmpty) return;
+      print('启动时发现 ${pendingSongs.length} 首歌曲封面未缓存，开始后台缓存...');
+      await CacheService.instance.cacheArtworkBatch(pendingSongs);
+      // 缓存完成后刷新歌曲列表
+      if (mounted) {
+        final refreshed = await dbHelper.queryAllSongs();
+        setState(() {
+          songData = SongData(refreshed, dbHelper: dbHelper);
+        });
+      }
+    } catch (e) {
+      print('启动时封面缓存失败: $e');
+    }
   }
 
   @override
@@ -106,15 +141,28 @@ class MyMaterialAppState extends State<MyMaterialApp>
             home: MPNavScaffold(),
             // 底部播放栏常驻：导航器与栏竖向拼接，跨所有路由始终显示；
             // 「正在播放」页打开时（nowPlayingOpen）以上移+淡出动画隐藏。
-            builder: (context, child) => Column(
-              children: [
-                Expanded(child: child!),
-                ValueListenableBuilder<bool>(
-                  valueListenable: nowPlayingOpen,
-                  builder: (_, open, __) => MiniPlayerBar(hidden: open),
+            builder: (context, child) {
+              // 全局滑动方向锁定阈值：只有滑过 40px 才锁定为横向/竖向主导方向。
+              // 通过覆盖 MediaQuery.gestureSettings，让所有基于 GestureDetector、
+              // Scrollable（ListView/GridView/PageView）、Dismissible 的手势
+              // 都使用 40px 的 touchSlop 来判断主方向，避免斜向滑动时过早锁死
+              // 方向（默认 Flutter touch slop 仅约 18px，易误触）。
+              final mq = MediaQuery.of(context);
+              return MediaQuery(
+                data: mq.copyWith(
+                  gestureSettings: const DeviceGestureSettings(touchSlop: 40.0),
                 ),
-              ],
-            ),
+                child: Column(
+                  children: [
+                    Expanded(child: child!),
+                    ValueListenableBuilder<bool>(
+                      valueListenable: nowPlayingOpen,
+                      builder: (_, open, __) => MiniPlayerBar(hidden: open),
+                    ),
+                  ],
+                ),
+              );
+            },
           );
         },
       ),
