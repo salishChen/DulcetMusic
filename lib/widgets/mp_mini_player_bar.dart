@@ -78,6 +78,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
   /// 进度动画状态变化：补间结束时收敛手势状态
   void _onProgressStatus(AnimationStatus s) {
     if (!mounted) return;
+    var needsRebuild = false;
     if (s == AnimationStatus.completed && _mode == _BarDragMode.opening) {
       // 展开补间完成：进入活动态，路由保留，等待用户关闭。
       // 注意：拖拽途中 value 被拖到 1.0 也会同步触发 completed，
@@ -87,12 +88,20 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       // `widget.hidden && !_routePushed` 成立，栏体从渲染树中移除，
       // 播放页得以占满全屏。
       _routePushed = false;
+      needsRebuild = true;
     } else if (s == AnimationStatus.dismissed) {
       // 收起补间完成：重置手势状态，允许下次重新 push 播放页。
       // pop 路由的职责已全部收归 NowPlaying 自身（其监听 dismissed 自行
       // pop），此处不再 pop，避免双重 pop 误弹主页。
       _mode = _BarDragMode.idle;
       _routePushed = false;
+      needsRebuild = true;
+    }
+    if (needsRebuild) {
+      // 必须触发重建：仅修改 _routePushed 不触发 build，
+      // 播放页展开完成后 `widget.hidden && !_routePushed` 无法求值，
+      // 栏体将残留不隐藏。
+      setState(() {});
     }
   }
 
