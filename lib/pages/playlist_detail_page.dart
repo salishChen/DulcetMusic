@@ -22,47 +22,29 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   List<Song> _songs = [];
   bool _loading = true;
 
-  /// 跨实例缓存：同一歌单再次进入时直接使用，不再查询数据库
-  static final Map<int, List<Song>> _cache = {};
-
   @override
   void initState() {
     super.initState();
-    _load();
-  }
-
-  void _load() {
     final id = widget.playlist.id;
-    if (id == null) return;
-    final cached = _cache[id];
-    if (cached != null) {
-      if (mounted) {
-        setState(() {
-          _songs = cached;
-          _loading = false;
-        });
-      }
-      return;
+    if (id != null) {
+      _query(id);
+    } else {
+      // id 缺失时直接结束加载态，避免永久 loading
+      _loading = false;
     }
-    _query(id);
   }
 
   Future<void> _query(int id) async {
     final songs = await DatabaseHelper.instance.querySongsInPlaylist(id);
     if (!mounted) return;
-    _cache[id] = songs;
     setState(() {
       _songs = songs;
       _loading = false;
     });
   }
 
-  /// 从歌单删除歌曲：同步更新缓存与本地列表，避免重新查询
+  /// 从歌单删除歌曲：同步更新本地列表，避免重新查询
   void _removeSong(Song song) {
-    final id = widget.playlist.id;
-    if (id != null && _cache.containsKey(id)) {
-      _cache[id]!.removeWhere((s) => s.path == song.path);
-    }
     if (mounted) {
       setState(() => _songs.removeWhere((s) => s.path == song.path));
     }
