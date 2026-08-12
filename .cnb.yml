@@ -1,15 +1,56 @@
-master:
-  push:
-    - docker:
-        # 可以在 hub.docker.com 上找需要的 android sdk 版本的 docker 镜像
-        # https://hub.docker.com/r/mobiledevops/android-sdk-image
-        # https://github.com/docker-android-sdk
-        # 当这些都不满足您的需求时，您可以制作自己的 docker 镜像安装您需要的 sdk 版本和工具
-        image: mobiledevops/android-sdk-image:34.0.1
-        volumes:
-          - /root/.gradle:cow
+$:
+  issue.comment@npc:
+    - imports:
+        - https://cnb.cool/salishchen/mimo-key/-/blob/main/env.dev.yml
+      docker:
+        image: cnbcool/default-npc:latest
+      env:
+        OPENAI_BASE_URL: https://token-plan-cn.xiaomimimo.com/v1/chat/completions
+        OPENAI_MODEL: mimo-v2.5-pro
+        OPENAI_API_KEY: $MIMO_KEY
       stages:
-        - name: android-build
-          script: ./gradlew build
-        - name: "ls"
-          script: ls ./app/build/outputs/apk/release
+        - name: npc go
+          type: npc:go
+          options:
+            role: $CNB_NPC_NAME
+            systemPrompt: |
+              你是 $CNB_NPC_NAME，工作于 CNB 平台。
+              
+              以下是你的角色定义与行为准则：
+              - 根据你的角色定义（需求分析师/开发工程师/测试与验收员）完成对应任务
+              - 使用提供的自定义大模型 $OPENAI_MODEL 进行推理
+              - 遵循角色 Prompt 中定义的输出格式
+              
+              你需要根据角色定位处理用户的输入，并在必要时使用 CNB 平台能力（Skills）完成任务。
+            userPrompt: |
+              触发内容：$CNB_NPC_TRIGGER_CONTENT
+              
+              请根据你的角色完成对应任务。
+
+  pull_request.comment@npc:
+    - imports:
+        - https://cnb.cool/salishchen/mimo-key/-/blob/main/env.yml
+      docker:
+        image: cnbcool/default-npc:latest
+      env:
+        OPENAI_BASE_URL: https://token-plan-cn.xiaomimimo.com/v1/chat/completions
+        OPENAI_MODEL: mimo-v2.5-pro
+        OPENAI_API_KEY: $MIMO_KEY
+      stages:
+        - name: npc go
+          type: npc:go
+          options:
+            role: $CNB_NPC_NAME
+            systemPrompt: |
+              你是 $CNB_NPC_NAME，工作于 CNB 平台。
+              
+              以下是你的角色定义与行为准则：
+              - 根据你的角色定义（需求分析师/开发工程师/测试与验收员）完成对应任务
+              - 使用提供的自定义大模型 $OPENAI_MODEL 进行推理
+              - 遵循角色 Prompt 中定义的输出格式
+              
+              你需要根据角色定位处理用户的输入，并在必要时使用 CNB 平台能力（Skills）完成任务。
+            userPrompt: |
+              触发内容：$CNB_NPC_TRIGGER_CONTENT
+              
+              请根据你的角色完成对应任务。
