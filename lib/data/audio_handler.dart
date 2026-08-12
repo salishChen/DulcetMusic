@@ -99,6 +99,20 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
     _publishMediaItem(song);
     
     try {
+      // 0. 若是远程歌曲，先尝试从数据库确认是否已缓存，避免重复触发缓存：
+      //    播放列表/歌曲列表中的 song 对象可能因未及时刷新而 isCached=false，
+      //    但数据库里其实已经有缓存路径了。此时应直接本地播放。
+      if (song.isRemote && !song.isCached && song.remoteId != null) {
+        final dbSong = await DatabaseHelper.instance.querySongByRemoteId(song.remoteId!);
+        if (dbSong != null && dbSong.isCached) {
+          final cachedFile = File(dbSong.cachedPath!);
+          if (await cachedFile.exists()) {
+            song = song.copyWith(cachedPath: dbSong.cachedPath);
+            // 同步更新 currentSong，使播放页/播放栏能即时反映已缓存状态
+            currentSong.value = song;
+          }
+        }
+      }
       // 1. 已缓存的远程歌曲：优先本地播放
       if (song.isRemote && song.isCached) {
         final cachedFile = File(song.cachedPath!);
@@ -142,13 +156,25 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
     final streamUrl = SubsonicService.instance.getStreamUrl(song.remoteId!);
     print('MpAudioHandler: 开始流式播放 - ${song.title} (${song.artist})');
     await player.play(UrlSource(streamUrl));
-    // 后台缓存音频 + 封面，缓存完成后刷新 currentSong 和播放列表中的对象
-    CacheService.instance.startCaching(song, onCached: (updated) {
-      _mergeCurrentSong(updated, mergeArtwork: true, mergeLyrics: true);
-    });
-    // 后台获取歌词（无论歌曲对象是否已有歌词，数据库可能更新过）
-    print('MpAudioHandler: 后台获取歌词 - ${song.title}');
-    _fetchLyricsInBackground(song);
+    // 后台缓存音频 + 封面（已缓存则跳过，避免同一首歌重复触发缓存下载），
+    // 缓存完成后刷新 currentSong 和播放列表中的对象。
+    if (!song.isCached) {
+      CacheService.instance.startCaching(song, onCached: (updated) {
+        _mergeCurrentSong(updated, mergeArtwork: true, mergeLyrics: true);
+      });
+    } else {
+      // 音频已缓存但封面可能未缓存：仅补充封面缓存
+      if (song.cachedArtworkPath == null && song.coverArtId != null && song.id != null) {
+        CacheService.instance.startCaching(song, onCached: (updated) {
+          _mergeCurrentSong(updated, mergeArtwork: true);
+        });
+      }
+    }
+    // 后台获取歌词（仅当歌曲尚无歌词时）
+    if (song.lyrics == null || song.lyrics!.isEmpty) {
+      print('MpAudioHandler: 后台获取歌词 - ${song.title}');
+      _fetchLyricsInBackground(song);
+    }
   }
   
   /// 检查并获取远程歌曲的歌词（如果歌曲没有歌词）
@@ -210,8 +236,11 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
         if (song.id != null) {
           await DatabaseHelper.instance.updateSongLyrics(song.id!, lyrics);
         }
-        // 合并到 currentSong，只更新 lyrics 字段
-        final updatedSong = song.copyWith(lyrics: lyrics);
+        // 基于当前实际播放的歌曲对象合并歌词（避免用旧的 song 覆盖
+        // currentSong 中已被封面/缓存回调更新的字段）。
+        final cur = currentSong.value;
+        final base = (cur != null && cur.path == song.path) ? cur : song;
+        final updatedSong = base.copyWith(lyrics: lyrics);
         _mergeCurrentSong(updatedSong, mergeArtwork: false, mergeLyrics: true);
       } else {
         print('MpAudioHandler: 歌词获取失败或为空');
