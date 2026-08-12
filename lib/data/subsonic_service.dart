@@ -244,9 +244,17 @@ class SubsonicService {
   }
 
   /// 获取流媒体 URL
-  String getStreamUrl(String songId) {
+  ///
+  /// 先尝试解析活跃 Base URL（内网优先），保证流式播放 / 后台缓存走的是
+  /// 与 API 请求一致的连接策略；若解析失败则回退到公网地址。
+  Future<String> getStreamUrl(String songId) async {
     if (_config == null) throw Exception('Subsonic 未配置');
-    final baseUrl = _activeBaseUrl ?? _config!.publicUrl;
+    String baseUrl;
+    try {
+      baseUrl = await _resolveBaseUrl();
+    } catch (_) {
+      baseUrl = _config!.publicUrl;
+    }
     return _buildUrl(baseUrl, 'stream&id=$songId');
   }
 

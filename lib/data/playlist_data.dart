@@ -112,16 +112,22 @@ class PlaylistData {
   }
 
   /// 切换播放模式（顺序 -> 随机 -> 单曲 -> 顺序 ...），返回切换后的模式
+  ///
+  /// 切换后立即持久化，确保退出后再次进入能恢复上次的播放模式。
   PlayMode togglePlayMode() {
     _playMode = PlayMode.values[(_playMode.index + 1) % PlayMode.values.length];
     modeNotifier.value = _playMode;
+    _persist();
     return _playMode;
   }
 
   /// 直接设置播放模式
+  ///
+  /// 切换后立即持久化，确保退出后再次进入能恢复上次的播放模式。
   void setPlayMode(PlayMode mode) {
     _playMode = mode;
     modeNotifier.value = _playMode;
+    _persist();
   }
 
   /// 内部通知：将不可变快照推送给监听者

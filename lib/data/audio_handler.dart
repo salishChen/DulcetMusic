@@ -153,7 +153,7 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
   Future<void> _playRemoteAndCache(Song song) async {
     // 重新解析连接（可能内网/公网切换）
     SubsonicService.instance.resetConnection();
-    final streamUrl = SubsonicService.instance.getStreamUrl(song.remoteId!);
+    final streamUrl = await SubsonicService.instance.getStreamUrl(song.remoteId!);
     print('MpAudioHandler: 开始流式播放 - ${song.title} (${song.artist})');
     await player.play(UrlSource(streamUrl));
     // 后台缓存音频 + 封面（已缓存则跳过，避免同一首歌重复触发缓存下载），
