@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flute_example/data/database_helper.dart';
 import 'package:flute_example/data/models/song.dart';
@@ -31,6 +32,10 @@ class _FavoritesPageState extends State<FavoritesPage>
   List<Artist> _likedArtists = [];
   bool _loading = true;
 
+  // 右滑手势追踪（用于第一个 Tab 时打开侧边栏）
+  Offset? _dragStartPos;
+  bool _isDragging = false;
+
   @override
   void initState() {
     super.initState();
@@ -56,6 +61,37 @@ class _FavoritesPageState extends State<FavoritesPage>
         _loading = false;
       });
     }
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    _dragStartPos = event.position;
+    _isDragging = true;
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (!_isDragging || _dragStartPos == null) return;
+    // 仅第一个 Tab（音乐）时，右滑应打开左侧侧边栏
+    if (_tabController.index != 0) return;
+
+    final dx = event.position.dx - _dragStartPos!.dx;
+    final dy = event.position.dy - _dragStartPos!.dy;
+
+    // 横向位移 > 纵向位移且向右滑动（右滑手势）
+    if (dx.abs() > dy.abs() && dx > 30) {
+      MPNavScaffold.of(context)?.openSidebar();
+      _isDragging = false; // 只触发一次
+      _dragStartPos = null;
+    }
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    _isDragging = false;
+    _dragStartPos = null;
+  }
+
+  void _handlePointerCancel(PointerCancelEvent event) {
+    _isDragging = false;
+    _dragStartPos = null;
   }
 
   @override
@@ -87,13 +123,19 @@ class _FavoritesPageState extends State<FavoritesPage>
                   ),
                 ),
                 Expanded(
-                  child: TabBarView(
-                    controller: _tabController,
-                    children: [
-                      _buildLikedSongs(),
-                      _buildLikedAlbums(),
-                      _buildLikedArtists(),
-                    ],
+                  child: Listener(
+                    onPointerDown: _handlePointerDown,
+                    onPointerMove: _handlePointerMove,
+                    onPointerUp: _handlePointerUp,
+                    onPointerCancel: _handlePointerCancel,
+                    child: TabBarView(
+                      controller: _tabController,
+                      children: [
+                        _buildLikedSongs(),
+                        _buildLikedAlbums(),
+                        _buildLikedArtists(),
+                      ],
+                    ),
                   ),
                 ),
               ],

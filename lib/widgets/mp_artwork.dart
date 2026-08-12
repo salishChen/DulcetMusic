@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import 'package:flute_example/data/cache_service.dart';
 import 'package:flute_example/data/database_helper.dart';
+import 'package:flute_example/data/models/song.dart';
 import 'package:flute_example/widgets/mp_inherited.dart';
 
 /// 封面字节内存缓存：以歌曲文件路径为 key
@@ -126,6 +127,9 @@ class _MpArtworkState extends State<MpArtwork> {
   Future<Uint8List?>? _cacheFuture;
   bool _backgroundCached = false;
 
+  /// 后台缓存完成后保存的封面路径（用于无 songId 的封面，如艺术家）
+  String? _artworkOverride;
+
   @override
   void initState() {
     super.initState();
@@ -137,6 +141,8 @@ class _MpArtworkState extends State<MpArtwork> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.path != widget.path ||
         oldWidget.cachedArtworkPath != widget.cachedArtworkPath) {
+      // path 变化时重置后台缓存状态
+      _artworkOverride = null;
       _initLoad();
     }
   }
@@ -147,7 +153,8 @@ class _MpArtworkState extends State<MpArtwork> {
       _cacheFuture = null;
       return;
     }
-    final cacheKey = widget.cachedArtworkPath ?? path;
+    final effectiveArtworkPath = widget.cachedArtworkPath ?? _artworkOverride;
+    final cacheKey = effectiveArtworkPath ?? path;
 
     // 已有内存缓存，不需要 FutureBuilder
     if (ArtworkCache.has(cacheKey)) {
@@ -159,30 +166,41 @@ class _MpArtworkState extends State<MpArtwork> {
       return;
     }
 
-    _cacheFuture = ArtworkCache.load(path, cachedArtworkPath: widget.cachedArtworkPath);
+    _cacheFuture =
+        ArtworkCache.load(path, cachedArtworkPath: effectiveArtworkPath);
     // 如果加载结果为 null 且是远程歌曲，FutureBuilder 结束后尝试后台缓存
   }
 
   /// 远程歌曲无封面时，后台从 Subsonic 缓存封面文件并刷新 UI
   void _tryBackgroundCache() {
     if (_backgroundCached) return;
-    if (widget.songId == null || widget.coverArtId == null) return;
+    if (widget.coverArtId == null) return;
     _backgroundCached = true;
 
     Future.microtask(() async {
       try {
-        // 从数据库获取完整的 Song 对象
-        final song = await DatabaseHelper.instance.querySongById(widget.songId!);
-        if (song == null) return;
-        final artworkPath = await CacheService.instance.cacheArtwork(song);
+        String? artworkPath;
+        if (widget.songId != null) {
+          // 有 songId：从数据库获取完整 Song 对象再缓存（会写库）
+          final song =
+              await DatabaseHelper.instance.querySongById(widget.songId!);
+          if (song == null) return;
+          artworkPath = await CacheService.instance.cacheArtwork(song);
+        } else {
+          // 无 songId（如艺术家封面）：直接按 coverArtId 缓存封面文件
+          final placeholder = Song(
+            title: '',
+            path: widget.path ?? '',
+            coverArtId: widget.coverArtId,
+          );
+          artworkPath = await CacheService.instance.cacheArtwork(placeholder);
+        }
+
         if (artworkPath != null && mounted) {
+          // 保存封面路径，使后续 build 能直接读取缓存的封面文件
+          _artworkOverride = artworkPath;
           // 同步更新歌曲列表/播放列表中的对象，使 cachedArtworkPath 生效，
           // 否则 MpArtwork 的 cachedArtworkPath 参数仍为 null，会再次走占位。
-          final updated = song.copyWith(cachedArtworkPath: artworkPath);
-          final iw = MPInheritedWidget.of(context);
-          iw.songData?.updateSong(updated);
-          iw.playlistData?.updateSong(updated);
-          // 清除旧的 null 缓存，下次 build 会重新加载
           final oldKey = widget.cachedArtworkPath ?? widget.path!;
           ArtworkCache.invalidate(oldKey);
           if (mounted) setState(() {});
@@ -229,7 +247,8 @@ class _MpArtworkState extends State<MpArtwork> {
     final path = widget.path;
     if (path == null || path.isEmpty) return _placeholder();
 
-    final cacheKey = widget.cachedArtworkPath ?? path;
+    final effectiveArtworkPath = widget.cachedArtworkPath ?? _artworkOverride;
+    final cacheKey = effectiveArtworkPath ?? path;
 
     // 命中内存缓存：直接同步渲染，避免闪烁
     if (ArtworkCache.has(cacheKey)) {
@@ -244,7 +263,7 @@ class _MpArtworkState extends State<MpArtwork> {
 
     // 尚未加载：用 FutureBuilder 异步加载
     final future = _cacheFuture ??
-        ArtworkCache.load(path, cachedArtworkPath: widget.cachedArtworkPath);
+        ArtworkCache.load(path, cachedArtworkPath: effectiveArtworkPath);
 
     return FutureBuilder<Uint8List?>(
       future: future,

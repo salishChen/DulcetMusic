@@ -162,7 +162,7 @@ class CacheService {
   /// 缓存歌曲封面到本地
   /// 返回缓存后的本地文件路径，失败返回 null
   Future<String?> cacheArtwork(Song song) async {
-    if (song.coverArtId == null || song.id == null) return null;
+    if (song.coverArtId == null) return null;
 
     try {
       final dir = await getCacheDir();
@@ -174,7 +174,9 @@ class CacheService {
 
       // 检查是否已缓存
       if (File(cachePath).existsSync()) {
-        await DatabaseHelper.instance.updateArtworkCache(song.id!, cachePath);
+        if (song.id != null) {
+          await DatabaseHelper.instance.updateArtworkCache(song.id!, cachePath);
+        }
         return cachePath;
       }
 
@@ -187,8 +189,10 @@ class CacheService {
       final file = File(cachePath);
       await file.writeAsBytes(bytes);
 
-      // 更新数据库
-      await DatabaseHelper.instance.updateArtworkCache(song.id!, cachePath);
+      // 更新数据库（song.id 非 null 时才写库）
+      if (song.id != null) {
+        await DatabaseHelper.instance.updateArtworkCache(song.id!, cachePath);
+      }
 
       return cachePath;
     } catch (e) {
