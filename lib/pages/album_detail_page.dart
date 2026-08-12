@@ -17,33 +17,15 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
   List<Song> _songs = [];
   bool _loading = true;
 
-  /// 跨实例缓存：同一专辑再次进入时直接使用，不再查询数据库
-  static final Map<String, List<Song>> _cache = {};
-
   @override
   void initState() {
     super.initState();
-    _load();
-  }
-
-  void _load() {
-    final cached = _cache[widget.albumTitle];
-    if (cached != null) {
-      if (mounted) {
-        setState(() {
-          _songs = cached;
-          _loading = false;
-        });
-      }
-      return;
-    }
     _query();
   }
 
   Future<void> _query() async {
     final songs =
         await DatabaseHelper.instance.querySongsByAlbum(widget.albumTitle);
-    _cache[widget.albumTitle] = songs;
     if (!mounted) return;
     setState(() {
       _songs = songs;

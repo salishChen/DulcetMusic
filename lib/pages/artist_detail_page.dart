@@ -15,39 +15,14 @@ class ArtistDetailPage extends StatefulWidget {
   State<ArtistDetailPage> createState() => _ArtistDetailPageState();
 }
 
-/// 艺术家详情页缓存条目
-class _ArtistCache {
-  final List<Song> songs;
-  final List<Album> albums;
-  _ArtistCache(this.songs, this.albums);
-}
-
 class _ArtistDetailPageState extends State<ArtistDetailPage> {
   List<Song> _songs = [];
   List<Album> _albums = [];
   bool _loading = true;
 
-  /// 跨实例缓存：同一艺术家再次进入时直接使用，不再查询数据库
-  static final Map<String, _ArtistCache> _cache = {};
-
   @override
   void initState() {
     super.initState();
-    _load();
-  }
-
-  void _load() {
-    final cached = _cache[widget.artistName];
-    if (cached != null) {
-      if (mounted) {
-        setState(() {
-          _songs = cached.songs;
-          _albums = cached.albums;
-          _loading = false;
-        });
-      }
-      return;
-    }
     _query();
   }
 
@@ -55,7 +30,6 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
     final db = DatabaseHelper.instance;
     final songs = await db.querySongsByArtist(widget.artistName);
     final albums = await db.queryAlbumsByArtist(widget.artistName);
-    _cache[widget.artistName] = _ArtistCache(songs, albums);
     if (!mounted) return;
     setState(() {
       _songs = songs;

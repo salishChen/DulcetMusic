@@ -305,11 +305,13 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
     if (songs.isEmpty) {
       _shuffleOrder = [];
       _shufflePos = 0;
+      _index = -1;
       return;
     }
+    // 当前歌曲索引越界时回退到 0（列表可能因删除/替换而缩短）
+    final cur = (_index >= 0 && _index < songs.length) ? _index : 0;
     if (_shuffleOrder.length != songs.length) {
       final order = List<int>.generate(songs.length, (i) => i);
-      final cur = _index >= 0 ? _index : 0;
       order.remove(cur);
       order.shuffle();
       order.insert(0, cur);

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flute_example/data/database_helper.dart';
 import 'package:flute_example/data/models/song.dart';
@@ -279,8 +281,8 @@ class MusicSearchDelegate extends SearchDelegate<String> {
             backgroundColor: theme.colorScheme.primary.withOpacity(0.15),
             child: artist.coverArtworkPath != null
                 ? ClipOval(
-                    child: Image.asset(
-                      artist.coverArtworkPath!,
+                    child: Image.file(
+                      File(artist.coverArtworkPath!),
                       width: 48,
                       height: 48,
                       fit: BoxFit.cover,
