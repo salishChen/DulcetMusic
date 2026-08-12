@@ -983,9 +983,26 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(color: Colors.white70),
                           ),
-                          trailing: isCurrent
-                              ? const Icon(Icons.equalizer, color: Colors.white)
-                              : null,
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // 已缓存的远程歌曲显示缓存标识
+                              if (s.isRemote && s.isCached)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8.0),
+                                  child: Icon(
+                                    Icons.offline_pin,
+                                    size: 18.0,
+                                    color: isCurrent
+                                        ? Colors.white
+                                        : Colors.white54,
+                                  ),
+                                ),
+                              if (isCurrent)
+                                const Icon(Icons.equalizer,
+                                    color: Colors.white),
+                            ],
+                          ),
                           onTap: () {
                             audioHandler?.playSong(s);
                             _goToNowPlaying();

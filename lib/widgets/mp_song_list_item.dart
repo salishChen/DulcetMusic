@@ -73,6 +73,16 @@ class MpSongListItem extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // 已缓存的远程歌曲显示缓存标识
+          if (song.isRemote && song.isCached)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 4.0),
+              child: Icon(
+                Icons.offline_pin,
+                size: 16.0,
+                color: Color(0xFF18D2C7),
+              ),
+            ),
           // 加号：添加到当前播放列表
           IconButton(
             icon: const Icon(Icons.add, color: Color(0xFF333333)),

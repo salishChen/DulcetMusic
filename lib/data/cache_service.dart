@@ -105,7 +105,9 @@ class CacheService {
 
       // 检查是否已缓存
       if (File(cachePath).existsSync()) {
-        await DatabaseHelper.instance.updateSongCache(song.id!, cachePath);
+        if (song.id != null) {
+          await DatabaseHelper.instance.updateSongCache(song.id!, cachePath);
+        }
         return cachePath;
       }
 
@@ -114,7 +116,7 @@ class CacheService {
       await evictIfNeeded(songSize);
 
       // 下载歌曲
-      final streamUrl = SubsonicService.instance.getStreamUrl(song.remoteId!);
+      final streamUrl = await SubsonicService.instance.getStreamUrl(song.remoteId!);
       final response = await http.get(Uri.parse(streamUrl));
       if (response.statusCode != 200) return null;
 

@@ -276,12 +276,28 @@ class _Bar extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                song!.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w600),
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      song!.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  // 已缓存的远程歌曲显示缓存标识
+                  if (song!.isRemote && song!.isCached)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4.0),
+                      child: Icon(
+                        Icons.offline_pin,
+                        size: 15.0,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                ],
               ),
               Text(
                 song!.displayArtist,
