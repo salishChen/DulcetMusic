@@ -8,6 +8,7 @@ import 'package:flute_example/data/database_helper.dart';
 import 'package:flute_example/data/models/song.dart';
 import 'package:flute_example/data/playlist_data.dart';
 import 'package:flute_example/data/song_data.dart';
+import 'package:flute_example/data/subsonic_service.dart';
 import 'package:flute_example/utils/themes.dart';
 import 'package:flute_example/widgets/mp_inherited.dart';
 import 'package:flute_example/widgets/mp_nav_scaffold.dart';
@@ -96,6 +97,14 @@ class MyMaterialAppState extends State<MyMaterialApp>
     
     // 将 songData 设置到 audioHandler，以便更新歌曲列表中的歌曲对象
     audioHandler?.songData = songData;
+
+    // 启动时加载 Subsonic 配置，确保重启应用后无需先进入配置页
+    // 即可直接播放远程歌曲（否则 _config 为 null 会抛"Subsonic 未配置"）
+    try {
+      await SubsonicService.instance.loadConfig();
+    } catch (e) {
+      print('MyMaterialApp: 加载 Subsonic 配置失败: $e');
+    }
 
     // 恢复上次关闭前的播放列表（从 SharedPreferences 回查入库歌曲）
     try {
