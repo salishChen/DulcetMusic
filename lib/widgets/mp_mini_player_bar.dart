@@ -83,6 +83,10 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       // 注意：拖拽途中 value 被拖到 1.0 也会同步触发 completed，
       // _onDragUpdate 每次都会重新置回 opening，不影响后续松手处理。
       _mode = _BarDragMode.idle;
+      // 播放页已完全展开：重置 _routePushed，使隐藏条件
+      // `widget.hidden && !_routePushed` 成立，栏体从渲染树中移除，
+      // 播放页得以占满全屏。
+      _routePushed = false;
     } else if (s == AnimationStatus.dismissed) {
       // 收起补间完成：重置手势状态，允许下次重新 push 播放页。
       // pop 路由的职责已全部收归 NowPlaying 自身（其监听 dismissed 自行

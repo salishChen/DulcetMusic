@@ -5,6 +5,7 @@ import 'package:flute_example/data/cache_service.dart';
 import 'package:flute_example/data/metadata_service.dart';
 import 'package:flute_example/data/subsonic_service.dart';
 import 'package:flute_example/data/database_helper.dart';
+import 'package:flute_example/widgets/mp_artwork.dart';
 import 'package:flute_example/widgets/mp_inherited.dart';
 import 'package:flute_example/widgets/mp_nav_scaffold.dart';
 
@@ -186,8 +187,18 @@ class _ScanPageState extends State<ScanPage> {
 
       if (remoteSongs.isEmpty) return;
 
+      final songData = MPInheritedWidget.of(context).songData;
+      final playlistData = MPInheritedWidget.of(context).playlistData;
       for (final song in remoteSongs) {
-        await CacheService.instance.cacheArtwork(song);
+        final artworkPath = await CacheService.instance.cacheArtwork(song);
+        if (artworkPath != null && song.id != null) {
+          // 同步更新内存中的歌曲对象，使封面立即可见，无需重启
+          final updated = song.copyWith(cachedArtworkPath: artworkPath);
+          songData?.updateSong(updated);
+          playlistData?.updateSong(updated);
+          // 清除该歌曲以 path 为 key 可能残留的 null 封面缓存
+          ArtworkCache.invalidateByPathPrefix(song.path);
+        }
       }
     } catch (e) {
       print('ScanPage: 后台缓存封面失败: $e');

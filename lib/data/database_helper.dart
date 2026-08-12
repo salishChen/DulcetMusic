@@ -196,6 +196,13 @@ class DatabaseHelper {
     return rows.isEmpty ? null : Song.fromMap(rows.first);
   }
 
+  /// 按 path 查询单曲（用于播放列表持久化恢复）
+  Future<Song?> querySongByPath(String path) async {
+    final db = await database;
+    final rows = await db.query('songs', where: 'path = ?', whereArgs: [path]);
+    return rows.isEmpty ? null : Song.fromMap(rows.first);
+  }
+
   /// 事务批量插入/更新歌曲，返回实际新增/覆盖的数量。
   ///
   /// 去重规则（以 [source] 标识音乐来源）：

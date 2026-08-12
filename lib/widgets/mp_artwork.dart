@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import 'package:flute_example/data/cache_service.dart';
 import 'package:flute_example/data/database_helper.dart';
+import 'package:flute_example/widgets/mp_inherited.dart';
 
 /// 封面字节内存缓存：以歌曲文件路径为 key
 ///
@@ -175,6 +176,12 @@ class _MpArtworkState extends State<MpArtwork> {
         if (song == null) return;
         final artworkPath = await CacheService.instance.cacheArtwork(song);
         if (artworkPath != null && mounted) {
+          // 同步更新歌曲列表/播放列表中的对象，使 cachedArtworkPath 生效，
+          // 否则 MpArtwork 的 cachedArtworkPath 参数仍为 null，会再次走占位。
+          final updated = song.copyWith(cachedArtworkPath: artworkPath);
+          final iw = MPInheritedWidget.of(context);
+          iw.songData?.updateSong(updated);
+          iw.playlistData?.updateSong(updated);
           // 清除旧的 null 缓存，下次 build 会重新加载
           final oldKey = widget.cachedArtworkPath ?? widget.path!;
           ArtworkCache.invalidate(oldKey);

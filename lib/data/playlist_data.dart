@@ -1,6 +1,10 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'models/song.dart';
+import 'database_helper.dart';
 
 /// 播放模式枚举
 enum PlayMode {
@@ -39,9 +43,15 @@ extension PlayModeExtension on PlayMode {
 ///
 /// 以内存方式维护一个 [Song] 列表（当前播放列表），提供增删、模式切换等能力，
 /// 并通过 [ValueNotifier] 对外暴露响应式更新。
+///
+/// 同时支持将播放列表持久化到 [SharedPreferences]，退出软件重新进入后可恢复
+/// 上次关闭前的播放列表（歌曲记录以数据库 id / 路径为标识，启动时回查）。
 class PlaylistData {
   final List<Song> _playlist = [];
   PlayMode _playMode = PlayMode.sequential;
+
+  static const String _prefsKey = 'last_playlist_songs';
+  static const String _prefsModeKey = 'last_playlist_mode';
 
   /// 列表内容变更通知（增删时触发）
   final ValueNotifier<List<Song>> notifier = ValueNotifier<List<Song>>([]);
@@ -117,5 +127,69 @@ class PlaylistData {
   /// 内部通知：将不可变快照推送给监听者
   void _notify() {
     notifier.value = List.unmodifiable(_playlist);
+    _persist();
+  }
+
+  // ===================== 播放列表持久化 =====================
+
+  /// 将当前播放列表及播放模式异步写入 SharedPreferences
+  void _persist() {
+    try {
+      // 保存每首歌的标识：优先数据库 id，其次 path（可能未入库的线上歌曲）
+      final data = _playlist
+          .map((s) => {
+                'id': s.id,
+                'path': s.path,
+              })
+          .toList();
+      SharedPreferences.getInstance().then((prefs) async {
+        await prefs.setString(_prefsKey, jsonEncode(data));
+        await prefs.setInt(_prefsModeKey, _playMode.index);
+      }).catchError((_) {});
+    } catch (_) {
+      // 持久化失败不影响播放
+    }
+  }
+
+  /// 从 SharedPreferences 恢复上次关闭前的播放列表与播放模式
+  ///
+  /// 需要传入 [dbHelper] 用于把存储的标识回查为完整的 [Song] 对象。
+  /// 若某歌曲已从库中删除则跳过；返回实际恢复的歌曲数。
+  Future<int> restoreFromPrefs(DatabaseHelper dbHelper) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_prefsKey);
+      final savedMode = prefs.getInt(_prefsModeKey);
+      if (savedMode != null && savedMode >= 0 && savedMode < PlayMode.values.length) {
+        _playMode = PlayMode.values[savedMode];
+        modeNotifier.value = _playMode;
+      }
+      if (raw == null || raw.isEmpty) return 0;
+
+      final items = jsonDecode(raw) as List<dynamic>;
+      final restored = <Song>[];
+      for (final item in items) {
+        final map = (item as Map).cast<String, dynamic>();
+        final id = map['id'] as int?;
+        final path = map['path'] as String?;
+        Song? song;
+        if (id != null) {
+          song = await dbHelper.querySongById(id);
+        }
+        if (song == null && path != null) {
+          song = await dbHelper.querySongByPath(path);
+        }
+        if (song != null) restored.add(song);
+      }
+
+      _playlist
+        ..clear()
+        ..addAll(restored);
+      _notify();
+      return restored.length;
+    } catch (e) {
+      print('PlaylistData: 恢复播放列表失败: $e');
+      return 0;
+    }
   }
 }

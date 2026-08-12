@@ -97,6 +97,13 @@ class MyMaterialAppState extends State<MyMaterialApp>
     // 将 songData 设置到 audioHandler，以便更新歌曲列表中的歌曲对象
     audioHandler?.songData = songData;
 
+    // 恢复上次关闭前的播放列表（从 SharedPreferences 回查入库歌曲）
+    try {
+      await playlistData.restoreFromPrefs(dbHelper);
+    } catch (e) {
+      print('MyMaterialApp: 恢复播放列表失败: $e');
+    }
+
     // 后台继续缓存未完成的封面（启动时不阻塞 UI）
     _cachePendingArtwork();
   }
