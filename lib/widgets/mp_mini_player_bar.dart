@@ -29,12 +29,6 @@ class MiniPlayerBar extends StatefulWidget {
 enum _BarDragMode { idle, opening, closing }
 
 class _MiniPlayerBarState extends State<MiniPlayerBar> {
-  /// 播放条自身高度（与 _Bar 的 Container height 保持一致）
-  static const double _barHeight = 80.0;
-
-  /// 栏体淡出完成的进度阈值（前段即完成淡化，余量留给播放页滑出）
-  static const double _barFadeEnd = 0.15;
-
   _BarDragMode _mode = _BarDragMode.idle;
 
   /// 本次拖拽是否已 push 播放页路由（避免重复 push）
@@ -207,40 +201,24 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     final h = audioHandler;
     if (h == null) return const SizedBox.shrink();
 
-    return AnimatedBuilder(
-      animation: nowPlayingController,
-      builder: (context, child) {
-        final p = nowPlayingController.value;
-        // 栏体在前段（p:0~_barFadeEnd）淡出并高度同步收缩，让上层 Expanded
-        // 同步扩展、播放页占满屏幕，消除播放页下方原栏占位留下的黑色空白。
-        // 始终保留 child（GestureDetector）：跟手期间栏体虽淡出，但
-        // GestureDetector 不可脱离渲染树，否则进行中的拖拽手势会被取消。
-        final barT = (p / _barFadeEnd).clamp(0.0, 1.0);
-        return SizedBox(
-          height: _barHeight * (1.0 - barT),
-          child: ClipRect(
-            // OverflowBox 让栏体始终按完整 80px 布局（仅视觉上被裁掉），
-            // 避免收缩期间 Row/Column 被压扁导致 RenderFlex overflow。
-            child: OverflowBox(
-              minHeight: _barHeight,
-              maxHeight: _barHeight,
-              alignment: Alignment.topCenter,
-              child: Opacity(opacity: 1.0 - barT, child: child),
-            ),
-          ),
-        );
-      },
-      child: GestureDetector(
-        onTap: () => _openNowPlaying(),
-        onVerticalDragUpdate: _onDragUpdate,
-        onVerticalDragEnd: _onDragEnd,
-        onVerticalDragCancel: _onDragCancel,
-        child: _Bar(
-          h.currentSong.value,
-          h,
-          onOpenPlaylist: _openPlaylist,
-          onOpenNowPlaying: _openNowPlaying,
-        ),
+    // 播放页已完全打开且无进行中的手势：隐藏栏体
+    if (widget.hidden && !_routePushed) {
+      return const SizedBox.shrink();
+    }
+
+    // 栏体不再随播放页进度做收纳动画，始终保持原位直到被播放页遮盖；
+    // 手势进行中（_routePushed=true）必须保留 GestureDetector 在渲染树中，
+    // 否则系统会取消进行中的拖拽手势。
+    return GestureDetector(
+      onTap: () => _openNowPlaying(),
+      onVerticalDragUpdate: _onDragUpdate,
+      onVerticalDragEnd: _onDragEnd,
+      onVerticalDragCancel: _onDragCancel,
+      child: _Bar(
+        h.currentSong.value,
+        h,
+        onOpenPlaylist: _openPlaylist,
+        onOpenNowPlaying: _openNowPlaying,
       ),
     );
   }

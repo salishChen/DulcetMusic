@@ -26,15 +26,23 @@ Route<void> nowPlayingSlideRoute(Widget page) {
           builder: (context, c) {
             final screenH = MediaQuery.of(context).size.height;
             final p = nowPlayingController.value;
-            // 与底部播放栏高度收缩同步：栏占位随淡出收缩，可用高度同步扩展，
-            // 播放页偏移用「可用高度」计算，避免播放页下方留出原栏占位的黑色空白。
+            // 与底部播放栏动画同步：栏体上移 _barMoveUpDistance 并淡出收起，
+            // 播放页起始位置跟随栏体上移，确保页面与栏体同步向上滑动。
             const barH = 80.0; // 与 mp_mini_player_bar 的 _barHeight 一致
             const barFadeEnd = 0.15; // 与 _barFadeEnd 一致
+            const barMoveUpDistance = 60.0; // 与 _barMoveUpDistance 一致
             final barT = (p / barFadeEnd).clamp(0.0, 1.0);
-            final availH = screenH - barH * (1.0 - barT);
+            // 栏体上移后的视觉顶部位置
+            final barVisualTop = screenH - barH - barMoveUpDistance * barT;
+            // 播放页偏移：从栏体视觉顶部开始，随进度向上移动
+            final offset = barVisualTop * (1.0 - p);
+            // 透明度：移动80px后变为完全不透明
+            const opacityEndDistance = 80.0;
+            final distanceMoved = barVisualTop - offset;
+            final opacity = (distanceMoved / opacityEndDistance).clamp(0.0, 1.0);
             return Transform.translate(
-              offset: Offset(0.0, availH * (1.0 - p)),
-              child: Opacity(opacity: p, child: c),
+              offset: Offset(0.0, offset),
+              child: Opacity(opacity: opacity, child: c),
             );
           },
           child: child,
