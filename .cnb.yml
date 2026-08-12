@@ -1,0 +1,15 @@
+master:
+  push:
+    - docker:
+        # 可以在 hub.docker.com 上找需要的 android sdk 版本的 docker 镜像
+        # https://hub.docker.com/r/mobiledevops/android-sdk-image
+        # https://github.com/docker-android-sdk
+        # 当这些都不满足您的需求时，您可以制作自己的 docker 镜像安装您需要的 sdk 版本和工具
+        image: mobiledevops/android-sdk-image:34.0.1
+        volumes:
+          - /root/.gradle:cow
+      stages:
+        - name: android-build
+          script: ./gradlew build
+        - name: "ls"
+          script: ls ./app/build/outputs/apk/release
