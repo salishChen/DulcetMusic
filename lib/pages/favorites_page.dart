@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flute_example/data/database_helper.dart';
@@ -234,6 +232,8 @@ class _FavoritesPageState extends State<FavoritesPage>
                     child: MpArtwork(
                       album.coverSongPath ?? '',
                       cachedArtworkPath: album.coverArtworkPath,
+                      songId: album.coverSongId,
+                      coverArtId: album.coverArtId,
                       width: double.infinity,
                       height: double.infinity,
                       fit: BoxFit.cover,
@@ -285,26 +285,17 @@ class _FavoritesPageState extends State<FavoritesPage>
         itemBuilder: (context, index) {
           final artist = _likedArtists[index];
           return ListTile(
-            leading: CircleAvatar(
-              radius: 24,
-              backgroundColor: theme.colorScheme.primary.withOpacity(0.15),
-              child: artist.coverArtworkPath != null
-                  ? ClipOval(
-                      child: Image.file(
-                        File(artist.coverArtworkPath!),
-                        width: 48,
-                        height: 48,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Icon(
-                          Icons.person,
-                          color: theme.colorScheme.primary,
-                        ),
-                      ),
-                    )
-                  : Icon(
-                      Icons.person,
-                      color: theme.colorScheme.primary,
-                    ),
+            leading: ClipOval(
+              child: MpArtwork(
+                artist.coverSongPath,
+                cachedArtworkPath: artist.coverArtworkPath,
+                // 艺术家封面：无歌曲 id 时按 coverArtId 直接后台缓存封面文件
+                coverArtId: artist.coverArtId,
+                width: 48,
+                height: 48,
+                borderRadius: BorderRadius.circular(24),
+                placeholderIconSize: 24,
+              ),
             ),
             title: Text(
               artist.name,

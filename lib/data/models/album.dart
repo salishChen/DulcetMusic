@@ -15,6 +15,9 @@ class Album {
   /// 缓存的封面路径
   final String? coverArtworkPath;
 
+  /// 远程歌曲的 coverArtId（用于按需从 Subsonic 缓存封面）
+  final String? coverArtId;
+
   /// 专辑内歌曲数
   final int songCount;
 
@@ -24,6 +27,7 @@ class Album {
     this.coverSongId,
     this.coverSongPath,
     this.coverArtworkPath,
+    this.coverArtId,
     this.songCount = 0,
   });
 
@@ -33,6 +37,7 @@ class Album {
         coverSongId: m['coverSongId'] as int?,
         coverSongPath: m['coverSongPath'] as String?,
         coverArtworkPath: m['coverArtworkPath'] as String?,
+        coverArtId: m['coverArtId'] as String?,
         songCount: (m['songCount'] as int?) ?? 0,
       );
 

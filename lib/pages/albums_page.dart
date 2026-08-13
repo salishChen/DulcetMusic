@@ -117,6 +117,8 @@ class _AlbumCard extends StatelessWidget {
                     child: MpArtwork(
                       album.coverSongPath,
                       cachedArtworkPath: album.coverArtworkPath,
+                      songId: album.coverSongId,
+                      coverArtId: album.coverArtId,
                       fit: BoxFit.cover,
                     ),
                   ),
@@ -204,6 +206,8 @@ class AlbumHorizontalCard extends StatelessWidget {
               width: 120.0,
               height: 120.0,
               borderRadius: BorderRadius.circular(12.0),
+              songId: album.coverSongId,
+              coverArtId: album.coverArtId,
             ),
             const SizedBox(height: 6.0),
             Text(album.title,
