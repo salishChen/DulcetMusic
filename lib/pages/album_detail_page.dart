@@ -35,8 +35,9 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    final coverPath = _songs.isEmpty ? null : _songs.first.path;
-    final artist = _songs.isEmpty ? '' : _songs.first.displayArtist;
+    final coverSong = _songs.isEmpty ? null : _songs.first;
+    final coverPath = coverSong?.path;
+    final artist = coverSong?.displayArtist ?? '';
 
     return Scaffold(
       appBar: AppBar(title: Text(widget.albumTitle), centerTitle: true),
@@ -54,6 +55,8 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
                         width: 110.0,
                         height: 110.0,
                         borderRadius: BorderRadius.circular(16.0),
+                        songId: coverSong?.id,
+                        coverArtId: coverSong?.coverArtId,
                       ),
                       const SizedBox(width: 16.0),
                       Expanded(

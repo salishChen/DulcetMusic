@@ -105,6 +105,20 @@ class _CloseDragRecognizer extends VerticalDragGestureRecognizer {
   /// 在未达到阈值时就提前抢占方向，误触下滑关闭或翻页。
   static const double _lockThreshold = 40.0;
 
+  /// 覆写命中阈值：让基类在未达到 40px 前不主动在竞技场中胜出。
+  ///
+  /// 若不覆写，基类 `VerticalDragGestureRecognizer` 会在默认 touch slop
+  /// （约 18px）时就 resolve 胜出，导致：
+  /// 1) 播放列表（第 1 页）内下滑在 18px 即被本识别器接管，从而串入播放页
+  ///    的收起逻辑（F1 问题）；
+  /// 2) 播放页（第 0 页）任意区域上滑被本识别器吞掉，使 PageView 无法翻到
+  ///    播放列表（F3 问题）。
+  /// 统一锁定到 40px 后，竖向手势需累积超过 40px 才锁定方向（F2 验收）。
+  @override
+  double computeHitSlop(PointerEvent event, Matrix4? transform) {
+    return _lockThreshold;
+  }
+
   @override
   void addPointer(PointerDownEvent event) {
     _decided = false;
@@ -171,7 +185,6 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
   bool _dragClosing = false;
   bool _isClosing = false;
   bool _popped = false;
-  bool _playlistDraggingToNow = false;
 
   /// 歌词面板展开进度控制器（0 关闭 -> 1 全开）
   late final AnimationController _lyricsController;
@@ -610,6 +623,9 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
               canClose: () => (_pageController.page ?? 0) <= 0.01,
               onMove: (dy) {
                 if (_popped) return;
+                // 防御性兜底：仅「正在播放」页（第 0 页）参与收起跟手，
+                // 播放列表（第 1 页）的竖向滑动一律交给 PageView/列表自身。
+                if ((_pageController.page ?? 0) > 0.01) return;
                 _dragClosing = true;
                 // 中断未完成的关闭补间（value 赋值本身会 stop() 动画）
                 _isClosing = false;
@@ -874,7 +890,7 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
   ///
   /// 透明深色蒙版叠加在共享背景之上，使播放列表与正在播放页共用同一模糊背景；
   /// 顶部含「正在播放」当前歌曲卡片并预留状态栏空白；列表滚动到顶部后继续
-  /// 下滑则整体翻回正在播放页。
+  /// 下滑时由竖向 PageView 天然接管并平滑翻回正在播放页。
   Widget _buildPlaylistPage() {
     final current = _song;
     return Container(
@@ -926,20 +942,10 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                         style: TextStyle(color: Colors.white70, fontSize: 16.0)),
                   );
                 }
-                return NotificationListener<ScrollNotification>(
-                  onNotification: (n) {
-                    // 列表已滚到顶部且继续向下划 → 整体翻回正在播放页
-                    if (n is OverscrollNotification &&
-                        n.overscroll < 0 &&
-                        (_pageController.page ?? 0) >= 0.99 &&
-                        !_playlistDraggingToNow) {
-                      _playlistDraggingToNow = true;
-                      _goToNowPlaying()
-                          .then((_) => _playlistDraggingToNow = false);
-                    }
-                    return false;
-                  },
-                  child: ListView.builder(
+                // 列表已滚到顶部后继续下滑时，竖向 PageView 会天然接管并
+                // 平滑地翻回正在播放页（第 0 页），无需再靠 OverscrollNotification
+                // 手动触发 animateToPage，避免与 PageView 的跟手滑动冲突、重复触发。
+                return ListView.builder(
                     itemCount: playlist.length,
                     itemBuilder: (context, index) {
                       final s = playlist[index];
@@ -1011,7 +1017,6 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                       );
                     },
                   ),
-                );
               },
             ),
           ),

@@ -140,9 +140,11 @@ class _MpArtworkState extends State<MpArtwork> {
   void didUpdateWidget(MpArtwork oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.path != widget.path ||
-        oldWidget.cachedArtworkPath != widget.cachedArtworkPath) {
-      // path 变化时重置后台缓存状态
+        oldWidget.cachedArtworkPath != widget.cachedArtworkPath ||
+        oldWidget.coverArtId != widget.coverArtId) {
+      // path / 封面标识变化时重置后台缓存状态
       _artworkOverride = null;
+      _backgroundCached = false;
       _initLoad();
     }
   }
@@ -151,6 +153,11 @@ class _MpArtworkState extends State<MpArtwork> {
     final path = widget.path;
     if (path == null || path.isEmpty) {
       _cacheFuture = null;
+      // 无本地封面路径但有 coverArtId（如云端专辑/艺术家封面）时，
+      // 仍按 coverArtId 触发后台缓存封面文件，缓存完成后刷新展示。
+      if (widget.coverArtId != null && !_backgroundCached) {
+        _tryBackgroundCache();
+      }
       return;
     }
     final effectiveArtworkPath = widget.cachedArtworkPath ?? _artworkOverride;
@@ -245,9 +252,38 @@ class _MpArtworkState extends State<MpArtwork> {
   @override
   Widget build(BuildContext context) {
     final path = widget.path;
-    if (path == null || path.isEmpty) return _placeholder();
-
     final effectiveArtworkPath = widget.cachedArtworkPath ?? _artworkOverride;
+
+    // 无本地封面路径：
+    // - 若已有缓存封面路径（_artworkOverride / cachedArtworkPath），直接读取缓存文件展示；
+    // - 若有 coverArtId（云端专辑/艺术家封面），后台缓存完成后刷新展示。
+    if (path == null || path.isEmpty) {
+      if (effectiveArtworkPath != null && effectiveArtworkPath.isNotEmpty) {
+        final cacheKey = effectiveArtworkPath;
+        if (ArtworkCache.has(cacheKey)) {
+          final bytes = ArtworkCache.peek(cacheKey);
+          if (bytes != null) return _image(bytes);
+        }
+        return FutureBuilder<Uint8List?>(
+          future:
+              ArtworkCache.load('', cachedArtworkPath: effectiveArtworkPath),
+          builder: (context, snapshot) {
+            final bytes = snapshot.data;
+            if (bytes != null) return _image(bytes);
+            if (widget.coverArtId != null && !_backgroundCached) {
+              _tryBackgroundCache();
+            }
+            return _placeholder();
+          },
+        );
+      }
+      // 无缓存封面路径但存在 coverArtId → 触发后台缓存（完成后 setState 刷新）
+      if (widget.coverArtId != null && !_backgroundCached) {
+        _tryBackgroundCache();
+      }
+      return _placeholder();
+    }
+
     final cacheKey = effectiveArtworkPath ?? path;
 
     // 命中内存缓存：直接同步渲染，避免闪烁

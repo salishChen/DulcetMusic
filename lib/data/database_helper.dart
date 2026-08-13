@@ -308,6 +308,7 @@ class DatabaseHelper {
              MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
              MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
              MAX(cachedArtworkPath) AS coverArtworkPath,
+             MAX(coverArtId) AS coverArtId,
              COUNT(*) AS songCount
       FROM songs
       WHERE album IS NOT NULL AND album != ''
@@ -369,6 +370,7 @@ class DatabaseHelper {
              MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
              MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
              MAX(cachedArtworkPath) AS coverArtworkPath,
+             MAX(coverArtId) AS coverArtId,
              COUNT(*) AS songCount
       FROM songs
       WHERE artist = ? AND album IS NOT NULL AND album != ''
@@ -632,6 +634,7 @@ class DatabaseHelper {
              MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
              MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
              MAX(cachedArtworkPath) AS coverArtworkPath,
+             MAX(coverArtId) AS coverArtId,
              COUNT(*) AS songCount
       FROM songs
       WHERE album IS NOT NULL AND album != '' AND isLiked = 1
@@ -649,7 +652,8 @@ class DatabaseHelper {
              COUNT(*) AS songCount,
              COUNT(DISTINCT album) AS albumCount,
              MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
-             MAX(cachedArtworkPath) AS coverArtworkPath
+             MAX(cachedArtworkPath) AS coverArtworkPath,
+             MAX(coverArtId) AS coverArtId
       FROM songs
       WHERE artist IS NOT NULL AND artist != '' AND isLiked = 1
       GROUP BY artist

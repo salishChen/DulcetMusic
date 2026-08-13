@@ -15,4 +15,4 @@ RUN npx skills add https://cnb.cool/cnb/skills/cnb-skill.git -g -y
 
 # 配置自定义大模型环境变量（模型地址与模型名）
 ENV OPENAI_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1/chat/completions
-ENV OPENAI_MODEL=mimo-v2.5-pro
+ENV OPENAI_MODEL=deepseek-v4-flash

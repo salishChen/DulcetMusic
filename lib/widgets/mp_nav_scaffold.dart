@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flute_example/pages/songs_page.dart';
 import 'package:flute_example/pages/albums_page.dart';
@@ -10,6 +11,33 @@ import 'package:flute_example/pages/stats_page.dart';
 import 'package:flute_example/pages/settings_page.dart';
 import 'package:flute_example/data/audio_handler.dart';
 import 'mp_sidebar.dart';
+
+/// 侧边栏水平拖拽识别器：根据侧边栏开关状态动态调整命中阈值。
+///
+/// - 侧边栏打开时用较小阈值（8px）急切接管，确保「左滑关侧边栏」优先于
+///   子级（如喜欢页 TabBarView）的横向翻页，避免左滑关侧边栏时串到下一个 Tab；
+/// - 侧边栏关闭时用较大阈值（60px）延迟接管，把横向滑动让给子级
+///   TabBarView 正常翻页，同时右滑到 60px 后仍可接管开启侧边栏。
+class _SidebarDragRecognizer extends HorizontalDragGestureRecognizer {
+  _SidebarDragRecognizer({
+    required this.isSidebarOpen,
+    required void Function(double dx) onUpdate,
+    required void Function(double velocity) onEnd,
+    Object? debugOwner,
+  }) : super(debugOwner: debugOwner) {
+    onStart = (_) {};
+    onUpdate = (d) => onUpdate(d.delta.dx);
+    onEnd = (d) => onEnd(d.velocity.pixelsPerSecond.dx);
+    onCancel = () => onEnd(0.0);
+  }
+
+  final bool Function() isSidebarOpen;
+
+  @override
+  double computeHitSlop(PointerEvent event, Matrix4? transform) {
+    return isSidebarOpen() ? 8.0 : 60.0;
+  }
+}
 
 /// 一级页面导航壳：拼接式侧边栏
 ///
@@ -129,31 +157,40 @@ class MPNavScaffoldState extends State<MPNavScaffold>
                     onSelect: selectPage,
                   ),
                 ),
-                // 右侧主页：GestureDetector 的 HorizontalDragGestureRecognizer
-                // 自动与子组件 ListView 的纵向滚动在手势竞技场中竞争。
-                // 横向优先时赢下竞技场（驱动侧边栏、阻止纵向滚动），
-                // 纵向优先时主动退出（允许页面 ListView 正常滚动）。
+                // 右侧主页：RawGestureDetector 使用自定义 _SidebarDragRecognizer
+                // 自动与子组件（如喜欢页 TabBarView）的横向滑动在手势竞技场中竞争。
+                // - 侧边栏打开：较小阈值急切接管，左滑优先关侧边栏而非翻 Tab；
+                // - 侧边栏关闭：较大阈值延迟接管，把横向滑动让给 TabBarView 正常翻页。
                 Positioned(
                   left: dx + sidebarWidth,
                   top: 0,
                   bottom: 0,
                   width: screenWidth,
-                  child: GestureDetector(
+                  child: RawGestureDetector(
                     behavior: HitTestBehavior.translucent,
-                    onHorizontalDragUpdate: (details) {
-                      _controller.value += details.delta.dx / sidebarWidth;
-                    },
-                    onHorizontalDragEnd: (details) {
-                      final vx = details.velocity.pixelsPerSecond.dx;
-                      if (vx > 500) {
-                        openSidebar();
-                      } else if (vx < -500) {
-                        closeSidebar();
-                      } else {
-                        _controller.value > 0.4
-                            ? openSidebar()
-                            : closeSidebar();
-                      }
+                    gestures: <Type, GestureRecognizerFactory>{
+                      _SidebarDragRecognizer: GestureRecognizerFactoryWithHandlers<
+                          _SidebarDragRecognizer>(
+                        () => _SidebarDragRecognizer(
+                          debugOwner: this,
+                          isSidebarOpen: () => isOpen,
+                          onUpdate: (dx) {
+                            _controller.value += dx / sidebarWidth;
+                          },
+                          onEnd: (vx) {
+                            if (vx > 500) {
+                              openSidebar();
+                            } else if (vx < -500) {
+                              closeSidebar();
+                            } else {
+                              _controller.value > 0.4
+                                  ? openSidebar()
+                                  : closeSidebar();
+                            }
+                          },
+                        ),
+                        (instance) {},
+                      ),
                     },
                     child: child,
                   ),
