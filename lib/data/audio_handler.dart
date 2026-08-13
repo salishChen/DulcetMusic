@@ -189,6 +189,8 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
   void _mergeCurrentSong(Song updated,
       {bool mergeArtwork = false, bool mergeLyrics = false}) {
     final cur = currentSong.value;
+    // 若当前无播放歌曲或 path 不匹配（可能是正在播放另一首歌），
+    // 仍更新播放列表和歌曲列表中的对象，使缓存状态能反映到列表 UI。
     if (cur == null || cur.path != updated.path) {
       playlistData.updateSong(updated);
       songData?.updateSong(updated);
@@ -201,6 +203,8 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
           mergeArtwork ? (updated.cachedArtworkPath ?? cur.cachedArtworkPath) : null,
       lyrics: mergeLyrics ? (updated.lyrics ?? cur.lyrics) : null,
     );
+    // 必须始终更新 currentSong.value（即使字段未变化也赋值新对象），
+    // 确保 ValueNotifier 触发所有监听者（NowPlaying/MiniPlayerBar 等）。
     currentSong.value = merged;
     // 清除 ArtworkCache 中旧 key，让 UI 重新加载新封面
     if (mergeArtwork && updated.cachedArtworkPath != null &&
@@ -241,6 +245,10 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
         final cur = currentSong.value;
         final base = (cur != null && cur.path == song.path) ? cur : song;
         final updatedSong = base.copyWith(lyrics: lyrics);
+        // 直接更新 currentSong，确保无论条件如何都触发监听者刷新
+        if (cur != null && cur.path == song.path) {
+          currentSong.value = updatedSong;
+        }
         _mergeCurrentSong(updatedSong, mergeArtwork: false, mergeLyrics: true);
       } else {
         print('MpAudioHandler: 歌词获取失败或为空');

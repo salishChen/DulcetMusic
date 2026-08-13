@@ -77,6 +77,8 @@ class _ArtistsPageState extends State<ArtistsPage> {
                         child: MpArtwork(
                           artist.coverSongPath,
                           cachedArtworkPath: artist.coverArtworkPath,
+                          songId: null, // 艺术家封面需要按 name 查封面歌曲 id
+                          coverArtId: artist.coverArtId,
                           width: 48.0,
                           height: 48.0,
                           borderRadius: BorderRadius.circular(24.0),

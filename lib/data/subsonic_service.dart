@@ -176,7 +176,9 @@ class SubsonicService {
 
           for (final album in albums) {
             final albumId = album['id'].toString();
-            final albumName = album['title'] as String? ?? '未知专辑';
+            // Subsonic getArtist 返回的 album 对象使用 name 字段（而非 title）
+            final albumName =
+                (album['name'] ?? album['title']) as String? ?? '未知专辑';
             final albumCoverArt = album['coverArt'] as String?;
 
             // 3. 获取专辑内的歌曲

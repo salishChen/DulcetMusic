@@ -10,12 +10,16 @@ class Artist {
   /// 缓存的封面路径
   final String? coverArtworkPath;
 
+  /// 远程歌曲的 coverArtId（用于按需从 Subsonic 缓存封面）
+  final String? coverArtId;
+
   const Artist({
     required this.name,
     this.songCount = 0,
     this.albumCount = 0,
     this.coverSongPath,
     this.coverArtworkPath,
+    this.coverArtId,
   });
 
   factory Artist.fromMap(Map<String, dynamic> m) => Artist(
@@ -24,5 +28,6 @@ class Artist {
         albumCount: (m['albumCount'] as int?) ?? 0,
         coverSongPath: m['coverSongPath'] as String?,
         coverArtworkPath: m['coverArtworkPath'] as String?,
+        coverArtId: m['coverArtId'] as String?,
       );
 }

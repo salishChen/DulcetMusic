@@ -26,20 +26,16 @@ Route<void> nowPlayingSlideRoute(Widget page) {
           builder: (context, c) {
             final screenH = MediaQuery.of(context).size.height;
             final p = nowPlayingController.value;
-            // 与底部播放栏动画同步：栏体上移 _barMoveUpDistance 并淡出收起，
+            // 与底部播放栏动画同步：栏体上移 80px 并渐隐收起，
             // 播放页起始位置跟随栏体上移，确保页面与栏体同步向上滑动。
             const barH = 80.0; // 与 mp_mini_player_bar 的 _barHeight 一致
-            const barFadeEnd = 0.15; // 与 _barFadeEnd 一致
-            const barMoveUpDistance = 60.0; // 与 _barMoveUpDistance 一致
-            final barT = (p / barFadeEnd).clamp(0.0, 1.0);
+            const barMoveUpDistance = 80.0; // 与 mp_mini_player_bar 一致
             // 栏体上移后的视觉顶部位置
-            final barVisualTop = screenH - barH - barMoveUpDistance * barT;
+            final barVisualTop = screenH - barH - barMoveUpDistance * p;
             // 播放页偏移：从栏体视觉顶部开始，随进度向上移动
             final offset = barVisualTop * (1.0 - p);
-            // 透明度：移动80px后变为完全不透明
-            const opacityEndDistance = 80.0;
-            final distanceMoved = barVisualTop - offset;
-            final opacity = (distanceMoved / opacityEndDistance).clamp(0.0, 1.0);
+            // 透明度：进度从 0 到 1，播放页逐渐完全不透明
+            final opacity = p.clamp(0.0, 1.0);
             return Transform.translate(
               offset: Offset(0.0, offset),
               child: Opacity(opacity: opacity, child: c),
@@ -277,8 +273,12 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
     if (!mounted) return;
     final s = audioHandler?.currentSong.value;
     if (s != null && !_empty) {
-      // 歌曲切换、歌词异步更新、封面缓存完成时刷新
-      if (s.path != _song.path || s.lyrics != _song.lyrics || s.cachedArtworkPath != _song.cachedArtworkPath) {
+      // 歌词内容不同（无论是否 path 相同）时始终刷新歌词，
+      // 修复歌词异步下载完成后播放页不显示的问题。
+      final lyricChanged = s.lyrics != _song.lyrics;
+      final artworkChanged = s.cachedArtworkPath != _song.cachedArtworkPath;
+      final songChanged = s.path != _song.path;
+      if (songChanged || lyricChanged || artworkChanged) {
         setState(() {
           _song = s;
           _parseLyrics(s);

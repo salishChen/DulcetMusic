@@ -339,7 +339,8 @@ class DatabaseHelper {
              COUNT(*) AS songCount,
              COUNT(DISTINCT album) AS albumCount,
              MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
-             MAX(cachedArtworkPath) AS coverArtworkPath
+             MAX(cachedArtworkPath) AS coverArtworkPath,
+             MAX(coverArtId) AS coverArtId
       FROM songs
       WHERE artist IS NOT NULL AND artist != ''
       GROUP BY artist

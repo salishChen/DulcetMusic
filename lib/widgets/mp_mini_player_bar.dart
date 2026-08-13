@@ -219,10 +219,8 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       return const SizedBox.shrink();
     }
 
-    // 栏体不再随播放页进度做收纳动画，始终保持原位直到被播放页遮盖；
-    // 手势进行中（_routePushed=true）必须保留 GestureDetector 在渲染树中，
-    // 否则系统会取消进行中的拖拽手势。
-    return GestureDetector(
+    // 栏体本体：手势检测 + 内容展示
+    final bar = GestureDetector(
       onTap: () => _openNowPlaying(),
       onVerticalDragUpdate: _onDragUpdate,
       onVerticalDragEnd: _onDragEnd,
@@ -233,6 +231,41 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
         onOpenPlaylist: _openPlaylist,
         onOpenNowPlaying: _openNowPlaying,
       ),
+    );
+
+    // 播放页未打开且无手势时，直接返回栏体（不做动画变换），
+    // 避免路由转场期间 AnimatedBuilder 引发不必要的重建/渲染瑕疵。
+    if (nowPlayingController.value <= 0.001 && !_routePushed) {
+      return bar;
+    }
+
+    // 栏体跟随播放页进度（nowPlayingController）上移并渐隐：
+    // - 上划跟手时，栏体随手指同步上移，最多上移 80px
+    // - 透明度随进度递减，上移满 80px 时完全透明（消失）
+    // 手势进行中（_routePushed=true）必须保留 GestureDetector 在渲染树中，
+    // 否则系统会取消进行中的拖拽手势。
+    return AnimatedBuilder(
+      animation: nowPlayingController,
+      builder: (context, child) {
+        final p = nowPlayingController.value;
+        // 上移距离：进度 0~1 线性映射到 0~80px
+        const barMoveUpDistance = 80.0;
+        final moveUp = barMoveUpDistance * p;
+        // 透明度：进度 0~1 线性映射到 1~0（完全透明）
+        final opacity = (1.0 - p).clamp(0.0, 1.0);
+
+        // 进度为 0 时不做任何变换（减少不必要的重建与渲染瑕疵）
+        if (p <= 0.001) return child!;
+
+        return Opacity(
+          opacity: opacity,
+          child: Transform.translate(
+            offset: Offset(0.0, -moveUp),
+            child: child,
+          ),
+        );
+      },
+      child: bar,
     );
   }
 }
