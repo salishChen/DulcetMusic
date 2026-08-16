@@ -26,9 +26,9 @@ class _SidebarDragRecognizer extends HorizontalDragGestureRecognizer {
     Object? debugOwner,
   }) : super(debugOwner: debugOwner) {
     onStart = (_) {};
-    onUpdate = (d) => onUpdate(d.delta.dx);
-    onEnd = (d) => onEnd(d.velocity.pixelsPerSecond.dx);
-    onCancel = () => onEnd(0.0);
+    this.onUpdate = (d) => onUpdate(d.delta.dx);
+    this.onEnd = (d) => onEnd(d.velocity.pixelsPerSecond.dx);
+    this.onCancel = () => onEnd(0.0);
   }
 
   final bool Function() isSidebarOpen;

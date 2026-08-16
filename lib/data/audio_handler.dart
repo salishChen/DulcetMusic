@@ -245,8 +245,11 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
         final cur = currentSong.value;
         final base = (cur != null && cur.path == song.path) ? cur : song;
         final updatedSong = base.copyWith(lyrics: lyrics);
-        // 直接更新 currentSong，确保无论条件如何都触发监听者刷新
         if (cur != null && cur.path == song.path) {
+          // 先置 null 再赋新值：Song.== 仅比较 path，直接赋同 path 的新对象
+          // 不会被 ValueNotifier 视为"值变化"，监听者不会触发。
+          // 置 null 使比较变为 null → 非 null，强制触发一次通知。
+          currentSong.value = null;
           currentSong.value = updatedSong;
         }
         _mergeCurrentSong(updatedSong, mergeArtwork: false, mergeLyrics: true);

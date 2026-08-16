@@ -101,19 +101,21 @@ class _CloseDragRecognizer extends VerticalDragGestureRecognizer {
   double _accumulatedDy = 0.0;
 
   /// 方向锁定阈值：只有竖向位移累积超过该值才锁定为竖向手势。
-  /// 与全局 40px touch slop 保持一致，避免斜向/微小幅度的滑动
-  /// 在未达到阈值时就提前抢占方向，误触下滑关闭或翻页。
-  static const double _lockThreshold = 40.0;
+  /// 略低于默认 40px touch slop，让方向判定稍早于标准阈值完成，
+  /// 减少与子级横向手势（如播放列表 Dismissible 左滑删除）的竞争窗口；
+  /// 同时足够大，不会因微小抖动误触下滑关闭或翻页。
+  static const double _lockThreshold = 28.0;
 
-  /// 覆写命中阈值：让基类在未达到 40px 前不主动在竞技场中胜出。
+  /// 覆写命中阈值：让基类在未达到 28px 前不主动在竞技场中胜出。
   ///
   /// 若不覆写，基类 `VerticalDragGestureRecognizer` 会在默认 touch slop
   /// （约 18px）时就 resolve 胜出，导致：
   /// 1) 播放列表（第 1 页）内下滑在 18px 即被本识别器接管，从而串入播放页
-  ///    的收起逻辑（F1 问题）；
+  ///    的收起逻辑；
   /// 2) 播放页（第 0 页）任意区域上滑被本识别器吞掉，使 PageView 无法翻到
-  ///    播放列表（F3 问题）。
-  /// 统一锁定到 40px 后，竖向手势需累积超过 40px 才锁定方向（F2 验收）。
+  ///    播放列表。
+  /// 锁定到 28px 后，竖向手势需累积超过 28px 才锁定方向，同时比默认 40px
+  /// 更早完成方向裁决，减少与横向手势的竞争窗口。
   @override
   double computeHitSlop(PointerEvent event, Matrix4? transform) {
     return _lockThreshold;
@@ -128,11 +130,12 @@ class _CloseDragRecognizer extends VerticalDragGestureRecognizer {
 
   @override
   void handleEvent(PointerEvent event) {
-    // 只有累积竖向位移超过 40px 阈值才裁决方向：
+    // 只有累积竖向位移超过 28px 阈值才裁决方向：
     // - 下划且允许关闭 → 宣布胜出（先于 PageView 越过 touch slop），
     //   接管后基类会双向派发 onUpdate（上划取消也跟手）；
     // - 否则（上划翻播放列表 / 不在 page0）→ 主动退出竞技场，交还 PageView。
-    // 未达到阈值前不 resolve，让横向手势（如歌词切换）有机会在竞技场中竞争。
+    // 未达到阈值前不 resolve，让横向手势（如歌词切换、播放列表滑动删除）
+    // 有机会在竞技场中竞争。
     if (!_decided && event is PointerMoveEvent && event.delta.dy != 0.0) {
       _accumulatedDy += event.delta.dy;
       if (_accumulatedDy.abs() < _lockThreshold) {
@@ -942,10 +945,21 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                         style: TextStyle(color: Colors.white70, fontSize: 16.0)),
                   );
                 }
-                // 列表已滚到顶部后继续下滑时，竖向 PageView 会天然接管并
-                // 平滑地翻回正在播放页（第 0 页），无需再靠 OverscrollNotification
-                // 手动触发 animateToPage，避免与 PageView 的跟手滑动冲突、重复触发。
-                return ListView.builder(
+                // 列表已滚到顶部后继续下滑时，通过 OverscrollNotification
+                // 检测越界并驱动竖向 PageView 翻回正在播放页（第 0 页）。
+                // 使用默认 ClampingScrollPhysics 保持原生手感，
+                // NotificationListener 拦截越界通知后不再冒泡。
+                return NotificationListener<OverscrollNotification>(
+                  onNotification: (notification) {
+                    // 顶部越界（overscroll < 0）→ 下滑返回正在播放页
+                    // 仅在累积越界超过阈值时触发，避免微小抖动误触
+                    if (notification.overscroll < -30 &&
+                        !_dragClosing) {
+                      _goToNowPlaying();
+                    }
+                    return true;
+                  },
+                  child: ListView.builder(
                     itemCount: playlist.length,
                     itemBuilder: (context, index) {
                       final s = playlist[index];
@@ -1017,6 +1031,7 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                       );
                     },
                   ),
+                );
               },
             ),
           ),
