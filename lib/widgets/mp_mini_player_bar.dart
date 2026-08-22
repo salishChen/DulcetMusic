@@ -29,7 +29,8 @@ class MiniPlayerBar extends StatefulWidget {
 /// - [closing]：回弹收回补间中（等待 dismissed 后 pop 路由）
 enum _BarDragMode { idle, opening, closing }
 
-class _MiniPlayerBarState extends State<MiniPlayerBar> {
+class _MiniPlayerBarState extends State<MiniPlayerBar>
+    with TickerProviderStateMixin {
   _BarDragMode _mode = _BarDragMode.idle;
 
   /// 本次拖拽是否已 push 播放页路由（避免重复 push）
@@ -37,6 +38,15 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
 
   /// 缓存屏幕高度，用于把拖拽增量映射为 0~1 进度
   double _screenHeight = 0.0;
+
+  /// 栏内内容水平偏移（左划为负、右划为正），用于跟手视觉效果
+  double _barOffset = 0.0;
+
+  /// 本次拖拽方向：null 未锁定、true 水平、false 竖直
+  bool? _dragDirection;
+
+  /// 栏内内容弹回动画控制器（新手势开始时取消）
+  AnimationController? _barSnapController;
 
   /// 有效拖拽行程：用屏幕高度的 80% 作为从 0 到 1 的全行程，
   /// 让播放页以约 1.25 倍手指速度跟手上移，接近 1:1 跟手。
@@ -60,6 +70,8 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       // 同时兜底把进度归零，防止残留进度（如直接 pop 时的 0.002）。
       _mode = _BarDragMode.idle;
       _routePushed = false;
+      _barOffset = 0.0;
+      _dragDirection = null;
       if (nowPlayingController.value != 0.0) {
         nowPlayingController.value = 0.0;
       }
@@ -68,6 +80,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
 
   @override
   void dispose() {
+    _barSnapController?.dispose();
     nowPlayingController.removeStatusListener(_onProgressStatus);
     final h = audioHandler;
     h?.currentSong.removeListener(_onChanged);
@@ -140,12 +153,33 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
   }
 
   /// 统一拖拽跟手：单个 PanGestureRecognizer 同时处理上划开页与左右滑切歌，
-  /// 避免 Vertical + Horizontal 两个识别器在手势竞技场中竞争导致上划卡住。
+  /// 避免 Vertical + Horizontal 两个识别器在竞技场中竞争导致上划卡住。
   void _onPanUpdate(DragUpdateDetails d) {
     if (!_hasSong) return;
+
+    // 方向锁定：首个有意义的增量决定本次手势方向
+    if (_dragDirection == null) {
+      if (d.delta.dx.abs() < 8 && d.delta.dy.abs() < 8) return;
+      _dragDirection = d.delta.dx.abs() >= d.delta.dy.abs();
+      // 新手势开始，取消未完成的弹回动画
+      if (_dragDirection! && _barSnapController != null) {
+        _barSnapController!.stop();
+        _barSnapController!.dispose();
+        _barSnapController = null;
+      }
+    }
+
+    if (_dragDirection!) {
+      // ── 水平：栏内内容跟手平移 ──
+      _barOffset += d.delta.dx;
+      _barOffset = _barOffset.clamp(-150.0, 150.0);
+      setState(() {});
+      return;
+    }
+
+    // ── 竖直：上划开页 ──
     if (!_routePushed) {
       if (widget.hidden) return;
-      // 仅向上划才触发打开；向下划或横划忽略
       if (d.delta.dy >= 0) return;
       _routePushed = true;
       _screenHeight = MediaQuery.of(context).size.height;
@@ -159,11 +193,25 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
             .clamp(0.002, 1.0);
   }
 
-  /// 松手：根据已 push 路由与否分流——未 push 说明是纯横划（切歌），
-  /// 已 push 说明是上划开页，按速度与进度收尾。
+  /// 杌手：水平方向按偏移/速度触发切歌并弹回；竖直方向按速度与进度收尾。
   void _onPanEnd(DragEndDetails d) {
+    if (_dragDirection == true) {
+      // ── 水平滑动：判断是否触发切歌 ──
+      final vx = d.velocity.pixelsPerSecond.dx;
+      if (_barOffset < -60 || vx < -600) {
+        audioHandler?.skipToNext();
+      } else if (_barOffset > 60 || vx > 600) {
+        audioHandler?.skipToPrevious();
+      }
+      // 弹回动画
+      _animateBarBack();
+      return;
+    }
+
+    _dragDirection = null;
+
     if (!_routePushed) {
-      // 未 push 路由 → 本次为横划手势，判断左右滑切歌
+      // 未 push 路由 → 纯横划（旧逻辑兜底）
       if (!_hasSong) return;
       final vx = d.velocity.pixelsPerSecond.dx;
       if (vx < -300) {
@@ -193,6 +241,35 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     }
   }
 
+  /// 栏内内容水平偏移弹回动画
+  void _animateBarBack() {
+    // 取消未完成的弹回动画
+    _barSnapController?.stop();
+    _barSnapController?.dispose();
+
+    final start = _barOffset;
+    final controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 250),
+    );
+    _barSnapController = controller;
+    final anim = CurvedAnimation(parent: controller, curve: Curves.easeOutCubic);
+    anim.addListener(() {
+      _barOffset = start * (1.0 - anim.value);
+      if (mounted) setState(() {});
+    });
+    anim.addStatusListener((s) {
+      if (s == AnimationStatus.completed ||
+          s == AnimationStatus.dismissed) {
+        _barOffset = 0.0;
+        _dragDirection = null;
+        _barSnapController = null;
+        controller.dispose();
+      }
+    });
+    controller.forward();
+  }
+
   @override
   Widget build(BuildContext context) {
     final h = audioHandler;
@@ -215,6 +292,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
         h,
         onOpenPlaylist: _openPlaylist,
         onOpenNowPlaying: _openNowPlaying,
+        offset: _barOffset,
       ),
     );
 
@@ -228,20 +306,26 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       animation: nowPlayingController,
       builder: (context, child) {
         final p = nowPlayingController.value;
-        // 播放页上移过程中栏体逐渐淡出：
-        // 当页面滑到距底部约 2 个播放栏高度时完全透明，
-        // 而非等到页面完全到顶（p=1）才消失。
-        // fadeDistance ≈ 0.8（800px 屏、80px 栏高），
-        // 在此之前线性淡出至 0，之后保持 0。
+        // 播放页从底部开始上移，栏体快速淡出：
+        // 当页面滑到距底部约 2 个播放栏高度（160px）时栏体完全透明，
+        // 对应 p ≈ 160/screenH（800px 屏 ≈ 0.2）。
         final barH = 80.0;
         final screenH = MediaQuery.of(context).size.height;
-        final fadeDist =
-            ((screenH - barH * 2) / screenH).clamp(0.1, 0.95);
+        final fadeDist = (barH * 2 / screenH).clamp(0.05, 0.5);
         final contentOpacity =
             ((fadeDist - p) / fadeDist).clamp(0.0, 1.0);
-        return Opacity(
-          opacity: contentOpacity,
-          child: child,
+        // 两阶段隐藏：先淡出，透明后再折叠高度。
+        // 因为高度折叠时栏体已完全透明，肉眼看不到折叠动画。
+        final h = contentOpacity > 0.0 ? barH : 0.0;
+        return IgnorePointer(
+          ignoring: p > 0.001,
+          child: SizedBox(
+            height: h,
+            child: Opacity(
+              opacity: contentOpacity,
+              child: child,
+            ),
+          ),
         );
       },
       child: bar,
@@ -255,11 +339,15 @@ class _Bar extends StatelessWidget {
   final VoidCallback onOpenPlaylist;
   final VoidCallback onOpenNowPlaying;
 
+  /// 栏内内容水平偏移（左划为负、右划为正）
+  final double offset;
+
   const _Bar(
     this.song,
     this.h, {
     required this.onOpenPlaylist,
     required this.onOpenNowPlaying,
+    this.offset = 0.0,
   });
 
   bool get hasSong => song != null;
@@ -341,55 +429,123 @@ class _Bar extends StatelessWidget {
             ],
           );
 
-    return Container(
-      height: 80.0,
-      decoration: BoxDecoration(
-        color: theme.cardColor,
-        border: Border(
-          top: BorderSide(
-            color: theme.dividerColor,
-            width: 0.5,
+    // 左右滑动时的「下一曲 / 上一曲」提示，
+    // 透明度随偏移量线性增长，最大 0.85。
+    final tipOpacity = (offset.abs() / 80.0).clamp(0.0, 0.85);
+
+    // 栏体主内容（封面 + 歌名 + 按钮），左右滑动时跟手平移。
+    final mainRow = Row(
+      children: [
+        const SizedBox(width: 12.0),
+        artwork,
+        const SizedBox(width: 12.0),
+        Expanded(child: info),
+        ValueListenableBuilder<bool>(
+          valueListenable: h.isPlaying,
+          builder: (_, playing, __) => IconButton(
+            icon: Icon(
+              playing ? Icons.pause : Icons.play_arrow,
+              color: theme.colorScheme.primary,
+            ),
+            onPressed: () {
+              if (hasSong) {
+                playing ? h.pause() : h.resumeOrPlay();
+              } else {
+                onOpenNowPlaying();
+              }
+            },
           ),
         ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 10.0,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          const SizedBox(width: 12.0),
-          artwork,
-          const SizedBox(width: 12.0),
-          Expanded(child: info),
-          ValueListenableBuilder<bool>(
-            valueListenable: h.isPlaying,
-            builder: (_, playing, __) => IconButton(
-              icon: Icon(
-                playing ? Icons.pause : Icons.play_arrow,
-                color: theme.colorScheme.primary,
-              ),
-              onPressed: () {
-                if (hasSong) {
-                  playing ? h.pause() : h.resumeOrPlay();
-                } else {
-                  onOpenNowPlaying();
-                }
-              },
+        IconButton(
+          icon: Icon(Icons.queue_music,
+              color: hasSong
+                  ? theme.colorScheme.primary
+                  : theme.disabledColor),
+          onPressed: hasSong ? onOpenPlaylist : null,
+        ),
+        const SizedBox(width: 4.0),
+      ],
+    );
+
+    return ClipRect(
+      child: Container(
+        height: 80.0,
+        decoration: BoxDecoration(
+          color: theme.cardColor,
+          border: Border(
+            top: BorderSide(
+              color: theme.dividerColor,
+              width: 0.5,
             ),
           ),
-          IconButton(
-            icon: Icon(Icons.queue_music,
-                color: hasSong
-                    ? theme.colorScheme.primary
-                    : theme.disabledColor),
-            onPressed: hasSong ? onOpenPlaylist : null,
-          ),
-          const SizedBox(width: 4.0),
-        ],
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 10.0,
+              offset: const Offset(0, -2),
+            ),
+          ],
+        ),
+        child: Stack(
+          clipBehavior: Clip.hardEdge,
+          children: [
+            // 右侧背景：左划时显示「下一曲」
+            Positioned.fill(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 24.0),
+                  child: Opacity(
+                    opacity: offset < 0 ? tipOpacity : 0.0,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('下一曲',
+                            style: TextStyle(
+                                color: theme.colorScheme.primary,
+                                fontSize: 15.0,
+                                fontWeight: FontWeight.w600)),
+                        const SizedBox(width: 6.0),
+                        Icon(Icons.skip_next,
+                            color: theme.colorScheme.primary, size: 22.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // 左侧背景：右划时显示「上一曲」
+            Positioned.fill(
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 24.0),
+                  child: Opacity(
+                    opacity: offset > 0 ? tipOpacity : 0.0,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.skip_previous,
+                            color: theme.colorScheme.primary, size: 22.0),
+                        const SizedBox(width: 6.0),
+                        Text('上一曲',
+                            style: TextStyle(
+                                color: theme.colorScheme.primary,
+                                fontSize: 15.0,
+                                fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // 主内容：跟手水平平移
+            Transform.translate(
+              offset: Offset(offset, 0),
+              child: mainRow,
+            ),
+          ],
+        ),
       ),
     );
   }
