@@ -26,16 +26,20 @@ Route<void> nowPlayingSlideRoute(Widget page) {
           builder: (context, c) {
             final screenH = MediaQuery.of(context).size.height;
             final p = nowPlayingController.value;
-            // 与底部播放栏动画同步：栏体上移 80px 并渐隐收起，
-            // 播放页起始位置跟随栏体上移，确保页面与栏体同步向上滑动。
-            const barH = 80.0; // 与 mp_mini_player_bar 的 _barHeight 一致
-            const barMoveUpDistance = 80.0; // 与 mp_mini_player_bar 一致
-            // 栏体上移后的视觉顶部位置
-            final barVisualTop = screenH - barH - barMoveUpDistance * p;
-            // 播放页偏移：从栏体视觉顶部开始，随进度向上移动
-            final offset = barVisualTop * (1.0 - p);
-            // 透明度：进度从 0 到 1，播放页逐渐完全不透明
-            final opacity = p.clamp(0.0, 1.0);
+            // 播放页从屏幕底部（完全不可见）滑到顶部（完全可见），
+            // 总行程 = 屏幕高度；播放栏固定不动，页面从下方滑过覆盖它。
+            final totalTravel = screenH;
+            // 接近完全展开时直接 snap 到最终位置，消除尾部微偏移导致的
+            // 底部黑色区域闪现：最后 2% 行程（约 16px）由 Transform 产生
+            // 的微小偏移会让页面底部被路由 ModalScope 裁剪，露出背后已被
+            // 上移淡出的主页留下的空洞。
+            if (p >= 0.98) return c!;
+            final offset = totalTravel * (1.0 - p);
+            // 透明度：页面自身位移 40px 即从完全透明到完全不透明，
+            // 独立于控制器进度——手指滑动距离由 _effectiveDragDistance 决定，
+            // 透明度由页面实际位移决定。
+            final pageMoved = totalTravel * p;
+            final opacity = (pageMoved / 40.0).clamp(0.0, 1.0);
             return Transform.translate(
               offset: Offset(0.0, offset),
               child: Opacity(opacity: opacity, child: c),
@@ -80,6 +84,27 @@ void openNowPlayingPage(Song song,
 /// （接管下拉关闭）；向上划则主动退出竞技场，交给 PageView 翻到播放列表。
 /// 接管后**双向**驱动 [nowPlayingController]（下划收起、上划取消），松手按速度
 /// 趋势收尾——以此彻底替代基于 OverscrollNotification 的不可靠方案。
+///
+/// ### 竞技场策略
+///
+/// 基类 `VerticalDragGestureRecognizer` 在内部 `_checkDrag()` 中会用
+/// `computeHitSlop()` 的返回值作为阈值，在 `_globalDistanceMoved` 超过该值时
+/// 自行调用 `resolve(accepted)` 赢得竞技场。为让**自定义方向裁决**先于基类
+/// 生效，分两阶段控制：
+///
+/// 1. **方向未决（`_decided == false`）**：`computeHitSlop()` 返回极大值
+///    （1,000,000px），基类永远达不到阈值，不会抢先 resolve。
+///    同时**照常调用** `super.handleEvent()` 让基类正常积累
+///    `_globalDistanceMoved`、完成 `ready → possible` 状态迁移。
+///
+/// 2. **方向已决（`_decided == true`）**：`computeHitSlop()` 恢复为
+///    `_lockThreshold`（28px）。此时 `_globalDistanceMoved` 已超过28px，
+///    基类在同一帧内完成 `possible → accepted` 迁移并调用 `_startDrag` /
+///    `onStart`，紧接着当前事件还会触发 `_moveDrag` / `onUpdate`。
+///
+/// 这样既保证自定义方向裁决优先（向下且在 page 0 才接受），又让基类的拖拽
+/// 状态机正确初始化——彻底消除「resolve 时基类仍处于 ready 状态导致需要
+/// 额外 28px 才能启动拖拽」的 56px 死区问题。
 class _CloseDragRecognizer extends VerticalDragGestureRecognizer {
   _CloseDragRecognizer({
     required this.canClose,
@@ -106,53 +131,47 @@ class _CloseDragRecognizer extends VerticalDragGestureRecognizer {
   /// 同时足够大，不会因微小抖动误触下滑关闭或翻页。
   static const double _lockThreshold = 28.0;
 
-  /// 覆写命中阈值：让基类在未达到 28px 前不主动在竞技场中胜出。
-  ///
-  /// 若不覆写，基类 `VerticalDragGestureRecognizer` 会在默认 touch slop
-  /// （约 18px）时就 resolve 胜出，导致：
-  /// 1) 播放列表（第 1 页）内下滑在 18px 即被本识别器接管，从而串入播放页
-  ///    的收起逻辑；
-  /// 2) 播放页（第 0 页）任意区域上滑被本识别器吞掉，使 PageView 无法翻到
-  ///    播放列表。
-  /// 锁定到 28px 后，竖向手势需累积超过 28px 才锁定方向，同时比默认 40px
-  /// 更早完成方向裁决，减少与横向手势的竞争窗口。
+  /// 覆写命中阈值：方向未决时返回极大值，阻止基类 `_checkDrag()` 提前
+  /// 调用 `resolve(accepted)`；方向已决后恢复为 [_lockThreshold]，让
+  /// 基类在同一帧内完成 `possible → accepted → _startDrag` 全流程。
   @override
   double computeHitSlop(PointerEvent event, Matrix4? transform) {
-    return _lockThreshold;
+    return _decided ? _lockThreshold : 1000000.0;
   }
 
   @override
   void addPointer(PointerDownEvent event) {
     _decided = false;
     _accumulatedDy = 0.0;
+    // 不在播放页（第 0 页）时不进入竞技场，避免抢占播放列表的滑动手势。
+    // 若在此处仍调用 super.addPointer，识别器会注册进竞技场并累积 28px
+    // 才 reject，期间 ListView 无法接管，导致列表有 2-3 秒无法滚动。
+    if (!canClose()) return;
     super.addPointer(event);
   }
 
   @override
   void handleEvent(PointerEvent event) {
-    // 只有累积竖向位移超过 28px 阈值才裁决方向：
-    // - 下划且允许关闭 → 宣布胜出（先于 PageView 越过 touch slop），
-    //   接管后基类会双向派发 onUpdate（上划取消也跟手）；
-    // - 否则（上划翻播放列表 / 不在 page0）→ 主动退出竞技场，交还 PageView。
-    // 未达到阈值前不 resolve，让横向手势（如歌词切换、播放列表滑动删除）
-    // 有机会在竞技场中竞争。
+    // 累积竖向位移，达到阈值后裁决方向。
+    // 关键：始终调用 super.handleEvent()，让基类正常积累
+    // _globalDistanceMoved 并完成 ready → possible 状态迁移。
+    // 通过 computeHitSlop() 返回极大值来阻止基类提前 resolve。
     if (!_decided && event is PointerMoveEvent && event.delta.dy != 0.0) {
       _accumulatedDy += event.delta.dy;
-      if (_accumulatedDy.abs() < _lockThreshold) {
-        super.handleEvent(event);
-        return;
-      }
-      _decided = true;
-      if (_accumulatedDy > 0 && canClose()) {
-        // 宣布胜出。resolve 是异步生效的，此时基类状态仍是 ready，
-        // 直接再调用 super.handleEvent 会触发 'ready' 断言，
-        // 因此本 move 事件不再派发给基类，后续事件由基类正常接管。
-        resolve(GestureDisposition.accepted);
-        return;
-      } else {
-        // 主动退出竞技场，交还 PageView。本 move 事件同样不再派发。
-        resolve(GestureDisposition.rejected);
-        return;
+      if (_accumulatedDy.abs() >= _lockThreshold) {
+        _decided = true;
+        if (_accumulatedDy > 0 && canClose()) {
+          // 方向已决：下划且在 page 0 → 接受。
+          // 此时 computeHitSlop() 切换为 _lockThreshold，基类在同一帧内
+          // 完成 possible → accepted 迁移并调用 _startDrag / onStart，
+          // 紧接着 super.handleEvent 处理当前事件时还会触发 _moveDrag /
+          // onUpdate——拖拽立即生效，无死区。
+          resolve(GestureDisposition.accepted);
+        } else {
+          // 上划或不在 page 0 → 拒绝，交还 PageView / 横向手势。
+          resolve(GestureDisposition.rejected);
+          return;
+        }
       }
     }
     super.handleEvent(event);
@@ -622,13 +641,16 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
               _CloseDragRecognizer>(
             () => _CloseDragRecognizer(
               debugOwner: this,
-              // 仅在「正在播放」页（第 0 页）顶部才允许下滑关闭
-              canClose: () => (_pageController.page ?? 0) <= 0.01,
+              // 仅在「正在播放」页（第 0 页）才允许下滑关闭。
+              // 阈值放宽到 0.1：PageView 在 page 0 时可能因浮点精度、
+              // PageScrollPhysics 回弹动画未结束等原因导致 .page 略大于 0，
+              // 过严的阈值（如 0.01）会导致下滑手势间歇性失效。
+              canClose: () => (_pageController.page ?? 0) <= 0.1,
               onMove: (dy) {
                 if (_popped) return;
                 // 防御性兜底：仅「正在播放」页（第 0 页）参与收起跟手，
                 // 播放列表（第 1 页）的竖向滑动一律交给 PageView/列表自身。
-                if ((_pageController.page ?? 0) > 0.01) return;
+                if ((_pageController.page ?? 0) > 0.1) return;
                 _dragClosing = true;
                 // 中断未完成的关闭补间（value 赋值本身会 stop() 动画）
                 _isClosing = false;

@@ -9,8 +9,9 @@ import 'package:flutter/material.dart';
 /// 显示当前播放歌曲（封面 / 歌名 / 艺术家），右侧为「播放/暂停」与「播放列表」按钮。
 /// 常态化显示：即使没有正在播放的歌曲也保留占位态；仅在「正在播放」页打开时隐藏。
 ///
-/// 上划跟手：手指在栏体上上划时，播放页从屏幕底部跟随手指上移滑出（手指停即停、
-/// 动即动），栏体同步上移淡出；松手按进度与速度补间完成展开或回弹收回。
+/// 上划跟手：手指在栏体上上划时，播放页从屏幕底部跟随手指上移滑出，栏体固定不动
+/// 仅淡出；40px 手指行程即可从完全透明到完全不透明。松手按进度与速度补间完成展开
+/// 或回弹收回。左右滑动切歌：左滑下一曲，右滑上一曲。
 /// 播放页偏移、栏体淡化、主页上移淡出均由全局 [nowPlayingController] 统一驱动。
 class MiniPlayerBar extends StatefulWidget {
   /// 是否隐藏（「正在播放」页打开时为 true），仅用于手势状态门控与重置
@@ -36,6 +37,10 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
 
   /// 缓存屏幕高度，用于把拖拽增量映射为 0~1 进度
   double _screenHeight = 0.0;
+
+  /// 有效拖拽行程：用屏幕高度的 80% 作为从 0 到 1 的全行程，
+  /// 让播放页以约 1.25 倍手指速度跟手上移，接近 1:1 跟手。
+  double get _effectiveDragDistance => _screenHeight * 0.8;
 
   @override
   void initState() {
@@ -134,21 +139,13 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     nowPlayingController.animateTo(1.0, curve: Curves.easeOutCubic);
   }
 
-  /// 手指上划跟手：首次上划即 push 路由（progress≈0 不可见），随后以
-  /// 控制器当前值为唯一事实来源、按增量驱动——手指停即停、动即动。
-  ///
-  /// 不再用累计量（_dragDy）驱动：拖拽途中 value 抵达 1.0 会同步触发
-  /// completed 回调，若回调重置累计量会导致进度突跳、松手守卫失效，
-  /// 进度卡在中间且路由永不 pop（其 ModalBarrier 拦截主页所有点击）。
-  void _onDragUpdate(DragUpdateDetails d) {
+  /// 统一拖拽跟手：单个 PanGestureRecognizer 同时处理上划开页与左右滑切歌，
+  /// 避免 Vertical + Horizontal 两个识别器在手势竞技场中竞争导致上划卡住。
+  void _onPanUpdate(DragUpdateDetails d) {
     if (!_hasSong) return;
     if (!_routePushed) {
-      // hidden 只拦「新手势的发起」——播放页 push 后约一帧
-      // nowPlayingOpen 置 true、本组件重建为 hidden，若在 update/end 里
-      // 也检查 hidden，会把同一次拖拽的后续事件全部吞掉：进度冻结在
-      // 起步值、松手不收敛，透明路由残留拦截一切点击。
       if (widget.hidden) return;
-      // 仅向上划才触发打开；向下划忽略
+      // 仅向上划才触发打开；向下划或横划忽略
       if (d.delta.dy >= 0) return;
       _routePushed = true;
       _screenHeight = MediaQuery.of(context).size.height;
@@ -156,56 +153,43 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
         _fadeRoute(NowPlaying(_song, nowPlayTap: true)),
       );
     }
-    // 拖拽期间始终保持 opening（value 拖到 1.0 触发的 completed 会置 idle）
     _mode = _BarDragMode.opening;
-    // 下限钳制到 0.002 而非 0：value 被拖到 0 会同步触发 dismissed，
-    // 导致拖拽途中状态被误重置（_routePushed=false），继续上划就会
-    // push 第二个透明播放页路由，pop 不干净后 ModalBarrier 挡住点击。
     nowPlayingController.value =
-        (nowPlayingController.value - d.delta.dy / _screenHeight)
+        (nowPlayingController.value - d.delta.dy / _effectiveDragDistance)
             .clamp(0.002, 1.0);
   }
 
-  /// 松手：取最后滑动趋势（速度方向）补间——展开或回弹收回；停手则就近收敛。
-  /// 守卫只用 _routePushed（不检查 hidden，拖拽中途 hidden 已翻转为 true）：
-  /// 保证只要本次拖拽 push 过路由，松手必然收敛到 0 或 1，绝不留在中间。
-  void _onDragEnd(DragEndDetails d) {
-    if (!_routePushed) return;
-    final v = d.primaryVelocity ?? 0.0;
+  /// 松手：根据已 push 路由与否分流——未 push 说明是纯横划（切歌），
+  /// 已 push 说明是上划开页，按速度与进度收尾。
+  void _onPanEnd(DragEndDetails d) {
+    if (!_routePushed) {
+      // 未 push 路由 → 本次为横划手势，判断左右滑切歌
+      if (!_hasSong) return;
+      final vx = d.velocity.pixelsPerSecond.dx;
+      if (vx < -300) {
+        audioHandler?.skipToNext();
+      } else if (vx > 300) {
+        audioHandler?.skipToPrevious();
+      }
+      return;
+    }
+    // 已 push 路由 → 上划开页，按竖向速度与进度收尾
+    final vy = d.velocity.pixelsPerSecond.dy;
     final p = nowPlayingController.value;
-    if (v < -300) {
-      // 最后趋势向上 → 展开
+    if (vy < -150) {
       _mode = _BarDragMode.opening;
       nowPlayingController.animateTo(1.0, curve: Curves.easeOutCubic);
-    } else if (v > 300) {
-      // 最后趋势向下 → 收回
+    } else if (vy > 150) {
       _mode = _BarDragMode.closing;
-      // 直接设置为0以确保 dismissed 状态立即触发
       nowPlayingController.value = 0.0;
     } else {
-      // 停手 → 就近收敛
-      if (p >= 0.5) {
+      if (p >= 0.2) {
         _mode = _BarDragMode.opening;
         nowPlayingController.animateTo(1.0, curve: Curves.easeOutCubic);
       } else {
         _mode = _BarDragMode.closing;
-        // 直接设置为0以确保 dismissed 状态立即触发
         nowPlayingController.value = 0.0;
       }
-    }
-  }
-
-  /// 拖拽被系统取消（如来电、通知栏下拉）：按当前进度就近收敛，避免悬停
-  void _onDragCancel() {
-    if (!_routePushed) return;
-    final p = nowPlayingController.value;
-    if (p >= 0.5) {
-      _mode = _BarDragMode.opening;
-      nowPlayingController.animateTo(1.0, curve: Curves.easeOutCubic);
-    } else {
-      _mode = _BarDragMode.closing;
-      // 直接设置为0以确保 dismissed 状态立即触发
-      nowPlayingController.value = 0.0;
     }
   }
 
@@ -220,11 +204,12 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     }
 
     // 栏体本体：手势检测 + 内容展示
+    // 使用单个 Pan 识别器同时处理上划开页与左右滑切歌，
+    // 避免 Vertical + Horizontal 两个识别器竞技场竞争导致上划卡住。
     final bar = GestureDetector(
       onTap: () => _openNowPlaying(),
-      onVerticalDragUpdate: _onDragUpdate,
-      onVerticalDragEnd: _onDragEnd,
-      onVerticalDragCancel: _onDragCancel,
+      onPanUpdate: _onPanUpdate,
+      onPanEnd: _onPanEnd,
       child: _Bar(
         h.currentSong.value,
         h,
@@ -233,36 +218,30 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       ),
     );
 
-    // 播放页未打开且无手势时，直接返回栏体（不做动画变换），
-    // 避免路由转场期间 AnimatedBuilder 引发不必要的重建/渲染瑕疵。
-    if (nowPlayingController.value <= 0.001 && !_routePushed) {
-      return bar;
-    }
-
-    // 栏体跟随播放页进度（nowPlayingController）上移并渐隐：
-    // - 上划跟手时，栏体随手指同步上移，最多上移 80px
-    // - 透明度随进度递减，上移满 80px 时完全透明（消失）
-    // 手势进行中（_routePushed=true）必须保留 GestureDetector 在渲染树中，
-    // 否则系统会取消进行中的拖拽手势。
+    // 栏体固定在底部不随播放页上移，仅跟随进度淡出。
+    // 始终用 AnimatedBuilder → Opacity 包裹 bar，确保组件树结构在手势
+    // 全程保持不变。若在 value 穿过 0.001 时从「直接返回 bar」切换为
+    // 「AnimatedBuilder 包裹 bar」，Flutter 会销毁旧 GestureDetector
+    // element 并重建，导致正在进行的上划手势被取消（_onPanEnd 永远
+    // 不触发），页面卡在半途。
     return AnimatedBuilder(
       animation: nowPlayingController,
       builder: (context, child) {
         final p = nowPlayingController.value;
-        // 上移距离：进度 0~1 线性映射到 0~80px
-        const barMoveUpDistance = 80.0;
-        final moveUp = barMoveUpDistance * p;
-        // 透明度：进度 0~1 线性映射到 1~0（完全透明）
-        final opacity = (1.0 - p).clamp(0.0, 1.0);
-
-        // 进度为 0 时不做任何变换（减少不必要的重建与渲染瑕疵）
-        if (p <= 0.001) return child!;
-
+        // 播放页上移过程中栏体逐渐淡出：
+        // 当页面滑到距底部约 2 个播放栏高度时完全透明，
+        // 而非等到页面完全到顶（p=1）才消失。
+        // fadeDistance ≈ 0.8（800px 屏、80px 栏高），
+        // 在此之前线性淡出至 0，之后保持 0。
+        final barH = 80.0;
+        final screenH = MediaQuery.of(context).size.height;
+        final fadeDist =
+            ((screenH - barH * 2) / screenH).clamp(0.1, 0.95);
+        final contentOpacity =
+            ((fadeDist - p) / fadeDist).clamp(0.0, 1.0);
         return Opacity(
-          opacity: opacity,
-          child: Transform.translate(
-            offset: Offset(0.0, -moveUp),
-            child: child,
-          ),
+          opacity: contentOpacity,
+          child: child,
         );
       },
       child: bar,
