@@ -2,13 +2,16 @@ import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flute_example/data/lyrics_overlay_manager.dart';
 import 'package:flute_example/data/models/song.dart';
+import 'package:flute_example/utils/lrc.dart';
 import 'package:flute_example/data/playlist_data.dart';
 import 'package:flute_example/data/song_data.dart';
 import 'package:flute_example/data/subsonic_service.dart';
 import 'package:flute_example/data/cache_service.dart';
 import 'package:flute_example/data/database_helper.dart';
 import 'package:flute_example/widgets/mp_artwork.dart';
+import 'package:flute_example/data/widget_service.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -61,6 +64,7 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
     player.onPositionChanged.listen((p) {
       positionN.value = p;
       _publishState();
+      _updateFloatingLyrics();
     });
     player.onPlayerComplete.listen((_) => _onComplete());
     player.onPlayerStateChanged.listen((s) {
@@ -72,7 +76,67 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
       // 播放列表内容变化：打乱顺序失效，下次按需重建
       _shuffleOrder = [];
     });
+
+    // 监听当前歌曲变化，更新小组件和悬浮窗歌词
+    currentSong.addListener(_onCurrentSongChanged);
+    isPlaying.addListener(_updateWidget);
+
+    // 监听悬浮窗歌词状态变化，刷新通知栏按钮和歌词
+    final lyricsMgr = LyricsOverlayManager.instance;
+    lyricsMgr.isVisible.addListener(_onOverlayVisibilityChanged);
+    lyricsMgr.isLocked.addListener(_publishState);
+
     _publishState();
+  }
+
+  /// 悬浮窗可见性变化时，立即推送歌词
+  void _onOverlayVisibilityChanged() {
+    _publishState();
+    if (LyricsOverlayManager.instance.isVisible.value) {
+      _updateFloatingLyrics();
+    }
+  }
+
+  /// 当前歌曲变化时更新小组件和悬浮窗歌词
+  void _onCurrentSongChanged() {
+    _updateWidget();
+    _updateFloatingLyrics();
+  }
+
+  /// 更新桌面小组件显示
+  void _updateWidget() {
+    WidgetService.updateWidget(
+      song: currentSong.value,
+      isPlaying: isPlaying.value,
+    );
+  }
+
+  // ===================== 悬浮窗歌词 =====================
+
+  /// 更新悬浮窗歌词内容
+  ///
+  /// 将原始歌词和播放位置传递给 Android 端，由 Android 端自行解析和同步。
+  /// 这样即使 Flutter 引擎在后台暂停，Android 端也能根据缓存的数据继续显示歌词。
+  void _updateFloatingLyrics() {
+    final lyricsMgr = LyricsOverlayManager.instance;
+    if (!lyricsMgr.isVisible.value) {
+      print('悬浮窗不可见，跳过歌词更新');
+      return;
+    }
+
+    final song = currentSong.value;
+    final lyrics = song?.lyrics;
+    final positionMs = positionN.value.inMilliseconds;
+    final playing = isPlaying.value;
+
+    print('更新悬浮窗歌词: lyrics=${lyrics?.length ?? 0} chars, position=${positionMs}ms, playing=$playing');
+
+    // 将原始歌词和位置写入 SharedPreferences，Android 端可独立处理
+    lyricsMgr.updateLyrics(
+      lyrics: lyrics,
+      positionMs: positionMs,
+      isPlaying: playing,
+    );
   }
 
   // ===================== 对外控制 =====================
@@ -318,6 +382,14 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
 
   Future<void> seek(Duration position) => onSeek(position);
 
+  /// 处理通知栏自定义按钮事件
+  @override
+  Future<dynamic> customAction(String name, [Map<String, dynamic>? extras]) async {
+    if (name == 'toggle_lyrics') {
+      LyricsOverlayManager.instance.onNotificationToggle();
+    }
+  }
+
   Future<void> setMuted(bool muted) async {
     isMuted.value = muted;
     await player.setVolume(muted ? 0.0 : 1.0);
@@ -438,7 +510,35 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
 
   void _publishState() {
     final playing = isPlaying.value;
+    // 悬浮窗歌词按钮图标：
+    // - 未启动：ic_lyrics（简单音乐图标）
+    // - 启动+未锁定：ic_lyrics_active（音乐图标+对勾）
+    // - 启动+锁定：ic_lyrics_locked（音乐图标+锁）
+    final lyricsMgr = LyricsOverlayManager.instance;
+    final lyricsVisible = lyricsMgr.isVisible.value;
+    final lyricsLocked = lyricsMgr.isLocked.value;
+
+    String icon;
+    String label;
+    if (!lyricsVisible) {
+      icon = 'drawable/ic_lyrics';
+      label = '词';
+    } else if (lyricsLocked) {
+      icon = 'drawable/ic_lyrics_locked';
+      label = '解锁';
+    } else {
+      icon = 'drawable/ic_lyrics_active';
+      label = '词';
+    }
+
+    final lyricsControl = MediaControl.custom(
+      androidIcon: icon,
+      label: label,
+      name: 'toggle_lyrics',
+    );
+
     final controls = <MediaControl>[
+      lyricsControl,
       MediaControl.skipToPrevious,
       playing ? MediaControl.pause : MediaControl.play,
       MediaControl.skipToNext,

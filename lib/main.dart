@@ -9,6 +9,7 @@ import 'package:flute_example/data/models/song.dart';
 import 'package:flute_example/data/playlist_data.dart';
 import 'package:flute_example/data/song_data.dart';
 import 'package:flute_example/data/subsonic_service.dart';
+import 'package:flute_example/data/widget_service.dart';
 import 'package:flute_example/utils/themes.dart';
 import 'package:flute_example/widgets/mp_inherited.dart';
 import 'package:flute_example/widgets/mp_nav_scaffold.dart';
@@ -40,6 +41,20 @@ void main() async {
   } catch (e) {
     print('启用媒体按键监听失败: $e');
   }
+
+  // 初始化桌面小组件服务，注册来自小组件的播放/暂停回调
+  WidgetService.init(
+    onPlayPause: () {
+      if (audioHandler != null) {
+        if (audioHandler!.isPlaying.value) {
+          audioHandler!.pause();
+        } else {
+          audioHandler!.resumeOrPlay();
+        }
+      }
+    },
+  );
+
   runApp(const MyMaterialApp());
 }
 

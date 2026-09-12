@@ -1,4 +1,5 @@
 import 'package:flute_example/data/audio_handler.dart';
+import 'package:flute_example/data/lyrics_overlay_manager.dart';
 import 'package:flute_example/data/models/song.dart';
 import 'package:flute_example/data/playlist_data.dart';
 import 'package:flute_example/utils/lrc.dart';
@@ -399,6 +400,36 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
     }
   }
 
+  /// 构建悬浮窗歌词切换按钮
+  ///
+  /// 未显示时点击 → 显示；显示未锁定时点击 → 隐藏；显示已锁定时 → 解锁图标，点击解锁
+  Widget _buildLyricsToggle() {
+    final mgr = LyricsOverlayManager.instance;
+    return ValueListenableBuilder<bool>(
+      valueListenable: mgr.isVisible,
+      builder: (_, visible, __) {
+        return ValueListenableBuilder<bool>(
+          valueListenable: mgr.isLocked,
+          builder: (_, locked, __) {
+            final isOverlayActive = visible;
+            final icon = (isOverlayActive && locked)
+                ? Icons.lock_open
+                : Icons.music_note;
+            final tooltip = (isOverlayActive && locked)
+                ? '解锁歌词悬浮窗'
+                : (isOverlayActive ? '关闭歌词悬浮窗' : '打开歌词悬浮窗');
+            return IconButton(
+              icon: Icon(icon, color: Colors.white),
+              iconSize: 34.8,
+              tooltip: tooltip,
+              onPressed: () => mgr.onNotificationToggle(),
+            );
+          },
+        );
+      },
+    );
+  }
+
   /// 收起播放页并退出：同步清理状态并 pop 路由。
   ///
   /// 之前用 animateTo(0.0) → dismissed → _popSelf 的链路，但动画回调
@@ -597,6 +628,8 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                         ),
                       ),
                       const Spacer(),
+                      // 悬浮窗歌词按钮
+                      _buildLyricsToggle(),
                       // 静音
                       IconButton(
                         icon: Icon(

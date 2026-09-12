@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 启动桌面歌词：文字图标 + 右上角对勾 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 外框 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M3,3h18v18H3V3zM5,5v14h14V5H5z"/>
+    <!-- 文字线条1 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M7,8h10v1.5H7z"/>
+    <!-- 文字线条2 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M7,11h7v1.5H7z"/>
+    <!-- 文字线条3 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M7,14h9v1.5H7z"/>
+    <!-- 右上角实心圆 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M18,2a4,4 0,1 1,0 8a4,4 0,1 1,0 -8z"/>
+    <!-- 对勾（深色） -->
+    <path
+        android:fillColor="#333333"
+        android:pathData="M16.5,6L17.5,7L19.5,5L20,5.5L17.5,8L16,6.5z"/>
+</vector>
