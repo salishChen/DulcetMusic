@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="widget_description">音乐播放控制小组件</string>
-    <string name="widget_album_art_desc">专辑封面</string>
-    <string name="widget_play_pause_desc">播放/暂停</string>
-    <string name="widget_default_title">未在播放</string>
-</resources>
