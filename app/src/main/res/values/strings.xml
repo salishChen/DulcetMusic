@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">愉乐</string>
+
+    <!-- 底部导航 -->
+    <string name="nav_songs">歌曲</string>
+    <string name="nav_albums">专辑</string>
+    <string name="nav_artists">艺术家</string>
+    <string name="nav_playlists">歌单</string>
+</resources>

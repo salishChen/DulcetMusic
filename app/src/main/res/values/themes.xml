@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 浅色主题（默认）：与 Flutter 端 lightTheme 的 scaffoldBackgroundColor 保持一致 -->
+    <style name="Theme.YuleMusic" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F7F7FA</item>
+        <item name="android:navigationBarColor">#F7F7FA</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>
