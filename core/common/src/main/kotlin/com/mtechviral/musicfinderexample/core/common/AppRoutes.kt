@@ -26,6 +26,7 @@ object AppRoutes {
     // ---- 二级页面 ----
     const val SEARCH = "search"
     const val CACHE_MANAGE = "cache_manage"
+    const val LYRICS_OVERLAY_SETTINGS = "lyrics_overlay_settings"
     const val ALBUM_DETAIL = "album_detail/{title}"
     const val ARTIST_DETAIL = "artist_detail/{name}"
     const val PLAYLIST_DETAIL = "playlist_detail/{id}"

@@ -15,7 +15,7 @@
         android:gravity="center"
         android:padding="8dp">
 
-        <!-- 第一行歌词（上一行或配置为单行时的唯一行） -->
+        <!-- 第一行歌词（上一行或配置为单行时的唯一行）；字重/字号/颜色由代码按偏好设置 -->
         <TextView
             android:id="@+id/lyric_line1"
             android:layout_width="match_parent"
@@ -29,7 +29,6 @@
             android:shadowRadius="4"
             android:textColor="#FFFFFF"
             android:textSize="16sp"
-            android:textStyle="bold"
             android:paddingHorizontal="16dp"
             android:paddingVertical="2dp" />
 
@@ -47,7 +46,6 @@
             android:shadowRadius="4"
             android:textColor="#FFFFFF"
             android:textSize="16sp"
-            android:textStyle="bold"
             android:paddingHorizontal="16dp"
             android:paddingVertical="2dp"
             android:visibility="gone" />

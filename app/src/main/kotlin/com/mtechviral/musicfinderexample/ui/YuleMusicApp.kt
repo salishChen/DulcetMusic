@@ -4,7 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -18,6 +19,7 @@ import com.mtechviral.musicfinderexample.core.common.ThemePreference
 import com.mtechviral.musicfinderexample.core.designsystem.component.MiniPlayerBar
 import com.mtechviral.musicfinderexample.core.designsystem.theme.YuleMusicTheme
 import com.mtechviral.musicfinderexample.core.player.NowPlayingUiState
+import com.mtechviral.musicfinderexample.core.player.PlayerController
 import com.mtechviral.musicfinderexample.feature.albums.albumsGraph
 import com.mtechviral.musicfinderexample.feature.albums.AlbumsScreen
 import com.mtechviral.musicfinderexample.feature.artists.artistsGraph
@@ -50,10 +52,17 @@ import com.mtechviral.musicfinderexample.feature.subsonic.subsonicGraph
  * - 导航器与底部迷你播放栏竖向拼接：播放栏跨所有路由常驻；
  * - 「正在播放」以覆盖层形式从底部滑出（全局 `NowPlayingUiState.progress` 驱动），
  *   展开时播放栏淡化隐藏（由 `MiniPlayerBar` 内部绑定同一进度实现）。
+ *
+ * 系统栏（沉浸式）约定：
+ * - 顶部只避让状态栏；
+ * - 底部不再整体避让手势导航条，而是由常驻播放栏把背景一直铺到屏幕底边
+ *   （内容仍留在导航条上方），避免出现「播放栏浮在小黑条上方、下方露一条底色」；
+ * - 当前无歌曲（播放栏不渲染）时，导航内容自行避让手势条。
  */
 @Composable
 fun YuleMusicApp() {
     val themeMode by ThemePreference.mode.collectAsStateWithLifecycle()
+    val currentSong by PlayerController.currentSong.collectAsStateWithLifecycle()
 
     YuleMusicTheme(mode = themeMode) {
         val navController = rememberNavController()
@@ -66,10 +75,16 @@ fun YuleMusicApp() {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .safeDrawingPadding(),
+                    .statusBarsPadding(),
             ) {
-                // 导航区（占满剩余空间）
-                Box(modifier = Modifier.weight(1f)) {
+                // 导航区（占满剩余空间；无播放栏时才需要自行避让手势条）
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .then(
+                            if (currentSong == null) Modifier.navigationBarsPadding() else Modifier,
+                        ),
+                ) {
                     NavHost(
                         navController = navController,
                         startDestination = AppRoutes.HOME,
@@ -94,6 +109,9 @@ fun YuleMusicApp() {
                                     },
                                     onOpenCacheManage = {
                                         navController.navigate(AppRoutes.CACHE_MANAGE)
+                                    },
+                                    onOpenLyricsOverlaySettings = {
+                                        navController.navigate(AppRoutes.LYRICS_OVERLAY_SETTINGS)
                                     },
                                 )
                             }
@@ -142,6 +160,7 @@ private fun PrimaryPage(
     onOpenPlaylist: (Long) -> Unit,
     onOpenSubsonicConfig: () -> Unit,
     onOpenCacheManage: () -> Unit,
+    onOpenLyricsOverlaySettings: () -> Unit,
 ) {
     // CompositionLocal.current 是 @Composable 读取，必须在 composable 函数体内取一次再传给非 @Composable 回调
     val selectPage = LocalSelectPage.current
@@ -164,6 +183,9 @@ private fun PrimaryPage(
         5 -> ScanScreen(onOpenSubsonicConfig = onOpenSubsonicConfig)
         6 -> SubsonicConfigScreen()
         7 -> StatsScreen()
-        8 -> SettingsScreen(onOpenCacheManage = onOpenCacheManage)
+        8 -> SettingsScreen(
+            onOpenCacheManage = onOpenCacheManage,
+            onOpenLyricsOverlaySettings = onOpenLyricsOverlaySettings,
+        )
     }
 }

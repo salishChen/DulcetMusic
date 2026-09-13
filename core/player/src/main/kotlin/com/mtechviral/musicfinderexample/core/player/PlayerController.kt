@@ -2,16 +2,15 @@ package com.mtechviral.musicfinderexample.core.player
 
 import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
-import android.content.ServiceConnection
-import android.os.IBinder
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.MoreExecutors
 import com.mtechviral.musicfinderexample.core.cache.CacheService
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
@@ -50,6 +49,9 @@ import java.io.File
  * | `PlayMode.random` -> 打乱顺序               | `shuffleModeEnabled = true`                   |
  * | 通知栏/媒体会话                             | `MediaSessionService` + 自定义「歌词」按钮     |
  * | `_publishStateThrottled` 500ms             | 悬浮窗歌词推送同样节流 500ms                   |
+ *
+ * 播放控制通道：App 侧统一通过 `MediaController`（Media3 官方客户端）下发命令，
+ * 不再直接持有服务内的 ExoPlayer 实例——见 [init] 的说明。
  */
 object PlayerController {
 
@@ -68,10 +70,17 @@ object PlayerController {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var appContext: Context? = null
-    private var bound = false
 
-    private var player: ExoPlayer? = null
-    private var session: MediaSession? = null
+    /**
+     * 与前台播放服务（MediaSession）连接的客户端控制器。
+     *
+     * 它实现了 Media3 的 [Player] 接口，App 侧的所有播放控制都通过它下发；
+     * 连接成功前为 null（[awaitPlayer] 会等待连接完成）。
+     */
+    private var controller: MediaController? = null
+
+    /** 进行中的连接任务（避免重复连接） */
+    private var controllerFuture: ListenableFuture<MediaController>? = null
 
     // ===================== 对外状态 =====================
 
@@ -108,48 +117,60 @@ object PlayerController {
 
     // ===================== 初始化 / 连接 =====================
 
-    private val connection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) = Unit
-        override fun onServiceDisconnected(name: ComponentName?) = Unit
-        override fun onBindingDied(name: ComponentName?) {
-            bound = false
-        }
-    }
-
     /**
-     * 初始化：绑定前台播放服务。
-     * 由 Application.onCreate 调用；服务创建后会回调 [attachService]。
+     * 初始化：连接前台播放服务的 [MediaController]（Media3 官方客户端）。
+     *
+     * 为什么必须走 MediaController 而不是直接取服务里的 ExoPlayer 实例：
+     * Media3 的 `MediaSessionService` 只在「会话上存在已连接的 MediaController」时才
+     * 展示媒体通知与媒体控制中心（`MediaNotificationManager.shouldShowNotification`
+     * 会检查 `getConnectedControllerForSession(...)` 及其 timeline），
+     * 直接操控 ExoPlayer 会导致通知栏完全没有播放控制器。
+     *
+     * 由 Application.onCreate 调用。
      */
     fun init(context: Context) {
         val app = context.applicationContext
         appContext = app
-        if (bound) return
-        bound = try {
-            app.bindService(
-                Intent(app, PlaybackService::class.java),
-                connection,
-                Context.BIND_AUTO_CREATE,
+        LyricsOverlayManager.init(app)
+        if (controller != null || controllerFuture != null) return
+        try {
+            val token = SessionToken(app, ComponentName(app, PlaybackService::class.java))
+            val future = MediaController.Builder(app, token)
+                .setListener(controllerListener)
+                .buildAsync()
+            controllerFuture = future
+            future.addListener(
+                {
+                    try {
+                        attachController(future.get())
+                    } catch (e: Exception) {
+                        Log.e(TAG, "连接播放服务失败", e)
+                        controllerFuture = null
+                    }
+                },
+                MoreExecutors.directExecutor(),
             )
         } catch (e: Exception) {
-            Log.e(TAG, "绑定播放服务失败", e)
-            false
+            Log.e(TAG, "创建 MediaController 失败", e)
         }
-        LyricsOverlayManager.init(app)
     }
 
-    /** 由 [PlaybackService] 在 onCreate 中调用 */
-    fun attachService(
-        service: PlaybackService,
-        exoPlayer: ExoPlayer,
-        mediaSession: MediaSession,
-    ) {
-        this.player = exoPlayer
-        this.session = mediaSession
-        appContext = service.applicationContext
+    private val controllerListener = object : MediaController.Listener {
+        override fun onDisconnected(disconnected: MediaController) {
+            Log.w(TAG, "播放服务连接已断开")
+            disconnected.removeListener(playerListener)
+            controller = null
+            controllerFuture = null
+            _connected.value = false
+        }
+    }
 
-        exoPlayer.addListener(playerListener)
+    /** 连接成功后接管播放控制（等价原 `attachService`） */
+    private fun attachController(c: MediaController) {
+        controller = c
+        c.addListener(playerListener)
 
-        // 播放列表内容变化 -> 同步 ExoPlayer 队列
+        // 播放列表内容变化 -> 同步会话队列
         scope.launch {
             PlaylistRepository.songs.collect { syncQueue(it) }
         }
@@ -157,18 +178,11 @@ object PlayerController {
         scope.launch {
             PlaylistRepository.playMode.collect { applyPlayMode(it) }
         }
-        // 悬浮窗可见性/锁定状态变化 -> 刷新通知栏按钮图标
-        scope.launch {
-            LyricsOverlayManager.isVisible.collect { refreshLyricsButton() }
-        }
-        scope.launch {
-            LyricsOverlayManager.isLocked.collect { refreshLyricsButton() }
-        }
 
         _connected.value = true
         startTicker()
 
-        // 恢复播放列表（应用启动时序：先绑定服务，再恢复上次列表）
+        // 恢复播放列表（应用启动时序：先连上服务，再恢复上次列表）
         scope.launch {
             if (PlaylistRepository.current.isEmpty()) {
                 PlaylistRepository.restoreFromPrefs()
@@ -178,20 +192,10 @@ object PlayerController {
         }
     }
 
-    /** 由 [PlaybackService] 在 onDestroy 中调用 */
-    fun detachService() {
-        tickerJob?.cancel()
-        tickerJob = null
-        player?.removeListener(playerListener)
-        player = null
-        session = null
-        _connected.value = false
-    }
-
-    private suspend fun awaitPlayer(): ExoPlayer? {
-        player?.let { return it }
+    private suspend fun awaitPlayer(): Player? {
+        controller?.let { return it }
         withTimeoutOrNull(CONNECT_TIMEOUT_MS) { _connected.filter { it }.first() }
-        return player
+        return controller
     }
 
     // ===================== 播放控制 =====================
@@ -382,7 +386,7 @@ object PlayerController {
      * 结构发生其它变化时重建队列，并尽量保持当前歌曲与播放位置。
      */
     private fun syncQueue(songs: List<Song>) {
-        val p = player ?: return
+        val p = controller ?: return
         val existingIds = (0 until p.mediaItemCount).map { p.getMediaItemAt(it).mediaId }
         val newIds = songs.map { it.path }
         if (existingIds == newIds) return
@@ -458,7 +462,7 @@ object PlayerController {
 
     /** 仅当队列中该项的 URI / 封面与期望不一致时才替换（避免无谓重载） */
     private fun replaceItemIfNeeded(
-        p: ExoPlayer,
+        p: Player,
         index: Int,
         song: Song,
         uri: String,
@@ -466,7 +470,10 @@ object PlayerController {
     ) {
         if (index < 0 || index >= p.mediaItemCount) return
         val existing = p.getMediaItemAt(index)
-        val sameUri = existing.localConfiguration?.uri.toString() == uri
+        // MediaController 收到的 MediaItem 可能不含 localConfiguration（URI 经 bundle 传输），
+        // 此时只以 mediaId 判定「同一首歌」，避免每次播放都替换媒体项而打断播放
+        val existingUri = existing.localConfiguration?.uri?.toString()
+        val sameUri = existingUri == null || existingUri == uri
         val sameArt = artworkUri == null || existing.mediaMetadata.artworkUri == artworkUri
         if (existing.mediaId == song.path && sameUri && sameArt) return
         p.replaceMediaItem(index, buildMediaItem(song, uri, artworkUri))
@@ -474,7 +481,7 @@ object PlayerController {
 
     /** 播放模式的 repeat / shuffle 映射（与 Dart 端发布的通知栏状态一致） */
     private fun applyPlayMode(mode: PlayMode) {
-        val p = player ?: return
+        val p = controller ?: return
         when (mode) {
             PlayMode.SEQUENTIAL -> {
                 p.shuffleModeEnabled = false
@@ -592,6 +599,9 @@ object PlayerController {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _isPlaying.value = isPlaying
             publishCurrentState()
+            // 暂停/继续/播完都要把最新播放状态同步给悬浮窗歌词，
+            // 否则服务侧会一直按"播放中"外推位置，歌词行会自己往前走
+            updateFloatingLyrics()
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -643,7 +653,7 @@ object PlayerController {
      *   playSong 自己已经做过收尾，因此由它触发的 SEEK 过渡通过 path 相同被去重。
      */
     private fun handleCurrentItemChanged(allowPostWork: Boolean) {
-        val p = player ?: return
+        val p = controller ?: return
         val songs = PlaylistRepository.current
         val idx = p.currentMediaItemIndex
         _currentIndex.value = idx
@@ -673,7 +683,7 @@ object PlayerController {
         tickerJob = scope.launch {
             while (isActive) {
                 delay(POSITION_POLL_MS)
-                val p = player ?: continue
+                val p = controller ?: continue
                 val pos = p.currentPosition.coerceAtLeast(0L)
                 _position.value = pos
                 if (_isPlaying.value) {
@@ -691,24 +701,11 @@ object PlayerController {
     }
 
     private fun currentDurationOrNull(): Long? {
-        val d = player?.duration ?: return null
+        val d = controller?.duration ?: return null
         return if (d == androidx.media3.common.C.TIME_UNSET || d <= 0) null else d
     }
 
     // ===================== 通知栏 / 悬浮窗 / 小组件 =====================
-
-    /** 刷新通知栏「歌词」按钮图标与文案 */
-    private fun refreshLyricsButton() {
-        val ctx = appContext ?: return
-        val s = session ?: return
-        s.setCustomLayout(
-            PlaybackService.buildLyricsButtons(
-                ctx,
-                LyricsOverlayManager.isVisible.value,
-                LyricsOverlayManager.isLocked.value,
-            ),
-        )
-    }
 
     /** 更新悬浮窗歌词内容（将原始歌词与播放位置交给服务自行同步） */
     private fun updateFloatingLyrics() {

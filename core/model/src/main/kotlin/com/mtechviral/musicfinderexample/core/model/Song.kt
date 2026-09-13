@@ -145,16 +145,18 @@ data class Song(
     fun mergeLyrics(newLyrics: String?): Song =
         if (newLyrics.isNullOrEmpty()) this else copy(lyrics = newLyrics)
 
-    /**
-     * 与原 Flutter 端的 `Song.==` / `hashCode` 语义保持一致：仅以 [path] 判定相等。
+    /*
+     * 相等性刻意使用 data class 的默认实现（全字段比较），不能改成"仅按 path 比较"：
      *
-     * 播放列表去重、`indexWhere(path ==)` 等逻辑都依赖这一语义，
-     * 因此不能使用 data class 默认的"全字段相等"。
+     * 歌词 / 封面 / 缓存状态都是在播放过程中异步回填到同一个 path 的 Song 上
+     * （见 PlayerController.mergeCurrentSong），再通过 `StateFlow<Song?>` /
+     * `StateFlow<List<Song>>` 推给 UI。StateFlow 赋值时用 `equals` 做去重，
+     * 一旦改成"仅比 path"，这些"同 path 不同内容"的更新会被判定为"值未变化"而被
+     * 丢弃——表现为首次播放线上歌曲时歌词永远不显示、封面/缓存角标不刷新。
+     *
+     * 去重语义（播放列表、曲库列表、LazyColumn key）全部在调用处以
+     * [path] / [identityKey] 显式比较，不依赖 [equals]。
      */
-    override fun equals(other: Any?): Boolean =
-        this === other || (other is Song && other.path == path)
-
-    override fun hashCode(): Int = path.hashCode()
 
     companion object {
         const val SOURCE_TYPE_LOCAL = "local"

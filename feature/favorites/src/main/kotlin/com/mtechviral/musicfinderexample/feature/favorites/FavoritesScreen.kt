@@ -66,11 +66,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -86,6 +91,8 @@ import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.player.PlayerController
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 import com.mtechviral.musicfinderexample.feature.home.LocalOpenSidebar
+import com.mtechviral.musicfinderexample.feature.home.LocalSidebarDrag
+import com.mtechviral.musicfinderexample.feature.home.SidebarDragHandle
 import kotlinx.coroutines.launch
 
 /** 喜欢页红心色（Dart Colors.red[400]） */
@@ -141,6 +148,9 @@ fun FavoritesScreen(
 
     // CompositionLocal.current 是 @Composable 读取，必须在 composable 函数体内取一次再传给非 @Composable 回调
     val openSidebar = LocalOpenSidebar.current
+    // 侧边栏跟手拖拽接口：用于把「分页器滚不动」的剩余横向位移转交给主页（见下方 nestedScroll）
+    val sidebarDrag = LocalSidebarDrag.current
+    val sidebarNestedScroll = remember(sidebarDrag) { sidebarNestedScrollConnection(sidebarDrag) }
 
     Scaffold(
         topBar = {
@@ -166,7 +176,13 @@ fun FavoritesScreen(
                     }
                     HorizontalPager(
                         state = pagerState,
-                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            // 第一个 Tab 向右滑（分页器无法再往左翻）时，把剩余横向位移交给主页：
+                            // 表现为"在第一个 Tab 右滑即可拉出侧边栏"（需求 4）。
+                            // 其余情况（第 2/3 个 Tab 向右、第 1/2 个 Tab 向左）位移会被分页器消费。
+                            .nestedScroll(sidebarNestedScroll),
                     ) { page ->
                         when (page) {
                             0 -> LikedSongsTab(
@@ -389,3 +405,30 @@ private fun FavoritesEmptyView(icon: ImageVector, text: String) {
         }
     }
 }
+
+// ===================== 侧边栏手势转发 =====================
+
+/**
+ * 把「喜欢」页 Tab 分页器滚到边界后**未被消费**的横向位移/速度转交给主页侧边栏。
+ *
+ * 为什么需要：第一个 Tab 向右滑时 `HorizontalPager` 已无处可翻，但它仍会把手势消费掉
+ * （overscroll），主页的 `draggable` 因此永远收不到事件 —— 表现为"第一个 Tab 右滑拉不出
+ * 侧边栏"。这里通过 nestedScroll 的 postScroll / postFling（分页器消费后剩余的位移）
+ * 转发即可：分页器真正能翻页时剩余量为 0，不会误触侧边栏。
+ */
+private fun sidebarNestedScrollConnection(handle: SidebarDragHandle): NestedScrollConnection =
+    object : NestedScrollConnection {
+        override fun onPostScroll(
+            consumed: Offset,
+            available: Offset,
+            source: NestedScrollSource,
+        ): Offset {
+            if (available.x != 0f) handle.dragBy(available.x)
+            return Offset.Zero
+        }
+
+        override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+            if (available.x != 0f) handle.settle(available.x)
+            return Velocity.Zero
+        }
+    }

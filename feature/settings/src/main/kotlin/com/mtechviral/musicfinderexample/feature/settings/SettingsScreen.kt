@@ -95,9 +95,13 @@ private const val APP_VERSION = "1.0.0"
  * 设置页。
  *
  * @param onOpenCacheManage 跳转缓存管理页（对应 Dart 中 Navigator.push(CacheManagePage)）
+ * @param onOpenLyricsOverlaySettings 跳转「桌面歌词」设置页（字号 / 粗细 / 颜色 / 行数 / 锁定）
  */
 @Composable
-fun SettingsScreen(onOpenCacheManage: () -> Unit) {
+fun SettingsScreen(
+    onOpenCacheManage: () -> Unit,
+    onOpenLyricsOverlaySettings: () -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -275,6 +279,17 @@ fun SettingsScreen(onOpenCacheManage: () -> Unit) {
                     },
                 )
             }
+
+            HorizontalDivider()
+
+            // ---- 桌面（悬浮）歌词设置入口 ----
+            SettingsTile(
+                leading = Icons.Filled.MusicNote,
+                title = "桌面歌词",
+                subtitle = "字号 / 粗细 / 颜色 / 行数 / 位置锁定",
+                showChevron = true,
+                onClick = onOpenLyricsOverlaySettings,
+            )
 
             HorizontalDivider()
 

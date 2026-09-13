@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -93,6 +94,9 @@ import kotlin.math.abs
  * `.flutter_reference/lib/main.dart` 注释）后锁定主方向，再分派给
  * 「竖向展开播放页」或「横向切歌」两条分支，单指手势全程只走一条路径。
  *
+ * 沉浸式（系统手势导航条）：栏体背景一直铺到屏幕最底边（`navigationBarsPadding`
+ * 只把可交互内容留在导航条上方），因此不会再出现「播放栏浮在小黑条上方」的断层。
+ *
  * @param onOpenNowPlaying 点击栏体 / 封面时打开「正在播放」页
  * @param hideWhenEmpty 当前歌曲为空时是否不渲染任何内容（默认 true）
  */
@@ -149,7 +153,6 @@ fun MiniPlayerBar(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(BarHeight)
             .graphicsLayer {
                 alpha = contentAlpha
                 // Dart 中栏体固定在底部只淡出，完全透明后折叠高度；
@@ -167,6 +170,9 @@ fun MiniPlayerBar(
                     strokeWidth = 0.5.dp.toPx(),
                 )
             }
+            // 沉浸式：底色继续铺到手势导航条下方（背景已在上一步绘制，故会被一起覆盖），
+            // 手势与内容区仍只占上方 BarHeight 的高度。
+            .navigationBarsPadding()
             .pointerInput(hasSong, screenHeightPx) {
                 val slopPx = TouchSlop.toPx()
                 val maxOffsetPx = MaxBarOffset.toPx()
@@ -315,7 +321,7 @@ fun MiniPlayerBar(
                 }
             },
     ) {
-        Box(modifier = Modifier.fillMaxSize().clipToBounds()) {
+        Box(modifier = Modifier.fillMaxWidth().height(BarHeight).clipToBounds()) {
             // 右侧背景提示：左划时显示「下一曲」（offset < 0）
             Row(
                 modifier = Modifier

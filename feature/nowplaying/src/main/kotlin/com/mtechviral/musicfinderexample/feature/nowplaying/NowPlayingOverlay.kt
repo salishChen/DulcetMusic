@@ -9,7 +9,10 @@
  *  - `_closeAndPop` / `_popSelf` / `_onProgressStatus`：进度归零（dismissed）后回调 onClose()；
  *  - `_buildMiddleContent` → NowPlayingMiddleContent（NowPlayingLyrics.kt）；
  *  - `build()` 的顶部信息 / 进度条 / 主控 / 底部功能行 → NowPlayingControls.kt；
- *  - `_buildPlaylistPage` → NowPlayingPlaylistDrawer.kt（见该文件顶部差异说明）。
+ *  - `PageView(scrollDirection: vertical)` 的两页 → 这里用 `pageAnim`（Animatable 0..1）
+ *    直接驱动两页位移：第 0 页「正在播放」页（上滑进播放列表、下滑收起播放页），
+ *    第 1 页播放列表页（NowPlayingPlaylistPage.kt），两页共用同一张模糊封面背景。
+ *    不经过 `Pager` 的吸附判定，因此「小幅下滑也完整返回播放页」等交互规则可完全自定义。
  *
  * 动画源约定（集成契约）：300ms 补间由 `NowPlayingUiState.open()/close()` 内部完成
  * （等价 Dart `nowPlayingController.animateTo`），本页**不再**对 progress 做第二次补间，
@@ -22,11 +25,9 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,14 +43,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -67,11 +65,21 @@ import com.mtechviral.musicfinderexample.core.player.NowPlayingUiState
 import com.mtechviral.musicfinderexample.core.player.PlayerController
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/** 歌词面板 / 播放列表抽屉的进出补间时长（Dart：`_lyricsController` 300ms） */
+/** 歌词面板的进出补间时长（Dart：`_lyricsController` 300ms） */
 private const val LYRICS_ANIM_MS = 300
-private const val DRAWER_ANIM_MS = 300
+
+/** 竖向翻页（播放页 ↔ 播放列表）补间时长（Dart `_pageController` 300ms） */
+private const val PAGE_ANIM_MS = 300
+
+/** 上滑翻到播放列表的就近判定比例（超过该比例或在速度上"上滑"即完成翻页） */
+private const val PAGE_SWITCH_RATIO = 0.12f
+
+/** 竖向页面位置：0 = 正在播放页，1 = 播放列表页（对应 Dart 的 PageView 两页） */
+private const val NOW_PLAYING_PAGE = 0f
+private const val PLAYLIST_PAGE = 1f
 
 /** 竖向手势方向锁定阈值（Dart `_CloseDragRecognizer._lockThreshold` = 28.0） */
 private val LOCK_THRESHOLD = 28.dp
@@ -94,9 +102,6 @@ private const val CLOSE_RATIO = 0.5f
 /** 拖拽进度下限（Dart：clamp(0.002, 1.0)，避免拖到 0 立即触发 dismissed） */
 private const val MIN_DRAG_PROGRESS = 0.002f
 
-/** 播放列表抽屉占屏高比例 */
-private const val DRAWER_HEIGHT_FRACTION = 0.78f
-
 /** 完全展开判定（Dart：p >= 0.98 直接落到最终位置，消除尾部微偏移） */
 private const val SNAP_PROGRESS = 0.98f
 
@@ -105,9 +110,6 @@ private val BACKGROUND_BLUR = 48.dp
 
 /** 背景暗化（Dart：Colors.black.withOpacity(0.35)） */
 private const val BACKGROUND_SCRIM_ALPHA = 0.35f
-
-/** 抽屉蒙版透明度 */
-private const val DRAWER_SCRIM_ALPHA = 0.45f
 
 /** 覆盖层是否可见的进度阈值 */
 private const val VISIBLE_EPSILON = 0.001f
@@ -176,24 +178,35 @@ private fun NowPlayingContent(
     val pageVisible = progress > VISIBLE_EPSILON
     // 曾经展开过（Dart `_popped` 语义的镜像）：进度归零即收起补间结束 → onClose（_popSelf）
     var everVisible by remember { mutableStateOf(false) }
-    LaunchedEffect(pageVisible) {
-        if (pageVisible) {
-            everVisible = true
-        } else if (everVisible) {
-            everVisible = false
-            onClose()
-        }
-    }
 
     // ---------- 封面 / 歌词面板进度（Dart _lyricsController） ----------
     val lyricsAnim = remember { Animatable(0f) }
     var lyricsOpen by remember { mutableStateOf(false) }
     val lyricsListState = rememberLazyListState()
 
-    // ---------- 播放列表抽屉 ----------
-    val drawerAnim = remember { Animatable(0f) }
-    var drawerShown by remember { mutableStateOf(false) }
-    val drawerListState = rememberLazyListState()
+    // ---------- 竖向翻页：0 = 播放页 / 1 = 播放列表（Dart 的竖向 PageView） ----------
+    // 用 Animatable 直接驱动两页的位移，手指跟手 1:1（不再经过 Pager 的吸附判定，
+    // 因此「小幅下滑也应返回播放页」这类操作逻辑可以完全自定义）。
+    val pageAnim = remember { Animatable(NOW_PLAYING_PAGE) }
+    // 横竖手势共用的方向锁（需求：方向锁定，互不抢占）
+    val axisLock = remember { DragAxisLock() }
+    // 本次竖向手势的上下文（canStart 判定后写入，供 onDrag / onEnd 使用）
+    val dragContext = remember { PageDragContext() }
+    val playlistListState = rememberLazyListState()
+
+    LaunchedEffect(pageVisible) {
+        if (pageVisible) {
+            everVisible = true
+        } else if (everVisible) {
+            everVisible = false
+            // 收起后重置内部位置（等价 Dart 每次打开都新建播放页）：
+            // 下次展开回到「封面视图」的第 0 页，而不是停在歌词页 / 播放列表页
+            lyricsOpen = false
+            lyricsAnim.snapTo(0f)
+            pageAnim.snapTo(NOW_PLAYING_PAGE)
+            onClose()
+        }
+    }
 
     // ---------- 弹窗 ----------
     var actionSheetSong by remember { mutableStateOf<Song?>(null) }
@@ -222,19 +235,17 @@ private fun NowPlayingContent(
         }
     }
 
-    /** 打开播放列表抽屉 */
-    val openDrawer: () -> Unit = {
-        drawerShown = true
+    /** 打开播放列表：竖向翻到第 1 页（Dart `_goToPlaylist`） */
+    val openPlaylist: () -> Unit = {
         scope.launch {
-            drawerAnim.animateTo(1f, tween(DRAWER_ANIM_MS, easing = FastOutSlowInEasing))
+            pageAnim.animateTo(PLAYLIST_PAGE, tween(PAGE_ANIM_MS, easing = FastOutSlowInEasing))
         }
     }
 
-    /** 收起播放列表抽屉（动画结束后才卸载内容） */
-    val closeDrawer: () -> Unit = {
+    /** 翻回播放页：竖向翻到第 0 页（Dart `_goToNowPlaying`） */
+    val showNowPlaying: () -> Unit = {
         scope.launch {
-            drawerAnim.animateTo(0f, tween(DRAWER_ANIM_MS, easing = FastOutSlowInEasing))
-            drawerShown = false
+            pageAnim.animateTo(NOW_PLAYING_PAGE, tween(PAGE_ANIM_MS, easing = FastOutSlowInEasing))
         }
     }
 
@@ -284,36 +295,72 @@ private fun NowPlayingContent(
     }
 
     BackHandler(enabled = pageVisible) {
-        when {
-            drawerShown -> closeDrawer()
-            lyricsOpen -> closeLyrics()
-            else -> requestClose()
+        if (pageAnim.value > 0.5f) {
+            // 在播放列表页：返回键翻回播放页（与下滑手势一致）
+            showNowPlaying()
+        } else {
+            // 播放页（含歌词面板已展开的情况）：返回键直接退出播放页（需求 4），
+            // 而不是退回封面视图；收起后进度归零会重置内部位置。
+            requestClose()
         }
     }
 
     // ---------- 手势回调（SideEffect 刷新闭包，不重启手势会话） ----------
     val pageDrag = remember { DragCallbacks() }
     val lyricDrag = remember { DragCallbacks() }
-    val drawerDrag = remember { DragCallbacks() }
 
     SideEffect {
-        pageDrag.canStart = { total ->
-            // Dart：向下拖（dy > 0）才接管；原生补充「内部歌词已在顶部」判定，
-            // 歌词列表可向上滚动时不抢占（内容不在顶部 → 交还列表）
-            total > 0f &&
-                NowPlayingUiState.currentProgress > VISIBLE_EPSILON &&
-                !drawerShown &&
-                !(lyricsOpen && lyricsListState.canScrollBackward)
+        pageDrag.canStart = { total, other ->
+            dragContext.reset()
+            // 需求：方向锁定——竖向须明显占优，否则交还横向（歌词）手势
+            val dominant = abs(total) >= abs(other) * AXIS_DOMINANCE
+            when {
+                !dominant || NowPlayingUiState.currentProgress <= VISIBLE_EPSILON -> false
+                pageAnim.value > 0.5f -> {
+                    // 播放列表页：仅「列表已到顶 + 下滑」才接管；
+                    // 一旦接管，松手必定完整翻回播放页（需求 8）
+                    if (total > 0f && !playlistListState.canScrollBackward) {
+                        dragContext.fromPlaylist = true
+                        true
+                    } else {
+                        false
+                    }
+                }
+                total > 0f -> {
+                    // 播放页下滑收起：歌词列表可上滑时不抢占（内容不在顶部 → 交还列表）
+                    dragContext.toPlaylist = false
+                    !(lyricsOpen && lyricsListState.canScrollBackward)
+                }
+                else -> {
+                    // 播放页上滑进播放列表：歌词列表还能继续下滚时交还列表
+                    dragContext.toPlaylist = true
+                    !(lyricsOpen && lyricsListState.canScrollForward)
+                }
+            }
         }
         pageDrag.onDrag = { dy ->
-            // 跟手：直接赋值（内部会打断正在进行的 open/close 补间）
-            val next = (NowPlayingUiState.currentProgress - dy / screenHeightPx)
-                .coerceIn(MIN_DRAG_PROGRESS, 1f)
-            NowPlayingUiState.setProgress(next)
+            if (dragContext.fromPlaylist || dragContext.toPlaylist) {
+                // 播放页 ↔ 播放列表：跟手 1:1 移动页面位置
+                val next = (pageAnim.value - dy / screenHeightPx).coerceIn(0f, 1f)
+                scope.launch { pageAnim.snapTo(next) }
+            } else {
+                // 下滑收起播放页：跟手修改展开进度（内部会打断正在进行的补间）
+                val next = (NowPlayingUiState.currentProgress - dy / screenHeightPx)
+                    .coerceIn(MIN_DRAG_PROGRESS, 1f)
+                NowPlayingUiState.setProgress(next)
+            }
         }
         pageDrag.onEnd = { velocity ->
-            // Dart `onFinish`：速度优先，其次就近判定（0.5）
             when {
+                // 需求 8：从播放列表下滑，只要手势成立就完整翻回播放页（不再看幅度）
+                dragContext.fromPlaylist -> showNowPlaying()
+                dragContext.toPlaylist ->
+                    if (velocity < -FLING_VELOCITY || pageAnim.value > PAGE_SWITCH_RATIO) {
+                        openPlaylist()
+                    } else {
+                        showNowPlaying()
+                    }
+                // 下滑收起播放页：Dart `onFinish`，速度优先，其次就近判定（0.5）
                 velocity > FLING_VELOCITY -> NowPlayingUiState.close()
                 velocity < -FLING_VELOCITY -> NowPlayingUiState.open()
                 NowPlayingUiState.currentProgress < CLOSE_RATIO -> NowPlayingUiState.close()
@@ -323,7 +370,10 @@ private fun NowPlayingContent(
     }
 
     SideEffect {
-        lyricDrag.canStart = { _ -> true }
+        lyricDrag.canStart = { total, other ->
+            // 需求：方向锁定——横向须明显占优才接管「封面 ↔ 歌词」拖拽
+            abs(total) >= abs(other) * AXIS_DOMINANCE
+        }
         lyricDrag.onDrag = { dx ->
             // Dart：_lyricsController.value -= details.delta.dx / screenWidth
             val next = (lyricsAnim.value - dx / screenWidthPx).coerceIn(0f, 1f)
@@ -336,21 +386,6 @@ private fun NowPlayingContent(
                 else -> lyricsAnim.value > CLOSE_RATIO
             }
             if (open) openLyrics() else closeLyrics()
-        }
-    }
-
-    SideEffect {
-        drawerDrag.canStart = { total -> total > 0f && !drawerListState.canScrollBackward }
-        drawerDrag.onDrag = { dy ->
-            val height = screenHeightPx * DRAWER_HEIGHT_FRACTION
-            scope.launch { drawerAnim.snapTo((drawerAnim.value - dy / height).coerceIn(0f, 1f)) }
-        }
-        drawerDrag.onEnd = { velocity ->
-            if (velocity > FLING_VELOCITY || drawerAnim.value < CLOSE_RATIO) {
-                closeDrawer()
-            } else {
-                openDrawer()
-            }
         }
     }
 
@@ -367,6 +402,7 @@ private fun NowPlayingContent(
                     Modifier.nowPlayingVerticalDrag(
                         lockThresholdPx = lockThresholdPx,
                         callbacks = pageDrag,
+                        axisLock = axisLock,
                     )
                 } else {
                     Modifier
@@ -404,115 +440,103 @@ private fun NowPlayingContent(
                     .background(Color.Black.copy(alpha = BACKGROUND_SCRIM_ALPHA)),
             )
 
-            Column(
+            // 竖向翻页：第 0 页「播放页」/ 第 1 页「播放列表」
+            // （Dart `PageView(scrollDirection: Axis.vertical)`，两页共用上面这张模糊封面）
+            // 用 pageAnim 直接驱动两页位移：手指跟手 1:1，且翻页收尾规则完全自定义。
+
+            // 第 0 页：正在播放页（上滑让位给播放列表）
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .statusBarsPadding(),
+                    .offset { IntOffset(0, (-pageAnim.value * screenHeightPx).roundToInt()) },
             ) {
-                NowPlayingTopBar(
-                    song = song,
-                    onCollapse = requestClose,
-                    onMore = { actionSheetSong = song },
-                )
-                NowPlayingMiddleContent(
-                    song = song,
-                    // 延迟读取 Animatable 的值：仅在 graphicsLayer 绘制阶段消费，动画期间不重组
-                    lyricsProgress = { lyricsAnim.value },
-                    lyricsOpen = lyricsOpen,
-                    lyricsListState = lyricsListState,
-                    onOpenLyrics = openLyrics,
-                    onCloseLyrics = closeLyrics,
-                    onSeek = { positionMs -> scope.launch { PlayerController.seekTo(positionMs) } },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .nowPlayingHorizontalDrag(
-                            slopPx = horizontalLockPx,
-                            callbacks = lyricDrag,
-                        ),
-                )
-                // 播放条 + 主控整体上移 30px（Dart：Transform.translate(0, -30)）
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .offset(y = (-30).dp),
+                        .fillMaxSize()
+                        .statusBarsPadding(),
                 ) {
-                    NowPlayingProgressRow(
-                        onSeek = { positionMs ->
-                            scope.launch { PlayerController.seekTo(positionMs) }
-                        },
+                    NowPlayingTopBar(
+                        song = song,
+                        onCollapse = requestClose,
+                        onMore = { actionSheetSong = song },
                     )
-                    NowPlayingControlRow(
-                        isPlaying = isPlaying,
-                        onPrevious = { scope.launch { PlayerController.skipToPrevious() } },
-                        onPlayPause = {
-                            scope.launch {
-                                if (isPlaying) PlayerController.pause() else PlayerController.resumeOrPlay()
-                            }
-                        },
-                        onNext = { scope.launch { PlayerController.skipToNext() } },
+                    NowPlayingMiddleContent(
+                        song = song,
+                        // 延迟读取 Animatable 的值：仅在 graphicsLayer 绘制阶段消费，动画期间不重组
+                        lyricsProgress = { lyricsAnim.value },
+                        lyricsOpen = lyricsOpen,
+                        lyricsListState = lyricsListState,
+                        onOpenLyrics = openLyrics,
+                        onCloseLyrics = closeLyrics,
+                        onSeek = { positionMs -> scope.launch { PlayerController.seekTo(positionMs) } },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .nowPlayingHorizontalDrag(
+                                slopPx = horizontalLockPx,
+                                callbacks = lyricDrag,
+                                axisLock = axisLock,
+                            ),
                     )
-                    Spacer(Modifier.height(4.dp))
+                    // 播放条 + 主控整体上移 30px（Dart：Transform.translate(0, -30)）
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .offset(y = (-30).dp),
+                    ) {
+                        NowPlayingProgressRow(
+                            onSeek = { positionMs ->
+                                scope.launch { PlayerController.seekTo(positionMs) }
+                            },
+                        )
+                        NowPlayingControlRow(
+                            isPlaying = isPlaying,
+                            onPrevious = { scope.launch { PlayerController.skipToPrevious() } },
+                            onPlayPause = {
+                                scope.launch {
+                                    if (isPlaying) PlayerController.pause() else PlayerController.resumeOrPlay()
+                                }
+                            },
+                            onNext = { scope.launch { PlayerController.skipToNext() } },
+                        )
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    NowPlayingBottomBar(
+                        playMode = playMode,
+                        isLiked = likedOverride,
+                        likeEnabled = song.id != null,
+                        isMuted = isMuted,
+                        overlayVisible = overlayVisible,
+                        overlayLocked = overlayLocked,
+                        onTogglePlayMode = { PlayerController.togglePlayMode() },
+                        onToggleLike = toggleLike,
+                        onToggleOverlay = { LyricsOverlayManager.onNotificationToggle() },
+                        onToggleMute = { scope.launch { PlayerController.setMuted(!isMuted) } },
+                        onOpenPlaylist = openPlaylist,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding(),
+                    )
                 }
-                NowPlayingBottomBar(
-                    playMode = playMode,
-                    isLiked = likedOverride,
-                    likeEnabled = song.id != null,
-                    isMuted = isMuted,
-                    overlayVisible = overlayVisible,
-                    overlayLocked = overlayLocked,
-                    onTogglePlayMode = { PlayerController.togglePlayMode() },
-                    onToggleLike = toggleLike,
-                    onToggleOverlay = { LyricsOverlayManager.onNotificationToggle() },
-                    onToggleMute = { scope.launch { PlayerController.setMuted(!isMuted) } },
-                    onOpenPlaylist = openDrawer,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding(),
-                )
             }
-        }
 
-        // 播放列表抽屉（不随页面位移）
-        if (drawerShown) {
-            val drawerHeightPx = screenHeightPx * DRAWER_HEIGHT_FRACTION
+            // 第 1 页：播放列表（自下方滑入；完全移出屏幕时不参与命中测试）
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .drawBehind {
-                        drawRect(
-                            color = Color.Black,
-                            alpha = DRAWER_SCRIM_ALPHA * drawerAnim.value,
-                        )
-                    }
-                    .pointerInput(Unit) { detectTapGestures { closeDrawer() } },
-            )
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .fillMaxHeight(DRAWER_HEIGHT_FRACTION)
-                    .offset {
-                        IntOffset(
-                            0,
-                            ((1f - drawerAnim.value) * drawerHeightPx).roundToInt(),
-                        )
-                    }
-                    .nowPlayingVerticalDrag(
-                        lockThresholdPx = lockThresholdPx,
-                        callbacks = drawerDrag,
-                    ),
+                    .offset { IntOffset(0, ((1f - pageAnim.value) * screenHeightPx).roundToInt()) },
             ) {
-                NowPlayingPlaylistDrawer(
+                NowPlayingPlaylistPage(
                     songs = playlistSongs,
                     currentSong = song,
                     isPlaying = isPlaying,
-                    listState = drawerListState,
-                    onCollapse = closeDrawer,
+                    listState = playlistListState,
+                    onCollapse = showNowPlaying,
                     onClear = clearPlaylist,
                     onPlaySong = { target ->
                         scope.launch { PlayerController.playSong(target) }
-                        closeDrawer()
+                        // Dart：点歌后翻回播放页（`_goToNowPlaying`）
+                        showNowPlaying()
                     },
                     onMoreSong = { target -> actionSheetSong = target },
                 )
@@ -560,5 +584,24 @@ private fun NowPlayingContent(
             songs = songsToAdd,
             onDismiss = { addToPlaylistSongs = null },
         )
+    }
+}
+
+/**
+ * 一次竖向手势的上下文。
+ *
+ * 手势开始时由 `canStart` 写入（跨重组稳定持有，不能用普通局部变量），
+ * `onDrag` / `onEnd` 据此决定作用于「翻页」还是「收起播放页」。
+ */
+private class PageDragContext {
+    /** 手势起于播放列表页（下滑返回播放页） */
+    var fromPlaylist: Boolean = false
+
+    /** 手势是播放页上滑（切到播放列表） */
+    var toPlaylist: Boolean = false
+
+    fun reset() {
+        fromPlaylist = false
+        toPlaylist = false
     }
 }
