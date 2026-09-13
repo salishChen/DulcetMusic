@@ -1,0 +1,269 @@
+package com.mtechviral.musicfinderexample.core.database.dao
+
+import android.content.ContentValues
+import android.database.sqlite.SQLiteDatabase
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ARTIST
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ALBUM
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_CACHED_ARTWORK_PATH
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_CACHED_PATH
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_CACHE_TIMESTAMP
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_COVER_ART_ID
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ID
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_IS_LIKED
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_LAST_PLAYED
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_LYRICS
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_PATH
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_PLAY_COUNT
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_REMOTE_ID
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE_TYPE
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_TITLE
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.TABLE_SONGS
+import com.mtechviral.musicfinderexample.core.database.SongMapper
+import com.mtechviral.musicfinderexample.core.database.mapAll
+import com.mtechviral.musicfinderexample.core.model.Song
+
+/**
+ * songs 表数据访问对象。
+ *
+ * 逐条对应原 Flutter 工程 `DatabaseHelper` 中「歌曲」「远程歌曲缓存」「播放统计」
+ * 「喜欢功能」四个分区的全部查询。
+ */
+class SongDao(private val musicDatabase: MusicDatabase) {
+
+    private val db: SQLiteDatabase get() = musicDatabase.writableDatabase
+
+    /** 查询全部歌曲（按标题排序，忽略大小写） */
+    fun queryAllSongs(): List<Song> =
+        db.query(TABLE_SONGS, null, null, null, null, null, "title COLLATE NOCASE ASC")
+            .use { c -> c.mapAll { SongMapper.fromCursor(it) } }
+
+    /** 按 id 查询单曲 */
+    fun querySongById(id: Long): Song? =
+        db.query(TABLE_SONGS, null, "$COL_ID = ?", arrayOf(id.toString()), null, null, null)
+            .use { c -> if (c.moveToFirst()) SongMapper.fromCursor(c) else null }
+
+    /** 按 path 查询单曲（用于播放列表持久化恢复） */
+    fun querySongByPath(path: String): Song? =
+        db.query(TABLE_SONGS, null, "$COL_PATH = ?", arrayOf(path), null, null, null)
+            .use { c -> if (c.moveToFirst()) SongMapper.fromCursor(c) else null }
+
+    /** 按远程 id 查询单曲 */
+    fun querySongByRemoteId(remoteId: String): Song? =
+        db.query(TABLE_SONGS, null, "$COL_REMOTE_ID = ?", arrayOf(remoteId), null, null, "1")
+            .use { c -> if (c.moveToFirst()) SongMapper.fromCursor(c) else null }
+
+    /**
+     * 事务批量插入/更新歌曲，返回实际新增/覆盖的数量。
+     *
+     * 去重规则（以 [source] 标识音乐来源）：
+     * - 已存在「同一首歌」（标题|艺术家|专辑相同）且**来源相同** -> 跳过，不重复添加；
+     * - 已存在「同一首歌」但**来源不同** -> 用后扫描到的覆盖旧记录（更新元数据、路径与来源）；
+     * - 不存在 -> 新增。
+     */
+    fun insertSongs(songs: List<Song>, source: String?): Int {
+        if (songs.isEmpty()) return 0
+
+        // 预读现有歌曲的身份信息，按 identityKey 建立索引
+        val byIdentity = HashMap<String, ExistingEntry>()
+        db.query(
+            TABLE_SONGS,
+            arrayOf(COL_ID, COL_TITLE, COL_ARTIST, COL_ALBUM, COL_PATH, COL_SOURCE),
+            null, null, null, null, null,
+        ).use { c ->
+            val idIdx = c.getColumnIndexOrThrow(COL_ID)
+            val tIdx = c.getColumnIndexOrThrow(COL_TITLE)
+            val arIdx = c.getColumnIndexOrThrow(COL_ARTIST)
+            val alIdx = c.getColumnIndexOrThrow(COL_ALBUM)
+            val sIdx = c.getColumnIndexOrThrow(COL_SOURCE)
+            while (c.moveToNext()) {
+                val key = SongMapper.identityKeyOf(
+                    if (c.isNull(tIdx)) null else c.getString(tIdx),
+                    if (c.isNull(arIdx)) null else c.getString(arIdx),
+                    if (c.isNull(alIdx)) null else c.getString(alIdx),
+                )
+                byIdentity[key] = ExistingEntry(
+                    id = if (c.isNull(idIdx)) null else c.getLong(idIdx),
+                    source = if (c.isNull(sIdx)) null else c.getString(sIdx),
+                )
+            }
+        }
+
+        var affected = 0
+        db.beginTransaction()
+        try {
+            for (song in songs) {
+                val key = song.identityKey
+                val existing = byIdentity[key]
+                if (existing == null) {
+                    // 全新歌曲：插入（path 冲突时以路径替换，容错重复路径）
+                    db.insertWithOnConflict(
+                        TABLE_SONGS, null, valuesOf(song, source), SQLiteDatabase.CONFLICT_REPLACE,
+                    )
+                    affected++
+                    byIdentity[key] = ExistingEntry(id = null, source = source)
+                } else if (existing.source == source) {
+                    // 同一来源的相同音乐：跳过
+                    continue
+                } else {
+                    // 不同来源的同一首歌：后来者覆盖旧记录
+                    if (existing.id != null) {
+                        db.update(
+                            TABLE_SONGS,
+                            valuesOf(song, source, includeId = false),
+                            "$COL_ID = ?",
+                            arrayOf(existing.id.toString()),
+                        )
+                    } else {
+                        db.insertWithOnConflict(
+                            TABLE_SONGS, null, valuesOf(song, source), SQLiteDatabase.CONFLICT_REPLACE,
+                        )
+                    }
+                    affected++
+                    byIdentity[key] = ExistingEntry(id = null, source = source)
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return affected
+    }
+
+    private fun valuesOf(song: Song, source: String?, includeId: Boolean = true): ContentValues =
+        SongMapper.toContentValues(song, includeId).apply { put(COL_SOURCE, source) }
+
+    /** 删除歌曲（级联清理歌单绑定） */
+    fun deleteSong(id: Long) {
+        db.delete(TABLE_SONGS, "$COL_ID = ?", arrayOf(id.toString()))
+    }
+
+    /** 清空歌曲表 */
+    fun clearSongs() {
+        db.delete(TABLE_SONGS, null, null)
+    }
+
+    // ======================== 远程歌曲缓存 ========================
+
+    /** 更新歌曲的缓存路径和时间戳 */
+    fun updateSongCache(songId: Long, cachedPath: String) {
+        db.update(
+            TABLE_SONGS,
+            ContentValues().apply {
+                put(COL_CACHED_PATH, cachedPath)
+                put(COL_CACHE_TIMESTAMP, System.currentTimeMillis())
+            },
+            "$COL_ID = ?",
+            arrayOf(songId.toString()),
+        )
+    }
+
+    /** 查询所有已缓存的远程歌曲 */
+    fun queryCachedSongs(): List<Song> =
+        db.query(
+            TABLE_SONGS, null,
+            "$COL_CACHED_PATH IS NOT NULL AND $COL_SOURCE_TYPE = ?",
+            arrayOf(Song.SOURCE_TYPE_SUBSONIC), null, null, "$COL_CACHE_TIMESTAMP DESC",
+        ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
+
+    /** 清除歌曲的缓存记录 */
+    fun clearSongCache(songId: Long) {
+        db.update(
+            TABLE_SONGS,
+            ContentValues().apply {
+                putNull(COL_CACHED_PATH)
+                putNull(COL_CACHE_TIMESTAMP)
+            },
+            "$COL_ID = ?",
+            arrayOf(songId.toString()),
+        )
+    }
+
+    /** 查询缓存时间最早的歌曲（用于 LRU 淘汰） */
+    fun queryOldestCachedSong(): Song? =
+        db.query(
+            TABLE_SONGS, null,
+            "$COL_CACHED_PATH IS NOT NULL AND $COL_SOURCE_TYPE = ?",
+            arrayOf(Song.SOURCE_TYPE_SUBSONIC), null, null, "$COL_CACHE_TIMESTAMP ASC", "1",
+        ).use { c -> if (c.moveToFirst()) SongMapper.fromCursor(c) else null }
+
+    /** 更新歌曲的封面缓存路径 */
+    fun updateArtworkCache(songId: Long, artworkPath: String) {
+        db.update(
+            TABLE_SONGS,
+            ContentValues().apply { put(COL_CACHED_ARTWORK_PATH, artworkPath) },
+            "$COL_ID = ?",
+            arrayOf(songId.toString()),
+        )
+    }
+
+    /** 更新歌曲的歌词内容 */
+    fun updateSongLyrics(songId: Long, lyrics: String) {
+        db.update(
+            TABLE_SONGS,
+            ContentValues().apply { put(COL_LYRICS, lyrics) },
+            "$COL_ID = ?",
+            arrayOf(songId.toString()),
+        )
+    }
+
+    /** 查询封面尚未缓存的远程歌曲（coverArtId 有值但 cachedArtworkPath 为空） */
+    fun querySongsNeedingArtworkCache(): List<Song> =
+        db.query(
+            TABLE_SONGS, null,
+            "$COL_SOURCE_TYPE = ? AND $COL_COVER_ART_ID IS NOT NULL " +
+                "AND ($COL_CACHED_ARTWORK_PATH IS NULL OR $COL_CACHED_ARTWORK_PATH = ?)",
+            arrayOf(Song.SOURCE_TYPE_SUBSONIC, ""), null, null, "$COL_ID ASC",
+        ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
+
+    // ======================== 播放统计 ========================
+
+    /** 递增歌曲播放次数并更新最后播放时间 */
+    fun incrementPlayCount(songId: Long) {
+        db.execSQL(
+            "UPDATE $TABLE_SONGS SET $COL_PLAY_COUNT = $COL_PLAY_COUNT + 1, $COL_LAST_PLAYED = ? " +
+                "WHERE $COL_ID = ?",
+            arrayOf(System.currentTimeMillis(), songId),
+        )
+    }
+
+    /** 查询最常播放的歌曲（Top N） */
+    fun queryTopPlayed(limit: Int = 20): List<Song> =
+        db.query(
+            TABLE_SONGS, null, "$COL_PLAY_COUNT > 0", null, null, null,
+            "$COL_PLAY_COUNT DESC", limit.toString(),
+        ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
+
+    /** 查询最近播放的歌曲 */
+    fun queryRecentlyPlayed(limit: Int = 50): List<Song> =
+        db.query(
+            TABLE_SONGS, null, "$COL_LAST_PLAYED IS NOT NULL", null, null, null,
+            "$COL_LAST_PLAYED DESC", limit.toString(),
+        ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
+
+    // ======================== 喜欢功能 ========================
+
+    /** 切换歌曲喜欢状态 */
+    fun toggleLikeSong(songId: Long) {
+        db.execSQL(
+            "UPDATE $TABLE_SONGS SET $COL_IS_LIKED = CASE WHEN $COL_IS_LIKED = 1 THEN 0 ELSE 1 END " +
+                "WHERE $COL_ID = ?",
+            arrayOf(songId),
+        )
+    }
+
+    /** 查询喜欢的歌曲 */
+    fun queryLikedSongs(): List<Song> =
+        db.query(
+            TABLE_SONGS, null, "$COL_IS_LIKED = 1", null, null, null,
+            "title COLLATE NOCASE ASC",
+        ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
+
+    /** 查询喜欢的歌曲数量（轻量一致性检查用） */
+    fun queryLikedSongCount(): Int =
+        db.rawQuery("SELECT COUNT(*) AS c FROM $TABLE_SONGS WHERE $COL_IS_LIKED = 1", null)
+            .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    private data class ExistingEntry(val id: Long?, val source: String?)
+}

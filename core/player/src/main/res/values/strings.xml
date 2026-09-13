@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 桌面小组件 -->
+    <string name="widget_description">音乐播放控制小组件</string>
+    <string name="widget_album_art_desc">专辑封面</string>
+    <string name="widget_play_pause_desc">播放/暂停</string>
+    <string name="widget_default_title">未在播放</string>
+    <string name="widget_label">音乐播放器</string>
+
+    <!-- 悬浮窗歌词 -->
+    <string name="lyrics_font_size">字号</string>
+    <string name="lyrics_label">词</string>
+    <string name="lyrics_lines_2">2行</string>
+    <string name="lyrics_lines_1">1行</string>
+    <string name="lyrics_lock">锁定</string>
+    <string name="lyrics_unlock">解锁</string>
+
+    <!-- 播放通知 -->
+    <string name="player_channel_name">音乐播放</string>
+</resources>

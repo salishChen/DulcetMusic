@@ -1,0 +1,487 @@
+package com.mtechviral.musicfinderexample.core.network
+
+import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
+import com.mtechviral.musicfinderexample.core.model.Song
+import com.mtechviral.musicfinderexample.core.model.SubsonicConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.URLEncoder
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.concurrent.TimeUnit
+
+/**
+ * Subsonic API 客户端（单例）。
+ *
+ * 与原 Flutter 工程 `lib/data/subsonic_service.dart` 逐方法对应：
+ * - 内网优先连接策略（内网 5s 超时，失败回退公网 10s），并把结果缓存在 [activeBaseUrl]；
+ * - token 认证：`t = md5(password + salt)`，每次请求重新生成 16 位随机盐；
+ * - API 版本 1.16.1，`f=json`，客户端名 `MusicPlayer`；
+ * - 歌词 `getLyrics`、封面 `getCoverArt`、流地址 `stream`、歌单同步等全部保留。
+ */
+object SubsonicService {
+
+    private const val API_VERSION = "1.16.1"
+    private const val CLIENT_NAME = "MusicPlayer"
+    private const val SALT_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789"
+    private const val TAG = "SubsonicService"
+
+    private var config: SubsonicConfig? = null
+    private var activeBaseUrl: String? = null
+
+    private val secureRandom = SecureRandom()
+
+    /** 普通 API 请求：30s 超时（与 Dart 端一致） */
+    private val apiClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    /** 内网探测：5s 超时 */
+    private val intranetProbeClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .build()
+
+    /** 公网探测：10s 超时 */
+    private val publicProbeClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .build()
+
+    // ===================== 配置 =====================
+
+    /** 是否已配置 */
+    val isConfigured: Boolean get() = config != null
+
+    /** 当前配置（供设置页展示服务器名等） */
+    val currentConfig: SubsonicConfig? get() = config
+
+    /** 加载配置（应用启动时调用） */
+    suspend fun loadConfig(): SubsonicConfig? {
+        config = DatabaseHelper.querySubsonicConfig()
+        activeBaseUrl = null // 重置缓存的 base URL
+        return config
+    }
+
+    /** 保存配置 */
+    suspend fun saveConfig(newConfig: SubsonicConfig) {
+        DatabaseHelper.saveSubsonicConfig(newConfig)
+        config = newConfig
+        activeBaseUrl = null
+    }
+
+    /** 清除缓存的连接（网络变化/播放失败时调用） */
+    fun resetConnection() {
+        activeBaseUrl = null
+    }
+
+    // ===================== URL 构建 =====================
+
+    /**
+     * 解析活跃的 Base URL（内网优先，超时回退公网）。
+     */
+    private suspend fun resolveBaseUrl(): String {
+        activeBaseUrl?.let { return it }
+        val cfg = config ?: throw SubsonicException("Subsonic 未配置")
+
+        // 尝试内网
+        try {
+            val url = buildUrl(cfg.intranetUrl, "ping")
+            val body = httpGet(url, intranetProbeClient)
+            if (body != null && JSONObject(body).optJSONObject("subsonic-response")
+                    ?.optString("status") == "ok"
+            ) {
+                activeBaseUrl = cfg.intranetUrl
+                return cfg.intranetUrl
+            }
+        } catch (_: Exception) {
+            // 内网不可达，继续尝试公网
+        }
+
+        // 尝试公网
+        try {
+            val url = buildUrl(cfg.publicUrl, "ping")
+            val body = httpGet(url, publicProbeClient)
+            if (body != null && JSONObject(body).optJSONObject("subsonic-response")
+                    ?.optString("status") == "ok"
+            ) {
+                activeBaseUrl = cfg.publicUrl
+                return cfg.publicUrl
+            }
+        } catch (_: Exception) {
+            // ignore
+        }
+
+        throw SubsonicException("无法连接到 Subsonic 服务器（内网和公网均不可达）")
+    }
+
+    /**
+     * 构建 API URL。
+     *
+     * [endpoint] 可以是纯端点名（如 `getArtists`）或带参数的（如 `getArtist&id=123`）：
+     * 当包含 `&` 时，第一段作为端点名，其余作为查询参数与认证参数合并。
+     */
+    private fun buildUrl(baseUrl: String, endpoint: String): String {
+        val base = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
+        val params = buildAuthParams()
+
+        val parts = endpoint.split("&")
+        val endpointName = parts[0]
+        val extraParams = if (parts.size > 1) parts.drop(1).joinToString("&") else null
+
+        return if (extraParams != null) {
+            "$base/rest/$endpointName?$extraParams&$params"
+        } else {
+            "$base/rest/$endpointName?$params"
+        }
+    }
+
+    /** 构建认证参数：u / s（盐）/ t（md5(password+salt)）/ v / c / f */
+    private fun buildAuthParams(): String {
+        val cfg = config ?: throw SubsonicException("Subsonic 未配置")
+        val salt = generateSalt(16)
+        val token = md5Hex(cfg.password + salt)
+        return "u=${encode(cfg.username)}" +
+            "&s=$salt" +
+            "&t=$token" +
+            "&v=$API_VERSION" +
+            "&c=$CLIENT_NAME" +
+            "&f=json"
+    }
+
+    /** 生成随机盐值 */
+    private fun generateSalt(length: Int): String =
+        buildString(length) {
+            repeat(length) { append(SALT_CHARS[secureRandom.nextInt(SALT_CHARS.length)]) }
+        }
+
+    private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    private fun md5Hex(input: String): String {
+        val digest = MessageDigest.getInstance("MD5").digest(input.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    }
+
+    // ===================== 请求 =====================
+
+    private suspend fun httpGet(url: String, client: OkHttpClient): String? =
+        withContext(Dispatchers.IO) {
+            client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                response.body?.string()
+            }
+        }
+
+    /** 发送 API 请求并校验 `subsonic-response.status` */
+    private suspend fun request(endpoint: String): JSONObject {
+        val baseUrl = resolveBaseUrl()
+        val url = buildUrl(baseUrl, endpoint)
+        val body = httpGet(url, apiClient)
+            ?: throw SubsonicException("HTTP 请求失败: $url")
+        val json = JSONObject(body)
+        val subsonicResponse = json.optJSONObject("subsonic-response")
+            ?: throw SubsonicException("响应缺少 subsonic-response 字段")
+        if (subsonicResponse.optString("status") != "ok") {
+            val error = subsonicResponse.optJSONObject("error")
+            val code = error?.opt("code") ?: "unknown"
+            val message = error?.optString("message") ?: "未知错误"
+            throw SubsonicException("Subsonic 错误 ($code): $message")
+        }
+        return subsonicResponse
+    }
+
+    /** 测试连接 */
+    suspend fun ping(): Boolean = try {
+        val baseUrl = resolveBaseUrl()
+        val body = httpGet(buildUrl(baseUrl, "ping"), publicProbeClient)
+        if (body == null) false
+        else JSONObject(body).optJSONObject("subsonic-response")?.optString("status") == "ok"
+    } catch (_: Exception) {
+        false
+    }
+
+    // ===================== 曲库 =====================
+
+    /**
+     * 获取所有歌曲（getArtists -> getArtist -> getAlbum 三级遍历）。
+     * 与 Dart 端一致：单个艺术家/专辑失败时跳过继续，不影响整体。
+     */
+    suspend fun getAllSongs(): List<Song> {
+        val allSongs = ArrayList<Song>()
+
+        val artistsResponse = request("getArtists")
+        val indexes = artistsResponse.optJSONObject("artists")?.optJSONArray("index")
+            ?: JSONArray()
+
+        for (i in 0 until indexes.length()) {
+            val index = indexes.optJSONObject(i) ?: continue
+            val artists = index.optJSONArray("artist") ?: JSONArray()
+            for (j in 0 until artists.length()) {
+                val artist = artists.optJSONObject(j) ?: continue
+                val artistId = artist.opt("id")?.toString() ?: continue
+                val artistName = artist.optString("name").ifEmpty { "未知艺术家" }
+
+                try {
+                    val albumResponse = request("getArtist&id=$artistId")
+                    val albums = albumResponse.optJSONObject("artist")?.optJSONArray("album")
+                        ?: JSONArray()
+                    for (k in 0 until albums.length()) {
+                        val album = albums.optJSONObject(k) ?: continue
+                        val albumId = album.opt("id")?.toString() ?: continue
+                        // Subsonic getArtist 返回的 album 对象使用 name 字段（而非 title）
+                        val albumName = album.optString("name")
+                            .ifEmpty { album.optString("title") }
+                            .ifEmpty { "未知专辑" }
+                        val albumCoverArt = album.optString("coverArt").ifEmpty { null }
+
+                        try {
+                            val songResponse = request("getAlbum&id=$albumId")
+                            val songs = songResponse.optJSONObject("album")?.optJSONArray("song")
+                                ?: JSONArray()
+                            for (m in 0 until songs.length()) {
+                                val songObj = songs.optJSONObject(m) ?: continue
+                                allSongs.add(
+                                    parseSong(
+                                        songObj, artistName, albumName,
+                                        albumCoverArtFallback = albumCoverArt ?: albumId,
+                                    ),
+                                )
+                            }
+                        } catch (e: Exception) {
+                            log("获取专辑 $albumName 歌曲失败: ${e.message}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    log("获取艺术家 $artistName 专辑失败: ${e.message}")
+                }
+            }
+        }
+        return allSongs
+    }
+
+    /** 解析 getAlbum 的 song 项为 [Song] */
+    private fun parseSong(
+        song: JSONObject,
+        artistName: String,
+        albumName: String,
+        albumCoverArtFallback: String?,
+    ): Song {
+        val id = song.opt("id")?.toString() ?: ""
+        val title = song.optString("title").ifEmpty { "未知歌曲" }
+        val durationSeconds = song.optInt("duration", -1).takeIf { it >= 0 }
+        val track = song.optInt("track", -1).takeIf { it >= 0 }
+        val size = song.optLong("size", -1L).takeIf { it >= 0 }
+        val suffix = song.optString("suffix").ifEmpty { null }
+        val bitRate = song.optInt("bitRate", -1).takeIf { it >= 0 }
+        val contentType = song.optString("contentType").ifEmpty { null }
+        val coverArt = song.optString("coverArt").ifEmpty { null }
+
+        val baseUrl = activeBaseUrl ?: config?.publicUrl ?: ""
+        val streamUrl = buildUrl(baseUrl, "stream&id=$id")
+
+        return Song(
+            title = title,
+            path = streamUrl,
+            artist = artistName,
+            album = albumName,
+            trackNumber = track,
+            duration = durationSeconds?.let { it * 1000L },
+            size = size,
+            format = suffix,
+            codec = contentType,
+            sourceType = Song.SOURCE_TYPE_SUBSONIC,
+            remoteId = id,
+            remoteStreamUrl = streamUrl,
+            coverArtId = coverArt ?: albumCoverArtFallback,
+            dateAdded = System.currentTimeMillis(),
+        )
+    }
+
+    /** 获取流媒体 URL（先解析活跃 Base URL，失败回退公网） */
+    suspend fun getStreamUrl(songId: String): String {
+        val cfg = config ?: throw SubsonicException("Subsonic 未配置")
+        val baseUrl = try {
+            resolveBaseUrl()
+        } catch (_: Exception) {
+            cfg.publicUrl
+        }
+        return buildUrl(baseUrl, "stream&id=$songId")
+    }
+
+    // ===================== 歌单 =====================
+
+    /** 获取歌单列表 */
+    suspend fun getPlaylists(): List<RemotePlaylist> {
+        val response = request("getPlaylists")
+        val array = response.optJSONObject("playlists")?.optJSONArray("playlist") ?: JSONArray()
+        return (0 until array.length()).mapNotNull { i ->
+            val obj = array.optJSONObject(i) ?: return@mapNotNull null
+            RemotePlaylist(
+                id = obj.opt("id")?.toString() ?: return@mapNotNull null,
+                name = obj.optString("name").ifEmpty { "未命名歌单" },
+            )
+        }
+    }
+
+    /** 获取歌单详情（包含歌曲列表） */
+    suspend fun getPlaylistDetail(playlistId: String): RemotePlaylistDetail {
+        val response = request("getPlaylist&id=$playlistId")
+        val playlist = response.optJSONObject("playlist") ?: JSONObject()
+        val entries = playlist.optJSONArray("entry") ?: JSONArray()
+        val songs = (0 until entries.length()).mapNotNull { i ->
+            val obj = entries.optJSONObject(i) ?: return@mapNotNull null
+            RemoteSong(
+                id = obj.opt("id")?.toString() ?: return@mapNotNull null,
+                title = obj.optString("title").ifEmpty { "未知歌曲" },
+                artist = obj.optString("artist").ifEmpty { null },
+                album = obj.optString("album").ifEmpty { null },
+                durationSeconds = obj.optInt("duration", -1).takeIf { it >= 0 },
+                size = obj.optLong("size", -1L).takeIf { it >= 0 },
+                suffix = obj.optString("suffix").ifEmpty { null },
+                contentType = obj.optString("contentType").ifEmpty { null },
+                bitRate = obj.optInt("bitRate", -1).takeIf { it >= 0 },
+                track = obj.optInt("track", -1).takeIf { it >= 0 },
+                coverArt = obj.optString("coverArt").ifEmpty { null },
+            )
+        }
+        return RemotePlaylistDetail(
+            id = playlist.opt("id")?.toString() ?: playlistId,
+            name = playlist.optString("name").ifEmpty { "未命名歌单" },
+            entries = songs,
+        )
+    }
+
+    /** 创建远程歌单，返回新歌单 id */
+    suspend fun createPlaylist(name: String, songIds: List<String>): String? = try {
+        val songIdParams = songIds.joinToString("&") { "songId=$it" }
+        val endpoint = "createPlaylist&name=${encode(name)}" +
+            if (songIdParams.isNotEmpty()) "&$songIdParams" else ""
+        val response = request(endpoint)
+        response.optJSONObject("playlist")?.opt("id")?.toString()
+    } catch (e: Exception) {
+        log("创建歌单失败: ${e.message}")
+        null
+    }
+
+    /**
+     * 同步远程歌单到本地库，返回同步成功的歌单数量。
+     *
+     * 与 Dart 端逻辑一致：同名歌单复用本地记录，歌单内歌曲按 remoteId
+     * 去重后入库并追加到歌单末尾。
+     */
+    suspend fun syncPlaylistsToLocalStorage(): Int {
+        val remotePlaylists = getPlaylists()
+        var synced = 0
+
+        for (remote in remotePlaylists) {
+            val remoteName = remote.name
+            val remoteId = remote.id
+
+            // 检查本地是否已存在同名歌单
+            val existing = DatabaseHelper.findPlaylistByName(remoteName)
+            val localPlaylistId: Long = existing?.id
+                ?: DatabaseHelper.createPlaylist(remoteName)
+                ?: continue
+
+            try {
+                val detail = getPlaylistDetail(remoteId)
+                for (song in detail.entries) {
+                    val songId = song.id
+                    val baseUrl = activeBaseUrl ?: config?.publicUrl ?: ""
+                    val streamUrl = buildUrl(baseUrl, "stream&id=$songId")
+
+                    // 检查本地是否已有该远程歌曲
+                    val existingSong = DatabaseHelper.querySongByRemoteId(songId)
+                    val existingSongId = existingSong?.id
+                    val localSongId: Long
+                    if (existingSongId != null) {
+                        localSongId = existingSongId
+                    } else {
+                        // 插入新歌曲记录
+                        val newSong = Song(
+                            title = song.title,
+                            path = streamUrl,
+                            artist = song.artist,
+                            album = song.album,
+                            trackNumber = song.track,
+                            duration = song.durationSeconds?.let { it * 1000L },
+                            size = song.size,
+                            format = song.suffix,
+                            codec = song.contentType,
+                            sourceType = Song.SOURCE_TYPE_SUBSONIC,
+                            remoteId = songId,
+                            remoteStreamUrl = streamUrl,
+                            dateAdded = System.currentTimeMillis(),
+                        )
+                        val affected = DatabaseHelper.insertSongs(listOf(newSong), "subsonic")
+                        if (affected == 0) continue
+                        // 重新查询获取 id
+                        localSongId = DatabaseHelper.querySongByRemoteId(songId)?.id ?: continue
+                    }
+
+                    DatabaseHelper.addSongToPlaylist(localPlaylistId, localSongId)
+                }
+                synced++
+            } catch (e: Exception) {
+                log("同步歌单 $remoteName 失败: ${e.message}")
+            }
+        }
+        return synced
+    }
+
+    // ===================== 封面 / 歌词 =====================
+
+    /**
+     * 获取封面图片字节。
+     * 只检查状态码和数据长度（某些服务器不返回正确的 content-type）。
+     */
+    suspend fun getCoverArt(coverArtId: String): ByteArray? = try {
+        val baseUrl = resolveBaseUrl()
+        val url = buildUrl(baseUrl, "getCoverArt&id=$coverArtId")
+        withContext(Dispatchers.IO) {
+            apiClient.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+                val bytes = response.body?.bytes()
+                if (response.isSuccessful && bytes != null && bytes.size > 100) {
+                    bytes
+                } else {
+                    log(
+                        "封面响应异常 - 状态码: ${response.code}, " +
+                            "大小: ${bytes?.size ?: 0}",
+                    )
+                    null
+                }
+            }
+        }
+    } catch (e: Exception) {
+        log("获取封面失败 ($coverArtId): ${e.message}")
+        null
+    }
+
+    /** 获取歌词文本（LRC），失败返回 null */
+    suspend fun getLyrics(artist: String, title: String): String? = try {
+        val response = request(
+            "getLyrics&artist=${encode(artist)}&title=${encode(title)}",
+        )
+        val lyrics = response.optJSONObject("lyrics")?.optString("value")
+        if (!lyrics.isNullOrBlank()) {
+            log("成功获取歌词 - $artist - $title")
+            lyrics.trim()
+        } else {
+            log("歌词为空 - $artist - $title")
+            null
+        }
+    } catch (e: Exception) {
+        log("获取歌词失败 - $artist - $title: ${e.message}")
+        null
+    }
+
+    private fun log(message: String) {
+        android.util.Log.d(TAG, message)
+    }
+}
