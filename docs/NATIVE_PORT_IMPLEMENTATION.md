@@ -207,9 +207,36 @@ Media3 `MediaSession` 的 `setCustomLayout(List<CommandButton>)` 复刻了原实
 export JAVA_HOME=<JDK 17+>
 echo "sdk.dir=<Android SDK>" > local.properties
 
-./gradlew :core:common:test        # 单元测试（LRC 解析等）
-./gradlew :app:assembleDebug       # 编译全部模块并产出 APK
+./gradlew :core:common:testDebugUnitTest   # 单元测试（LRC 解析）
+./gradlew :app:assembleDebug               # 编译全部模块并产出 APK
 ```
 
-验证状态见提交说明；本工程在 `compileSdk = 36 / AGP 8.11.1 / Kotlin 2.2.20 / Gradle 8.14 / JDK 21`
-下编译通过。
+### 6.1 编译与单元测试
+
+- 工具链：`AGP 8.11.1` / `Kotlin 2.2.20` / `compileSdk 36` / `targetSdk 36` / `minSdk 24` /
+  `Gradle 8.14` / `JDK 21` / `Compose BOM 2025.10.01` / `Media3 1.9.4`。
+- `./gradlew :app:assembleDebug` → **BUILD SUCCESSFUL**，产物 `app/build/outputs/apk/debug/app-debug.apk`（约 23.7 MB）。
+- `./gradlew :core:common:testDebugUnitTest` → **8 项 LrcParser 测试全部通过**。
+
+### 6.2 模拟器冒烟测试（Pixel_9 / android-37 / x86_64）
+
+`adb install` + `am start` 后逐项验证（`uiautomator dump` + `logcat` + `dumpsys`）：
+
+| 验证项 | 结果 |
+|--------|------|
+| 冷启动 | 进程存活、`MainActivity` 为 `topResumedActivity`、无 `FATAL EXCEPTION` |
+| 数据库兼容 | 直接读到旧版遗留曲库（13 首中文歌曲），说明 `music_player.db` v6 结构兼容 |
+| 歌曲页渲染 | 标题「歌曲」、操作条「播放全部 / 随机播放」、歌曲行（歌名 + 艺术家 + 时长）、顶栏按钮（打开侧边栏 / 搜索 / 排序 / 多选）全部出现 |
+| 侧边栏 | 点击目录按钮后展开，出现「愉乐 + 歌曲 / 专辑 / 艺术家 / 歌单 / 喜欢 / 扫描音乐 / 远程配置 / 统计 / 设置」九个入口 |
+| 播放 | 点歌后 `MediaSession` `BUFFERING → PLAYING`，`position` 持续推进（17ms → 3050ms → 6057ms），播放页覆盖层显示歌名/艺术家/`暂无歌词`/`0:04` / `3:36` |
+| 通知渠道 | `NotificationChannel{mId='com.mtechviral.musicfinderexample.audio', mName=音乐播放}`，与旧版一致 |
+| 媒体按键会话 | 系统日志 `Media button session is changed to com.mtechviral.musicfinderexample/...` |
+
+冒烟测试发现并修复的缺陷：
+
+1. **跨线程访问 ExoPlayer**：`ensureArtworkFile()` 在 IO 线程调用 `replaceMediaItem()`，触发
+   `Player is accessed on the wrong thread`（ExoPlayer 单线程约束）。
+   已改为「封面文件只做 IO」+「MediaItem 的 `artworkUri` 在构建时按确定性路径写入」，
+   既不跨线程，也不会因替换媒体项打断正在播放的音频。
+2. Android 13+ 前台通知不可见：`MainActivity` 首次进入时申请 `POST_NOTIFICATIONS`
+   （旧版由 `audio_service` 隐式依赖，未显式申请）。

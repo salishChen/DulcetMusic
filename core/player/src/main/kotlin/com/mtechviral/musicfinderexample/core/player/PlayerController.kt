@@ -227,8 +227,9 @@ object PlayerController {
         try {
             syncQueue(songs)
             val uri = resolvePlayableUri(playable)
-            replaceItemIfNeeded(p, idx, playable, uri)
-            ensureArtworkFile(playable)
+            // 先把通知栏封面文件准备好（仅 IO，不触碰播放器），再构建媒体项
+            val artUri = prepareArtworkUri(playable)
+            replaceItemIfNeeded(p, idx, playable, uri, artUri)
             p.seekTo(idx, 0L)
             p.prepare()
             p.play()
@@ -429,8 +430,15 @@ object PlayerController {
         }
     }
 
-    private fun buildMediaItem(song: Song, uriOverride: String? = null): MediaItem {
+    private fun buildMediaItem(
+        song: Song,
+        uriOverride: String? = null,
+        artworkUriOverride: android.net.Uri? = null,
+    ): MediaItem {
         val uri = uriOverride ?: song.playablePath
+        // 封面地址使用确定性文件路径：即便文件此刻尚未写好，后续（预缓存）补齐后
+        // 通知栏再次刷新即可拿到封面；不依赖播放中替换媒体项（那会打断播放）。
+        val artworkUri = artworkUriOverride ?: artworkFile(song)?.toUri()
         val metadata = MediaMetadata.Builder()
             .setTitle(song.title)
             .setArtist(song.displayArtist)
@@ -438,7 +446,7 @@ object PlayerController {
             .setIsPlayable(true)
             .setIsBrowsable(false)
             .apply {
-                artworkFileFor(song)?.let { setArtworkUri(it.toUri()) }
+                if (artworkUri != null) setArtworkUri(artworkUri)
             }
             .build()
         return MediaItem.Builder()
@@ -448,17 +456,20 @@ object PlayerController {
             .build()
     }
 
-    /** 仅当队列中该项的 URI 与期望不一致时才替换（避免无谓重载） */
+    /** 仅当队列中该项的 URI / 封面与期望不一致时才替换（避免无谓重载） */
     private fun replaceItemIfNeeded(
         p: ExoPlayer,
         index: Int,
         song: Song,
         uri: String,
+        artworkUri: android.net.Uri?,
     ) {
         if (index < 0 || index >= p.mediaItemCount) return
         val existing = p.getMediaItemAt(index)
-        if (existing.mediaId == song.path && existing.localConfiguration?.uri.toString() == uri) return
-        p.replaceMediaItem(index, buildMediaItem(song, uri))
+        val sameUri = existing.localConfiguration?.uri.toString() == uri
+        val sameArt = artworkUri == null || existing.mediaMetadata.artworkUri == artworkUri
+        if (existing.mediaId == song.path && sameUri && sameArt) return
+        p.replaceMediaItem(index, buildMediaItem(song, uri, artworkUri))
     }
 
     /** 播放模式的 repeat / shuffle 映射（与 Dart 端发布的通知栏状态一致） */
@@ -721,44 +732,47 @@ object PlayerController {
     // ===================== 封面文件（供通知栏使用） =====================
 
     /**
-     * 通知栏封面：把内嵌/缓存的封面字节写入磁盘文件，
-     * 并把 `file://` 地址写入 MediaItem 的 artworkUri（与原实现一致）。
+     * 通知栏封面文件路径（按歌曲路径哈希命名，确定性可预测）。
+     *
+     * 与原实现一致：把内嵌/缓存的封面字节写入磁盘文件，并把 `file://` 地址
+     * 写入 MediaItem 的 `artworkUri`，由 Media3 的通知栏自行加载。
      */
-    private fun artworkFileFor(song: Song): File? {
+    private fun artworkFile(song: Song): File? {
         val ctx = appContext ?: return null
         val dir = File(ctx.cacheDir, "artwork").apply { if (!exists()) mkdirs() }
-        val file = File(dir, "art_${song.path.hashCode()}.img")
-        return if (file.exists() && file.length() > 0) file else null
+        return File(dir, "art_${song.path.hashCode()}.img")
     }
 
-    /** 异步确保某首歌的通知栏封面文件已就绪 */
+    /**
+     * 确保封面文件就绪并返回其 `file://` 地址（在开始播放前调用）。
+     *
+     * 注意：**不访问 ExoPlayer**（ExoPlayer 要求单线程访问，只能在其构造线程使用），
+     * 仅做"读取封面字节 + 落盘"的 IO 工作。
+     */
+    private suspend fun prepareArtworkUri(song: Song): android.net.Uri? {
+        val file = artworkFile(song) ?: return null
+        if (file.exists() && file.length() > 0) return file.toUri()
+        return try {
+            val bytes = ArtworkCache.load(song.path, song.cachedArtworkPath) ?: return null
+            if (bytes.isEmpty()) return null
+            withContextIo { file.writeBytes(bytes) }
+            file.toUri()
+        } catch (e: Exception) {
+            Log.w(TAG, "准备通知栏封面失败: ${e.message}")
+            null
+        }
+    }
+
+    /** 后台预热某首歌的通知栏封面文件（只做 IO，同样不访问播放器） */
     private fun ensureArtworkFile(song: Song) {
-        val ctx = appContext ?: return
         ioScope.launch {
             try {
-                val dir = File(ctx.cacheDir, "artwork")
-                if (!dir.exists()) dir.mkdirs()
-                val file = File(dir, "art_${song.path.hashCode()}.img")
+                val file = artworkFile(song) ?: return@launch
                 if (file.exists() && file.length() > 0) return@launch
                 val bytes = ArtworkCache.load(song.path, song.cachedArtworkPath) ?: return@launch
-                if (bytes.isNotEmpty()) {
-                    file.writeBytes(bytes)
-                    // 正在播放的歌曲：刷新 MediaItem 的封面地址，让通知栏立即拿到封面
-                    val p = player ?: return@launch
-                    val idx = _currentIndex.value
-                    if (idx in 0 until p.mediaItemCount && _currentSong.value?.path == song.path) {
-                        val item = p.getMediaItemAt(idx)
-                        val newMetadata = item.mediaMetadata.buildUpon()
-                            .setArtworkUri(file.toUri())
-                            .build()
-                        // 仅在未携带封面时替换，避免打断正在进行的播放
-                        if (item.mediaMetadata.artworkUri == null) {
-                            p.replaceMediaItem(idx, item.buildUpon().setMediaMetadata(newMetadata).build())
-                        }
-                    }
-                }
+                if (bytes.isNotEmpty()) file.writeBytes(bytes)
             } catch (e: Exception) {
-                Log.w(TAG, "准备通知栏封面失败: ${e.message}")
+                Log.w(TAG, "预热通知栏封面失败: ${e.message}")
             }
         }
     }
