@@ -4,15 +4,17 @@ import 'package:flutter/material.dart';
 import 'package:flute_example/data/models/song.dart';
 import 'package:flute_example/widgets/mp_artwork.dart';
 
+/// 播放页封面组件
+///
+/// 注：历史上曾接收 position/duration 驱动唱片旋转动画，现已移除；
+/// 参数不再随播放进度重建封面子树（封面只需在歌曲/封面缓存变化时更新）。
 class AlbumUI extends StatelessWidget {
   final Song song;
-  final Duration? position;
-  final Duration? duration;
 
   /// 目标封面边长（会按屏幕宽度做上限约束，避免溢出）
   final double size;
 
-  const AlbumUI(this.song, this.duration, this.position, {this.size = 250.0});
+  const AlbumUI(this.song, {this.size = 250.0});
 
   @override
   Widget build(BuildContext context) {

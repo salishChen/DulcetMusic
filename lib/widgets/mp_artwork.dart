@@ -237,17 +237,32 @@ class _MpArtworkState extends State<MpArtwork> {
         ),
       );
 
-  Widget _image(Uint8List bytes) => ClipRRect(
-        borderRadius: widget.borderRadius,
-        child: Image.memory(
-          bytes,
-          width: widget.width,
-          height: widget.height,
-          fit: widget.fit,
-          gaplessPlayback: true,
-          errorBuilder: (_, __, ___) => _placeholder(),
-        ),
-      );
+  Widget _image(Uint8List bytes) {
+    // 按实际显示尺寸限制解码上限（cacheWidth）：
+    // FLAC 封面原图常达 3000px，未限尺寸时全屏展示/列表滚动会解码并
+    // 持有整张原始位图，内存与绘制开销都随原图分辨率爆炸。
+    final size = MediaQuery.of(context).size;
+    final dpr = MediaQuery.of(context).devicePixelRatio;
+    // 未指定尺寸（如全屏背景）时以屏幕最长边为解码上限，留足封面
+    // 缩放余量；指定尺寸时按 1 倍显示宽度 * dpr 解码。
+    final displayWidth = widget.width ?? size.longestSide;
+    int? cacheWidth;
+    if (displayWidth != null && displayWidth > 0) {
+      cacheWidth = (displayWidth * dpr).clamp(64, 2048).round();
+    }
+    return ClipRRect(
+      borderRadius: widget.borderRadius,
+      child: Image.memory(
+        bytes,
+        width: widget.width,
+        height: widget.height,
+        fit: widget.fit,
+        cacheWidth: cacheWidth,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => _placeholder(),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {

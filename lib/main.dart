@@ -139,12 +139,10 @@ class MyMaterialAppState extends State<MyMaterialApp>
       if (pendingSongs.isEmpty) return;
       print('启动时发现 ${pendingSongs.length} 首歌曲封面未缓存，开始后台缓存...');
       await CacheService.instance.cacheArtworkBatch(pendingSongs);
-      // 缓存完成后刷新歌曲列表
+      // 缓存完成后刷新现有 SongData（保留 _currentSongIndex 与已有
+      // notifier 订阅；重建实例会静默丢弃两者，造成页面闪变）
       if (mounted) {
-        final refreshed = await dbHelper.queryAllSongs();
-        setState(() {
-          songData = SongData(refreshed, dbHelper: dbHelper);
-        });
+        await songData?.reload();
       }
     } catch (e) {
       print('启动时封面缓存失败: $e');

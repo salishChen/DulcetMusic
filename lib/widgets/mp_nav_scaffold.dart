@@ -101,6 +101,12 @@ class MPNavScaffoldState extends State<MPNavScaffold>
   void selectPage(int index) {
     setState(() => _pageIndex = index);
     closeSidebar();
+    // 进入"喜欢"页（index=4）：做轻量一致性检查——
+    // 数据库中喜欢的音乐数量与页面展示数量一致则不刷新，
+    // 不一致（在别处新增/取消了喜欢）才重新加载。
+    if (index == 4) {
+      FavoritesPage.globalKey.currentState?.refreshIfStale();
+    }
   }
 
   @override
@@ -115,16 +121,18 @@ class MPNavScaffoldState extends State<MPNavScaffold>
     final pages = RepaintBoundary(
       child: IndexedStack(
         index: _pageIndex,
-        children: const [
-          SongsPage(),
-          AlbumsPage(),
-          ArtistsPage(),
-          PlaylistsPage(),
-          FavoritesPage(),
-          ScanPage(),
-          SubsonicConfigPage(),
-          StatsPage(),
-          SettingsPage(),
+        children: [
+          const SongsPage(),
+          const AlbumsPage(),
+          const ArtistsPage(),
+          const PlaylistsPage(),
+          // 喜欢页持有全局 key（不能为 const）：侧边栏每次切入时触发
+          // refreshIfStale 做按需刷新检查
+          FavoritesPage(key: FavoritesPage.globalKey),
+          const ScanPage(),
+          const SubsonicConfigPage(),
+          const StatsPage(),
+          const SettingsPage(),
         ],
       ),
     );

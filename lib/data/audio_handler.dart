@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
@@ -52,6 +53,24 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
   List<int> _shuffleOrder = [];
   int _shufflePos = 0;
 
+  /// 上次向平台（媒体通知/悬浮歌词）发布位置的时间（毫秒）。
+  ///
+  /// 播放器位置流约每 200ms 触发一次，直接每次都走
+  /// `_publishState()` + `_updateFloatingLyrics()` 会造成高频平台通道
+  /// 通信（通知栏 PlaybackState 刷新）与电量浪费。这里节流到 >=500ms
+  /// 才推送一次；`positionN.value` 照常更新，仅供 UI（Slider/时间文本）
+  /// 经 ValueListenableBuilder 局部消费。
+  int _lastPublishedPosMs = -1;
+
+  /// 位置到达平台的节流间隔（毫秒）
+  static const int _platformPosIntervalMs = 500;
+
+  /// 播放令牌：每次 [playSong] 自增。快速连续点"下一曲"或换歌时，
+  /// 早一步发起的 playSong 的异步段（DB 查询、缓存确认、play 完成
+  /// 后的收尾）完成时会发现自己的令牌已过期，直接放弃收尾，避免
+  /// 旧歌的状态回写覆盖新歌（通知栏闪跳、`_index` 跳两首等竞态）。
+  int _playSeq = 0;
+
   MpAudioHandler(this.player, this.playlistData) {
     _init();
   }
@@ -63,8 +82,7 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
     });
     player.onPositionChanged.listen((p) {
       positionN.value = p;
-      _publishState();
-      _updateFloatingLyrics();
+      _publishStateThrottled(p);
     });
     player.onPlayerComplete.listen((_) => _onComplete());
     player.onPlayerStateChanged.listen((s) {
@@ -113,6 +131,25 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
 
   // ===================== 悬浮窗歌词 =====================
 
+  /// 节流推送位置相关的平台状态（通知栏 + 悬浮歌词）
+  void _publishStateThrottled(Duration p) {
+    final ms = p.inMilliseconds;
+    if (_lastPublishedPosMs >= 0 &&
+        (ms - _lastPublishedPosMs).abs() < _platformPosIntervalMs) {
+      return;
+    }
+    _lastPublishedPosMs = ms;
+    _publishState();
+    _updateFloatingLyrics();
+  }
+
+  /// 位置发生跳变（seek / 起播）时立即推送，绕过节流
+  void _publishStateImmediate(Duration p) {
+    _lastPublishedPosMs = p.inMilliseconds;
+    _publishState();
+    _updateFloatingLyrics();
+  }
+
   /// 更新悬浮窗歌词内容
   ///
   /// 将原始歌词和播放位置传递给 Android 端，由 Android 端自行解析和同步。
@@ -120,7 +157,6 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
   void _updateFloatingLyrics() {
     final lyricsMgr = LyricsOverlayManager.instance;
     if (!lyricsMgr.isVisible.value) {
-      print('悬浮窗不可见，跳过歌词更新');
       return;
     }
 
@@ -129,9 +165,7 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
     final positionMs = positionN.value.inMilliseconds;
     final playing = isPlaying.value;
 
-    print('更新悬浮窗歌词: lyrics=${lyrics?.length ?? 0} chars, position=${positionMs}ms, playing=$playing');
-
-    // 将原始歌词和位置写入 SharedPreferences，Android 端可独立处理
+    // 将原始歌词和位置写入 MethodChannel，Android 端可独立处理
     lyricsMgr.updateLyrics(
       lyrics: lyrics,
       positionMs: positionMs,
@@ -148,29 +182,38 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
   /// 2. 未缓存的远程歌曲 -> 流式播放 + 后台缓存
   /// 3. 本地歌曲 -> 本地文件播放
   Future<bool> playSong(Song song) async {
+    // 自增令牌：本次调用的身份；后续每个 await 之后校验，
+    // 过期即放弃（新一轮 playSong 已接管）。
+    final seq = ++_playSeq;
+    bool stale() => seq != _playSeq;
+
     final songs = playlistData.songs;
     final idx = songs.indexWhere((s) => s.path == song.path);
     if (idx < 0) return false;
     _index = idx;
     if (playlistData.playMode == PlayMode.random) _syncShufflePos();
-    
+
     // 立即使用传入的 song 对象，不等待数据库查询（避免延迟）。
     // 注意：不在此处异步重查数据库，否则会与后台歌词获取产生竞态，
     // 用无歌词的旧数据覆盖已更新的 currentSong，导致歌词不显示。
     currentSong.value = song;
     durationN.value = null;
     positionN.value = Duration.zero;
+    // 换歌/起播位置归零：立即推送一次，重置位置节流基线
+    _publishStateImmediate(Duration.zero);
     _publishMediaItem(song);
-    
+
     try {
       // 0. 若是远程歌曲，先尝试从数据库确认是否已缓存，避免重复触发缓存：
       //    播放列表/歌曲列表中的 song 对象可能因未及时刷新而 isCached=false，
       //    但数据库里其实已经有缓存路径了。此时应直接本地播放。
       if (song.isRemote && !song.isCached && song.remoteId != null) {
         final dbSong = await DatabaseHelper.instance.querySongByRemoteId(song.remoteId!);
+        if (stale()) return true; // 新的播放请求已接管，本次静默让位
         if (dbSong != null && dbSong.isCached) {
           final cachedFile = File(dbSong.cachedPath!);
           if (await cachedFile.exists()) {
+            if (stale()) return true;
             song = song.copyWith(cachedPath: dbSong.cachedPath);
             // 同步更新 currentSong，使播放页/播放栏能即时反映已缓存状态
             currentSong.value = song;
@@ -182,31 +225,42 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
         final cachedFile = File(song.cachedPath!);
         if (await cachedFile.exists()) {
           await player.play(DeviceFileSource(song.cachedPath!));
+          if (stale()) return true;
           // 检查并获取歌词（如果歌曲没有歌词）
           _checkAndFetchLyricsIfNeeded(song);
         } else {
           // 缓存文件丢失，走流式播放
           await _playRemoteAndCache(song);
+          if (stale()) return true;
         }
       }
       // 2. 未缓存的远程歌曲：流式播放 + 后台缓存
       else if (song.isRemote) {
         await _playRemoteAndCache(song);
+        if (stale()) return true;
       }
       // 3. 本地歌曲
       else {
         await player.play(DeviceFileSource(song.path));
+        if (stale()) return true;
       }
+      // player.play 完成后的收尾（状态/统计/预缓存）：
+      // 若期间用户已发起新的 playSong，不再覆盖其状态。
+      if (stale()) return true;
       isPlaying.value = true;
-      // 递增播放次数（后台执行，不阻塞播放）
+      // 递增播放次数（后台执行，不阻塞播放；unawaited 显式声明 fire-and-forget）
       if (song.id != null) {
-        DatabaseHelper.instance.incrementPlayCount(song.id!);
+        unawaited(DatabaseHelper.instance.incrementPlayCount(song.id!));
       }
       // 预缓存下一首
       _precacheNext();
       return true;
     } catch (e) {
+      // 只有"最新的这次播放"才允许写失败状态，旧请求的失败不影响新一轮
+      if (stale()) return false;
       print('MpAudioHandler: 播放失败 $e');
+      // 连接可能已失效（内网/公网切换）：重置，下次播放重新解析
+      SubsonicService.instance.resetConnection();
       isPlaying.value = false;
       currentSong.value = null;
       return false;
@@ -215,8 +269,10 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
 
   /// 流式播放远程歌曲并后台缓存
   Future<void> _playRemoteAndCache(Song song) async {
-    // 重新解析连接（可能内网/公网切换）
-    SubsonicService.instance.resetConnection();
+    // 不再每次播放都强制 resetConnection()：旧实现每换一首远程歌都
+    // 重新 ping 内网（最长 5s 超时），换歌会有明显卡顿感。连接复用
+    // 已缓存的 _activeBaseUrl；播放失败时由 playSong 的 catch 侧重置，
+    // 下次播放会重新解析连接。
     final streamUrl = await SubsonicService.instance.getStreamUrl(song.remoteId!);
     print('MpAudioHandler: 开始流式播放 - ${song.title} (${song.artist})');
     await player.play(UrlSource(streamUrl));
@@ -377,7 +433,7 @@ class MpAudioHandler extends BaseAudioHandler with SeekHandler {
   Future<void> onSeek(Duration position) async {
     await player.seek(position);
     positionN.value = position;
-    _publishState();
+    _publishStateImmediate(position);
   }
 
   Future<void> seek(Duration position) => onSeek(position);

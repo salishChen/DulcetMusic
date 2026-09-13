@@ -1,3 +1,4 @@
+import 'dart:ui' show ImageFilter;
 import 'package:flute_example/data/audio_handler.dart';
 import 'package:flute_example/data/lyrics_overlay_manager.dart';
 import 'package:flute_example/data/models/song.dart';
@@ -30,12 +31,10 @@ Route<void> nowPlayingSlideRoute(Widget page) {
             // 播放页从屏幕底部（完全不可见）滑到顶部（完全可见），
             // 总行程 = 屏幕高度；播放栏固定不动，页面从下方滑过覆盖它。
             final totalTravel = screenH;
-            // 接近完全展开时直接 snap 到最终位置，消除尾部微偏移导致的
-            // 底部黑色区域闪现：最后 2% 行程（约 16px）由 Transform 产生
-            // 的微小偏移会让页面底部被路由 ModalScope 裁剪，露出背后已被
-            // 上移淡出的主页留下的空洞。
-            if (p >= 0.98) return c!;
-            final offset = totalTravel * (1.0 - p);
+            // 末段 clamp：p>=0.98 后位移归零（不改变 Transform/Opacity
+            // 结构）。既消除尾部约 16px 微偏移造成的底部黑区闪现，
+            // 也避免"直接返回 child"在回滑跨越 0.98 时的结构性跳变。
+            final offset = p >= 0.98 ? 0.0 : totalTravel * (1.0 - p);
             // 透明度：页面自身位移 40px 即从完全透明到完全不透明，
             // 独立于控制器进度——手指滑动距离由 _effectiveDragDistance 决定，
             // 透明度由页面实际位移决定。
@@ -198,8 +197,6 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
   late final bool _empty;
   bool _playing = false;
   bool _muted = false;
-  Duration? _duration;
-  Duration _position = Duration.zero;
 
   List<LrcLine> _lyricLines = const [];
   int _activeLine = -1;
@@ -244,12 +241,9 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
     if (h != null) {
       _playing = h.isPlaying.value;
       _muted = h.isMuted.value;
-      _duration = h.durationN.value;
-      _position = h.positionN.value;
       h.currentSong.addListener(_onSongChanged);
       h.isPlaying.addListener(_onPlayingChanged);
       h.isMuted.addListener(_onMutedChanged);
-      h.durationN.addListener(_onDurationChanged);
       h.positionN.addListener(_onPositionChanged);
       // 仅歌曲列表点歌入口（nowPlayTap=false）才真正起播；
       // 底部播放栏入口（nowPlayTap=true）或空状态均不自动播放。
@@ -289,7 +283,6 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
     h?.currentSong.removeListener(_onSongChanged);
     h?.isPlaying.removeListener(_onPlayingChanged);
     h?.isMuted.removeListener(_onMutedChanged);
-    h?.durationN.removeListener(_onDurationChanged);
     h?.positionN.removeListener(_onPositionChanged);
     nowPlayingController.removeStatusListener(_onProgressStatus);
     // nowPlayingOpen.value 已在 _popSelf() 中提前置 false，此处不再重复设置，
@@ -331,15 +324,15 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
     if (mounted) setState(() => _muted = audioHandler!.isMuted.value);
   }
 
-  void _onDurationChanged() {
-    if (mounted) setState(() => _duration = audioHandler!.durationN.value);
-  }
-
+  /// 位置更新：不再整页 setState（避免每次 position 通知重建
+  /// PageView/播放列表/封面等整棵子树）。
+  ///
+  /// 仅当高亮歌词行变化时才触发一次 setState（供 3 行迷你歌词与
+  /// 歌词页列表刷新）；时间文本与进度条由 [_PositionBar] 经
+  /// ValueListenableBuilder 自行订阅 positionN。
   void _onPositionChanged() {
     if (!mounted) return;
-    final pos = audioHandler!.positionN.value;
-    setState(() => _position = pos);
-    _updateActiveLine(pos);
+    _updateActiveLine(audioHandler!.positionN.value);
   }
 
   /// 计算当前激活歌词行（始终计算，供 3 行迷你歌词与详情面板共用）
@@ -355,6 +348,7 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
     }
     if (idx != _activeLine) {
       _activeLine = idx;
+      if (mounted) setState(() {});
       if (_lyricsController.value > 0.5) _scrollToActive();
     }
   }
@@ -477,14 +471,8 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
     }
   }
 
-  String get _durationText => _duration != null ? _fmt(_duration!) : '';
-  String get _positionText => _fmt(_position);
-
-  String _fmt(Duration d) {
-    final m = d.inMinutes;
-    final s = d.inSeconds % 60;
-    return '$m:${s.toString().padLeft(2, '0')}';
-  }
+  // 分钟:秒 格式化已提升为文件底部的顶层函数 [_fmtDuration]，
+  // 供本页与 [_PositionBar] 共用。
 
   /// 主控按钮（上一首 / 播放暂停 / 下一首），尺寸为原来的 75%
   Widget _control(IconData icon, VoidCallback? onPressed, {double size = 48}) {
@@ -500,27 +488,10 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final h = audioHandler;
-    final max = _duration?.inMilliseconds.toDouble() ?? 0.0;
 
-    final slider = max <= 0
-        ? const SizedBox.shrink()
-        : SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 3.0,
-              thumbShape:
-                  const RoundSliderThumbShape(enabledThumbRadius: 6.0),
-              overlayShape:
-                  const RoundSliderOverlayShape(overlayRadius: 14.0),
-            ),
-            child: Slider(
-              value: _position.inMilliseconds.toDouble().clamp(0.0, max),
-              min: 0.0,
-              max: max,
-              activeColor: Colors.white,
-              inactiveColor: Colors.white38,
-              onChanged: (v) => h?.seek(Duration(milliseconds: v.toInt())),
-            ),
-          );
+    // 进度条 + 时间文本：独立小部件，直接订阅 positionN，
+    // 不再随播放进度整页重建。
+    final slider = _PositionBar(h);
 
     final mainPlayer = SafeArea(
         top: true,
@@ -575,11 +546,6 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                             const EdgeInsets.symmetric(horizontal: 16.0),
                         child: slider,
                       ),
-                      Text(
-                        max <= 0 ? '' : '$_positionText / $_durationText',
-                        style: const TextStyle(
-                            color: Colors.white70, fontSize: 13.0),
-                      ),
                       const SizedBox(height: 6.0),
                       // 主控：上一首 / 播放暂停 / 下一首（原尺寸的 75%）
                       Row(
@@ -614,8 +580,8 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
                     children: [
                       // 播放模式切换（顺序 / 随机 / 单曲），实时刷新
                       ValueListenableBuilder<PlayMode>(
-                        valueListenable: _playlistData?.modeNotifier ??
-                            ValueNotifier(PlayMode.sequential),
+                        valueListenable:
+                            _playlistData?.modeNotifier ?? kEmptyPlayModeNotifier,
                         builder: (_, mode, __) => IconButton(
                           icon: Icon(mode.icon, color: Colors.white),
                           iconSize: 34.8,
@@ -720,17 +686,27 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
           body: Stack(
             fit: StackFit.expand,
             children: [
-              // 静态共享背景：模糊封面 + 滤镜 + 暗化，固定在底层，
+              // 静态共享背景：模糊封面 + 暗化，固定在底层，
               // 正在播放页与播放列表页共用，且不会随竖向翻页而移动。
-              MpArtwork(
-                _song.path,
-                cachedArtworkPath: _song.cachedArtworkPath,
-                songId: _song.id,
-                coverArtId: _song.coverArtId,
-                fit: BoxFit.cover,
+              // 用 RepaintBoundary + ImageFiltered 替代原 BackdropFilter：
+              // ImageFiltered 仅作用于封面自身这一子树，其结果可随
+              // RepaintBoundary 隔离为独立图层在动画期间反复复用；
+              // BackdropFilter 会对下层整屏内容逐帧重新采样，是转场
+              // 跟手时的掉帧元凶。
+              RepaintBoundary(
+                child: ImageFiltered(
+                  imageFilter: ImageFilter.blur(sigmaX: 10.0, sigmaY: 10.0),
+                  child: MpArtwork(
+                    _song.path,
+                    cachedArtworkPath: _song.cachedArtworkPath,
+                    songId: _song.id,
+                    coverArtId: _song.coverArtId,
+                    fit: BoxFit.cover,
+                  ),
+                ),
               ),
-              blurFilter(),
-              Container(color: Colors.black.withOpacity(0.35)),
+              // 暗化蒙版 + 轻度单色叠加（仅1/10透明度，保留视觉层次）
+              Container(color: Colors.black.withOpacity(0.45)),
               PageView(
                 scrollDirection: Axis.vertical,
                 controller: _pageController,
@@ -828,8 +804,7 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
               Expanded(
                 flex: 5,
                 child: Center(
-                  child:
-                      AlbumUI(_song, _duration, _position, size: 375.0),
+                  child: AlbumUI(_song, size: 375.0),
                 ),
               ),
               // 三行迷你歌词
@@ -991,8 +966,7 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
           const Divider(height: 1.0, color: Colors.white24),
           Expanded(
             child: ValueListenableBuilder<List<Song>>(
-              valueListenable: _playlistData?.notifier ??
-                  ValueNotifier<List<Song>>(const []),
+              valueListenable: _playlistData?.notifier ?? kEmptySongListNotifier,
               builder: (context, playlist, _) {
                 if (playlist.isEmpty) {
                   return const Center(
@@ -1138,7 +1112,7 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
               ),
             ),
             ValueListenableBuilder<bool>(
-              valueListenable: h?.isPlaying ?? ValueNotifier(false),
+              valueListenable: h?.isPlaying ?? kEmptyBoolNotifier,
               builder: (_, playing, __) => Icon(
                 playing ? Icons.equalizer : Icons.play_arrow,
                 color: Colors.white,
@@ -1147,6 +1121,105 @@ class _NowPlayingState extends State<NowPlaying> with TickerProviderStateMixin {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ===================== 空兜底 notifier（模块级单例） =====================
+//
+// 之前多处 `valueListenable: x ?? ValueNotifier(...)` 在每次 build 都
+// 新建一个 ValueNotifier，导致 ValueListenableBuilder 反复重挂监听并
+// 产生短命垃圾。改为模块级单例，冷启动/异常态共用同一实例。
+
+final ValueNotifier<PlayMode> kEmptyPlayModeNotifier =
+    ValueNotifier<PlayMode>(PlayMode.sequential);
+
+final ValueNotifier<List<Song>> kEmptySongListNotifier =
+    ValueNotifier<List<Song>>(const []);
+
+final ValueNotifier<bool> kEmptyBoolNotifier = ValueNotifier<bool>(false);
+
+/// 分钟:秒 格式化（本页与 [_PositionBar] 共用）
+String _fmtDuration(Duration d) {
+  final m = d.inMinutes;
+  final s = d.inSeconds % 60;
+  return '$m:${s.toString().padLeft(2, '0')}';
+}
+
+// ===================== 进度条 + 时间文本 =====================
+
+/// 播放页进度条与时间文本。
+///
+/// 直接订阅 `positionN`（局部重建，仅本小组件每 tick 重建一次），
+/// 避免动画/歌词页等大子树随播放进度刷新。拖动期间暂停跟随流更新，
+/// 松手才真正 seek，消除拖动中的 thumb 抖动与高频 seek 请求。
+class _PositionBar extends StatefulWidget {
+  final MpAudioHandler? h;
+  const _PositionBar(this.h);
+
+  @override
+  State<_PositionBar> createState() => _PositionBarState();
+}
+
+class _PositionBarState extends State<_PositionBar> {
+  /// 拖动中的滑块值（秒级），null 表示未在拖动
+  double? _dragValue;
+
+  @override
+  Widget build(BuildContext context) {
+    final h = widget.h;
+    if (h == null) return const SizedBox.shrink();
+
+    return ValueListenableBuilder<Duration>(
+      valueListenable: h.positionN,
+      builder: (context, pos, _) {
+        final duration = h.durationN.value;
+        final maxMs = duration?.inMilliseconds.toDouble() ?? 0.0;
+        final isDragging = _dragValue != null;
+
+        final sliderWidget = maxMs <= 0
+            ? const SizedBox.shrink()
+            : SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 3.0,
+                  thumbShape:
+                      const RoundSliderThumbShape(enabledThumbRadius: 6.0),
+                  overlayShape:
+                      const RoundSliderOverlayShape(overlayRadius: 14.0),
+                ),
+                child: Slider(
+                  // 拖动期间用本地值渲染，规避流更新造成的来回跳动
+                  value: (isDragging
+                          ? _dragValue!
+                          : pos.inMilliseconds.toDouble())
+                      .clamp(0.0, maxMs),
+                  min: 0.0,
+                  max: maxMs,
+                  activeColor: Colors.white,
+                  inactiveColor: Colors.white38,
+                  onChanged: (v) => setState(() => _dragValue = v),
+                  onChangeEnd: (v) {
+                    h.seek(Duration(milliseconds: v.toInt()));
+                    setState(() => _dragValue = null);
+                  },
+                ),
+              );
+
+        final currentMs = _dragValue ?? pos.inMilliseconds.toDouble();
+        final text = maxMs <= 0
+            ? ''
+            : '${_fmtDuration(Duration(milliseconds: currentMs.toInt()))}'
+                ' / ${_fmtDuration(duration ?? Duration.zero)}';
+
+        return Column(
+          children: [
+            sliderWidget,
+            Text(text,
+                style:
+                    const TextStyle(color: Colors.white70, fontSize: 13.0)),
+          ],
+        );
+      },
     );
   }
 }

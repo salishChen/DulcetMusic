@@ -21,6 +21,11 @@ class CacheService {
 
   Directory? _cacheDir;
 
+  /// 在途缓存任务注册表（remoteId -> Future）：
+  /// 同一首歌可能被 playSong / _precacheNext / 启动补缓存并发触发，
+  /// 这里统一复用同一个下载任务，避免重复下载与重复写库。
+  final Map<String, Future<String?>> _songCacheTasks = {};
+
   /// 获取缓存目录
   Future<Directory> getCacheDir() async {
     if (_cacheDir != null) return _cacheDir!;
@@ -96,9 +101,26 @@ class CacheService {
 
   /// 缓存歌曲到本地
   /// 返回缓存后的本地文件路径，失败返回 null
+  ///
+  /// 同一 remoteId 的并发请求会复用同一个在途任务（见
+  /// [_songCacheTasks]），不会重复下载。
   Future<String?> cacheSong(Song song) async {
     if (song.remoteId == null) return null;
+    final existing = _songCacheTasks[song.remoteId!];
+    if (existing != null) return existing;
+    final task = _doCacheSong(song);
+    _songCacheTasks[song.remoteId!] = task;
+    try {
+      return await task;
+    } finally {
+      // 任务仍是自己时才移除（防止 ABA）：新任务已被注册则保留
+      if (identical(_songCacheTasks[song.remoteId!], task)) {
+        _songCacheTasks.remove(song.remoteId!);
+      }
+    }
+  }
 
+  Future<String?> _doCacheSong(Song song) async {
     try {
       final dir = await getCacheDir();
       final cachePath = '${dir.path}/${song.remoteId}.cache';

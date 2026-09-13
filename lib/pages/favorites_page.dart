@@ -14,13 +14,19 @@ import 'package:flute_example/pages/now_playing.dart';
 
 /// 喜欢页面：三个 Tab — 喜欢的音乐、喜欢的专辑、喜欢的艺术家
 class FavoritesPage extends StatefulWidget {
+  /// 全局 key：本页常驻于 IndexedStack（保活不重建），
+  /// 侧边栏每次切到"喜欢"页时用它调用 [FavoritesPageState.refreshIfStale]
+  /// 做按需一致性检查，解决"在别处点了喜欢但本页不刷新"的问题。
+  static final GlobalKey<FavoritesPageState> globalKey =
+      GlobalKey<FavoritesPageState>();
+
   const FavoritesPage({Key? key}) : super(key: key);
 
   @override
-  State<FavoritesPage> createState() => _FavoritesPageState();
+  FavoritesPageState createState() => FavoritesPageState();
 }
 
-class _FavoritesPageState extends State<FavoritesPage>
+class FavoritesPageState extends State<FavoritesPage>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
   final dbHelper = DatabaseHelper.instance;
@@ -58,6 +64,26 @@ class _FavoritesPageState extends State<FavoritesPage>
         _likedArtists = artists;
         _loading = false;
       });
+    }
+  }
+
+  /// 进入（切到）喜欢页时的一致性检查。
+  ///
+  /// 逻辑：
+  /// 1. 用轻量 COUNT 查询数据库中"喜欢的音乐"数量（不在客户端对
+  ///    isLiked 状态做任何中间缓存，保证读到的是落库后的真实数量）；
+  /// 2. 与页面当前展示的喜欢音乐数量比对；
+  /// 3. 一致 -> 不做任何刷新（保持滚动位置、避免整页重建）；
+  ///    不一致 -> 有增删发生，重新加载全部三个 Tab 的数据。
+  ///
+  /// 注意：本页常驻 IndexedStack，initState 只执行一次，因此"重新
+  /// 进入"依赖 [MPNavScaffoldState.selectPage] 调用本方法。
+  Future<void> refreshIfStale() async {
+    if (_loading) return; // 首次加载尚未完成，无需检查
+    final dbCount = await dbHelper.queryLikedSongCount();
+    if (!mounted) return;
+    if (dbCount != _likedSongs.length) {
+      await _loadData();
     }
   }
 

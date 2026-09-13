@@ -181,12 +181,16 @@ class DatabaseHelper {
   // ======================== 歌曲 ========================
 
   /// 查询全部歌曲（按标题排序），带内存缓存
+  ///
+  /// 返回缓存列表的隔离副本：调用方可安全持有/排序/修改，
+  /// 不会静默污染内部缓存。
   Future<List<Song>> queryAllSongs() async {
-    if (_cachedAllSongs != null) return _cachedAllSongs!;
-    final db = await database;
-    final rows = await db.query('songs', orderBy: 'title COLLATE NOCASE ASC');
-    _cachedAllSongs = rows.map(Song.fromMap).toList();
-    return _cachedAllSongs!;
+    if (_cachedAllSongs == null) {
+      final db = await database;
+      final rows = await db.query('songs', orderBy: 'title COLLATE NOCASE ASC');
+      _cachedAllSongs = rows.map(Song.fromMap).toList();
+    }
+    return List.of(_cachedAllSongs!);
   }
 
   /// 按 id 查询单曲
@@ -298,25 +302,26 @@ class DatabaseHelper {
 
   // ======================== 专辑（聚合） ========================
 
-  /// 查询全部专辑（GROUP BY album，在 DB 层聚合），带内存缓存
+  /// 查询全部专辑（GROUP BY album，在 DB 层聚合），带内存缓存（返回隔离副本）
   Future<List<Album>> queryAlbums() async {
-    if (_cachedAlbums != null) return _cachedAlbums!;
-    final db = await database;
-    final rows = await db.rawQuery('''
-      SELECT album AS title,
-             COALESCE(MAX(albumArtist), MAX(artist)) AS artist,
-             MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
-             MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
-             MAX(cachedArtworkPath) AS coverArtworkPath,
-             MAX(coverArtId) AS coverArtId,
-             COUNT(*) AS songCount
-      FROM songs
-      WHERE album IS NOT NULL AND album != ''
-      GROUP BY album
-      ORDER BY album COLLATE NOCASE ASC
-    ''');
-    _cachedAlbums = rows.map(Album.fromMap).toList();
-    return _cachedAlbums!;
+    if (_cachedAlbums == null) {
+      final db = await database;
+      final rows = await db.rawQuery('''
+        SELECT album AS title,
+               COALESCE(MAX(albumArtist), MAX(artist)) AS artist,
+               MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
+               MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
+               MAX(cachedArtworkPath) AS coverArtworkPath,
+               MAX(coverArtId) AS coverArtId,
+               COUNT(*) AS songCount
+        FROM songs
+        WHERE album IS NOT NULL AND album != ''
+        GROUP BY album
+        ORDER BY album COLLATE NOCASE ASC
+      ''');
+      _cachedAlbums = rows.map(Album.fromMap).toList();
+    }
+    return List.of(_cachedAlbums!);
   }
 
   /// 查询专辑内全部歌曲（按音轨号排序）
@@ -331,24 +336,25 @@ class DatabaseHelper {
 
   // ======================== 艺术家（聚合） ========================
 
-  /// 查询全部艺术家（GROUP BY artist），带内存缓存
+  /// 查询全部艺术家（GROUP BY artist），带内存缓存（返回隔离副本）
   Future<List<Artist>> queryArtists() async {
-    if (_cachedArtists != null) return _cachedArtists!;
-    final db = await database;
-    final rows = await db.rawQuery('''
-      SELECT artist AS name,
-             COUNT(*) AS songCount,
-             COUNT(DISTINCT album) AS albumCount,
-             MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
-             MAX(cachedArtworkPath) AS coverArtworkPath,
-             MAX(coverArtId) AS coverArtId
-      FROM songs
-      WHERE artist IS NOT NULL AND artist != ''
-      GROUP BY artist
-      ORDER BY artist COLLATE NOCASE ASC
-    ''');
-    _cachedArtists = rows.map(Artist.fromMap).toList();
-    return _cachedArtists!;
+    if (_cachedArtists == null) {
+      final db = await database;
+      final rows = await db.rawQuery('''
+        SELECT artist AS name,
+               COUNT(*) AS songCount,
+               COUNT(DISTINCT album) AS albumCount,
+               MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
+               MAX(cachedArtworkPath) AS coverArtworkPath,
+               MAX(coverArtId) AS coverArtId
+        FROM songs
+        WHERE artist IS NOT NULL AND artist != ''
+        GROUP BY artist
+        ORDER BY artist COLLATE NOCASE ASC
+      ''');
+      _cachedArtists = rows.map(Artist.fromMap).toList();
+    }
+    return List.of(_cachedArtists!);
   }
 
   /// 查询艺术家全部歌曲
@@ -623,6 +629,16 @@ class DatabaseHelper {
         where: 'isLiked = 1',
         orderBy: 'title COLLATE NOCASE ASC');
     return rows.map(Song.fromMap).toList();
+  }
+
+  /// 查询喜欢的歌曲数量（仅 COUNT，用于进入喜欢页时做轻量一致性检查：
+  /// 与页面内存中的数量一致则跳过整表刷新）
+  Future<int> queryLikedSongCount() async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS c FROM songs WHERE isLiked = 1',
+    );
+    return rows.first['c'] as int? ?? 0;
   }
 
   /// 查询喜欢的专辑（通过歌曲聚合）

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flute_example/data/cache_service.dart';
 import 'package:flute_example/data/database_helper.dart';
 import 'package:flute_example/data/models/song.dart';
 import 'package:flute_example/data/audio_handler.dart';
@@ -355,25 +356,35 @@ class _SongsPageState extends State<SongsPage> {
       ),
     );
 
-    if (confirmed != true) return;
+    // 弹窗期间用户可能已离开本页：inherited 查找/后续 setState 前先校验
+    if (confirmed != true || !mounted) return;
 
     final dbHelper = DatabaseHelper.instance;
-    final songData = MPInheritedWidget.of(context).songData;
+    final rootIW = MPInheritedWidget.of(context);
+    final songData = rootIW.songData;
     if (songData == null) return;
 
     final songs = songData.songs;
-    final selectedSongs = songs.where((s) => _selectedPaths.contains(s.path)).toList();
+    final selectedSongs =
+        songs.where((s) => _selectedPaths.contains(s.path)).toList();
 
     for (final song in selectedSongs) {
-      if (song.id != null) {
-        await dbHelper.deleteSong(song.id!);
+      if (song.id == null) continue;
+      // 先清理远程缓存文件与缓存记录（需要 songs 行仍存在才能查到路径），
+      // 否则删除歌曲记录后会留下孤儿缓存文件。
+      if (song.isRemote && song.isCached) {
+        await CacheService.instance.deleteCache([song.id!]);
       }
+      await dbHelper.deleteSong(song.id!);
     }
+
+    if (!mounted) return;
 
     // 刷新歌曲列表
     final refreshed = await dbHelper.queryAllSongs();
     songData.updateSongs(refreshed);
 
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('已删除 ${selectedSongs.length} 首歌曲'),
       duration: const Duration(seconds: 2),

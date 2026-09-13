@@ -264,7 +264,13 @@ class _MiniPlayerBarState extends State<MiniPlayerBar>
         _barOffset = 0.0;
         _dragDirection = null;
         _barSnapController = null;
-        controller.dispose();
+        // 不能在 status listener 被同步遍历期间 dispose 自身：
+        // AnimationController.notifyStatusListeners 正在遍历监听器，
+        // 此时销毁可能引发 "used after being disposed"。推迟到
+        // 本帧结束后释放，安全且不产生额外动画帧。
+        controller.stop();
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => controller.dispose());
       }
     });
     controller.forward();

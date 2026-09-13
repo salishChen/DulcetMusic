@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -138,23 +139,34 @@ class PlaylistData {
 
   // ===================== 播放列表持久化 =====================
 
+  /// 持久化去抖定时器
+  ///
+  /// 播放列表的印尼歌更新（歌词/封面回填会逐首调用 updateSong）会高频
+  /// 触发 _notify -> _persist；逐次全量 jsonEncode 写 SharedPreferences
+  /// 开销大。去抖 500ms 合并写入，最后一次状态一定被保存。
+  Timer? _persistTimer;
+
   /// 将当前播放列表及播放模式异步写入 SharedPreferences
   void _persist() {
-    try {
-      // 保存每首歌的标识：优先数据库 id，其次 path（可能未入库的线上歌曲）
-      final data = _playlist
-          .map((s) => {
-                'id': s.id,
-                'path': s.path,
-              })
-          .toList();
-      SharedPreferences.getInstance().then((prefs) async {
-        await prefs.setString(_prefsKey, jsonEncode(data));
-        await prefs.setInt(_prefsModeKey, _playMode.index);
-      }).catchError((_) {});
-    } catch (_) {
-      // 持久化失败不影响播放
-    }
+    _persistTimer?.cancel();
+    _persistTimer = Timer(const Duration(milliseconds: 500), () {
+      try {
+        // 保存每首歌的标识：优先数据库 id，其次 path（可能未入库的线上歌曲）
+        final data = _playlist
+            .map((s) => {
+                  'id': s.id,
+                  'path': s.path,
+                })
+            .toList();
+        SharedPreferences.getInstance().then((prefs) {
+          // Future<bool>/Future<T> 的 onError 处理器需返回对应类型值
+          prefs.setString(_prefsKey, jsonEncode(data)).catchError((_) => false);
+          prefs.setInt(_prefsModeKey, _playMode.index).catchError((_) => false);
+        }).catchError((_) {});
+      } catch (_) {
+        // 持久化失败不影响播放
+      }
+    });
   }
 
   /// 从 SharedPreferences 恢复上次关闭前的播放列表与播放模式
