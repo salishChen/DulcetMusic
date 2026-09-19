@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +35,12 @@ import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 
 /**
+ * 不显示时长时，「加号」按钮额外向右偏移的距离（需求：向右挪 20px）。
+ * 用 `offset` 只做视觉位移，避免改变按钮尺寸与触摸区的相对关系。
+ */
+private val ADD_BUTTON_SHIFT_WHEN_NO_DURATION = 20.dp
+
+/**
  * 通用歌曲列表项。
  *
  * 对应原 Flutter 工程 `lib/widgets/mp_song_list_item.dart` 的 `MpSongListItem`：
@@ -49,6 +56,8 @@ import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
  * @param isCurrent 是否为当前播放歌曲（高亮歌名）
  * @param showDivider 是否显示行底分隔线
  * @param showAddButton 是否显示"加入播放列表"按钮（歌单/缓存管理等场景可关闭）
+ * @param showDuration 是否显示歌曲时长（第二十二轮新增：歌曲页不显示时长，
+ *   并把加号右移 [ADD_BUTTON_SHIFT_WHEN_NO_DURATION]，其余页面保持原样）
  */
 @Composable
 fun MpSongListItem(
@@ -60,6 +69,7 @@ fun MpSongListItem(
     showArtwork: Boolean = true,
     showDivider: Boolean = true,
     showAddButton: Boolean = true,
+    showDuration: Boolean = true,
 ) {
     val context = LocalContext.current
     // 缩略图按显示尺寸（50dp）采样解码，避免列表滚动时全尺寸解码卡顿
@@ -119,13 +129,21 @@ fun MpSongListItem(
                     )
                     Spacer(Modifier.width(4.dp))
                 }
-                Text(
-                    text = song.durationText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.ytTextSecondary,
-                )
+                // 歌曲时长：歌曲页按需求去掉（加号随之右移，见下方 offset）
+                if (showDuration) {
+                    Text(
+                        text = song.durationText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.ytTextSecondary,
+                    )
+                }
                 if (showAddButton) {
                     IconButton(
+                        // 需求：不显示时长时，加号再向右挪 20dp
+                        // （仅做视觉位移，不改动触摸区域以外的布局）
+                        modifier = Modifier.offset(
+                            x = if (showDuration) 0.dp else ADD_BUTTON_SHIFT_WHEN_NO_DURATION,
+                        ),
                         onClick = {
                             // 第十六轮：不再判重，同一首歌可重复加入播放列表
                             PlaylistRepository.addSong(song)

@@ -81,6 +81,8 @@ fun YuleMusicApp() {
                 Box(
                     modifier = Modifier
                         .weight(1f)
+                        // 需求 5：清空队列后播放栏改为显示占位内容（仍然存在），
+                        // 因此这里的判定同步改为"currentSong == null"才算真正无播放栏。
                         .then(
                             if (currentSong == null) Modifier.navigationBarsPadding() else Modifier,
                         ),

@@ -116,6 +116,16 @@ data class Song(
     val isRemote: Boolean
         get() = sourceType == SOURCE_TYPE_SUBSONIC
 
+    /**
+     * 是否为"空队列占位曲目"（第二十二轮需求 5）。
+     *
+     * 播放队列被清空后，底部播放栏与播放页不再消失，而是以占位曲目呈现
+     * （歌名「愉乐~愉悦~」/ 歌手「Hi~」）。用它来区分"真的在播放某首歌"与"占位态"，
+     * 从而在占位态下禁用上一曲/下一曲、时间显示 `--:--` 等。
+     */
+    val isPlaceholder: Boolean
+        get() = path == PLACEHOLDER_PATH
+
     /** 是否已缓存到本地 */
     val isCached: Boolean
         get() = !cachedPath.isNullOrEmpty()
@@ -164,5 +174,23 @@ data class Song(
 
         /** 媒体库扫描来源标识 */
         const val SOURCE_MEDIA_LIBRARY = "media_library"
+
+        /** 占位曲目的伪 path（不是真实文件，仅用于标识"空队列占位"状态） */
+        const val PLACEHOLDER_PATH = "__yule_empty_queue_placeholder__"
+
+        /**
+         * 空队列占位曲目（第二十二轮需求 5）。
+         *
+         * 清空播放队列后用它填充 `PlayerController.currentSong`，
+         * 使底部播放栏与播放页保持可见（歌名「愉乐~愉悦~」/ 歌手「Hi~」、
+         * 专辑与歌词区留空、时间 `--:--`、上一曲/下一曲无效）。
+         */
+        val placeholder: Song
+            get() = Song(
+                title = "愉乐~愉悦~",
+                path = PLACEHOLDER_PATH,
+                artist = "Hi~",
+                album = null,
+            )
     }
 }

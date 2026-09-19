@@ -48,10 +48,52 @@ object PlaylistRepository {
 
     val length: Int get() = _songs.value.size
 
+    /**
+     * 当前播放曲的 path（由 `PlayerController` 每次切歌时同步）。
+     *
+     * 用途（第二十二轮需求 4）：进入/维持随机模式而重排队列时，
+     * 需要把**当前正在播放的那首放到第一位**，其余再随机排序。
+     * 仓库自身不持有播放器状态，因此由播放器侧回填这个值。
+     */
+    @Volatile
+    var currentPath: String? = null
+
+    /**
+     * 「原始顺序」快照（第二十二轮需求 4）。
+     *
+     * 随机模式会真正打乱 [_songs]（列表顺序即播放顺序），因此必须单独记住
+     * 入列时的原始顺序；切回顺序播放模式时用它还原。
+     * 与 [_songs] 保持**同一多重集**：增删改都会同步作用到两个列表。
+     */
+    private var originalOrder: List<Song> = emptyList()
+
     private var persistJob: Job? = null
 
     /** 判断歌曲是否已在播放列表中（以 path 标识；同一首歌可能有多份，此处只回答"有无"） */
     fun contains(song: Song): Boolean = _songs.value.any { it.path == song.path }
+
+    /**
+     * 随机排序：**当前播放曲固定在最前**，其余随机。
+     *
+     * 第二十二轮需求 4：进入随机模式时不能把正在播放的那首随机到别处
+     * （否则列表首位与正在播放的曲目脱节，观感很怪）。
+     * 当前曲不在列表中（或尚无当前曲）时退化为整体随机。
+     */
+    private fun shuffledKeepingCurrentFirst(list: List<Song>): List<Song> {
+        if (list.size <= 1) return list
+        val cur = currentPath
+        val idx = if (cur == null) -1 else list.indexOfFirst { it.path == cur }
+        if (idx < 0) return list.shuffled()
+        val rest = list.filterIndexed { i, _ -> i != idx }.shuffled()
+        return listOf(list[idx]) + rest
+    }
+
+    /** 从 [list] 中移除**一个**与 [target] 标识相同（path 一致）的元素，保持多重集一致 */
+    private fun removeOneLike(list: List<Song>, target: Song): List<Song> {
+        val idx = list.indexOfFirst { it.path == target.path }
+        if (idx < 0) return list
+        return list.toMutableList().apply { removeAt(idx) }
+    }
 
     /**
      * 追加歌曲到播放列表**末尾**。
@@ -60,25 +102,35 @@ object PlaylistRepository {
      * （需求：向播放列表添加歌曲时不检测列表内是否已存在该歌曲）。
      * 因此本方法不再返回"是否新增"（旧签名用 false 表示"已在列表中"，该语义已不存在）。
      *
-     * 注意与 Dart 的差异：Dart `PlaylistData.addSong`（`playlist_data.dart:70-75`）
-     * 会先 `contains` 判重、已存在则返回 false 且不入列；此处按要求刻意取消判重。
+     * 第二十二轮：同时追加到 [originalOrder]，保证"切回顺序播放"能还原到包含该曲的原始顺序。
+     * 这里刻意**不**重新打乱整个队列 —— 单曲追加应按"加到队尾"的自然语义处理，
+     * 每加一首就把整队重排会让列表顺序不停跳动。
      */
     @Synchronized
     fun addSong(song: Song) {
+        originalOrder = originalOrder + song
         notify(_songs.value + song)
     }
 
     /**
      * 用给定列表整体替换播放列表（"点击歌曲整列播放"场景）。
      *
-     * 刻意**不**在这里按当前模式打乱：本方法也被「播放全部」「点击某首歌」等
-     * 显式选列流程使用，那些场景用户期望按看到的顺序入列；随机化只应发生在
-     * 「进入随机模式」与「点随机播放按钮」这两个明确入口（见 [setPlayMode] /
-     * [playShuffled]）。
+     * 第二十二轮需求 4：入列时**记住这份原始顺序**；若当前已是随机模式，
+     * 则记住之后再随机排序（当前播放曲置于首位）。切回顺序模式时会用
+     * [originalOrder] 还原。
+     *
+     * 非随机模式下刻意保持入列顺序不变：本方法也服务于「播放全部」「点击某首歌」
+     * 等显式选列流程，那些场景用户期望按看到的顺序入列。
      */
     @Synchronized
     fun setSongs(songs: List<Song>) {
-        notify(songs.toList())
+        originalOrder = songs.toList()
+        val next = if (_playMode.value == PlayMode.RANDOM) {
+            shuffledKeepingCurrentFirst(originalOrder)
+        } else {
+            originalOrder
+        }
+        notify(next)
     }
 
     /**
@@ -88,11 +140,17 @@ object PlaylistRepository {
      * 第一次 notify 会用**旧列表**重建一次播放队列、紧接着第二次 notify 又用新列表
      * 重建一次，白白多打断一次正在播放的音频。
      *
+     * 第二十二轮：同样记住 [songs] 作为 [originalOrder]（切回顺序模式可还原）。
+     * 这里是显式的"随机播放这张列表"动作，且调用方随后从**第 0 首**开始播放，
+     * 因此采用**整体随机**而不把上一队列的当前曲钉在首位 —— 否则"随机播放"会
+     * 每次都把刚才那首再放一遍，违背按下该按钮的预期。
+     *
      * @return 实际存入的顺序（已打乱），调用方据此决定从哪首开始播。
      */
     @Synchronized
     fun playShuffled(songs: List<Song>): List<Song> {
         _playMode.value = PlayMode.RANDOM
+        originalOrder = songs.toList()
         val shuffled = songs.shuffled()
         notify(shuffled)
         return shuffled
@@ -123,6 +181,8 @@ object PlaylistRepository {
         val list = _songs.value
         val remaining = list.filterNot { it.path in targets }
         if (remaining.size == list.size) return 0
+        // 原始顺序同步移除同批歌曲（保持与 _songs 同一多重集）
+        originalOrder = originalOrder.filterNot { it.path in targets }
         notify(remaining)
         return list.size - remaining.size
     }
@@ -135,6 +195,8 @@ object PlaylistRepository {
     fun removeAt(index: Int) {
         val list = _songs.value
         if (index in list.indices) {
+            // 原始顺序里只删掉"同样的那一份"，避免重复歌曲时多删
+            originalOrder = removeOneLike(originalOrder, list[index])
             notify(list.toMutableList().apply { removeAt(index) })
         }
     }
@@ -149,12 +211,15 @@ object PlaylistRepository {
     fun updateSong(updatedSong: Song) {
         val list = _songs.value
         if (list.none { it.path == updatedSong.path }) return
+        originalOrder = originalOrder.map { if (it.path == updatedSong.path) updatedSong else it }
         notify(list.map { if (it.path == updatedSong.path) updatedSong else it })
     }
 
     /** 清空播放列表 */
     @Synchronized
     fun clear() {
+        originalOrder = emptyList()
+        currentPath = null
         notify(emptyList())
     }
 
@@ -165,18 +230,44 @@ object PlaylistRepository {
         return mode
     }
 
-    /** 直接设置播放模式 */
+    /**
+     * 直接设置播放模式。
+     *
+     * 第二十二轮需求 4：
+     * - 切到 **RANDOM**：把当前列表重新随机排序（当前播放曲置于首位）；
+     * - 切回 **SEQUENTIAL**：还原为入列时记住的 [originalOrder]；
+     * - **SINGLE**：不改动列表顺序（单曲循环与队列顺序无关）。
+     *
+     * 注意"再次切到随机要**重新**随机"：每次切入随机都重新打乱一次，而不是复用上次结果，
+     * 所以这里不缓存任何"随机顺序"。
+     */
     @Synchronized
     fun setPlayMode(mode: PlayMode) {
         val previous = _playMode.value
         _playMode.value = mode
-        // 进入随机模式：把当前播放列表本身随机排序（需求：随机排序当前歌曲列表，
-        // 之后顺序播放该列表）。列表顺序即播放顺序，所以这里必须真正改动列表，
-        // 而不是只打开播放器内部的 shuffle（那不会改变列表顺序）。
-        if (mode == PlayMode.RANDOM && previous != PlayMode.RANDOM && _songs.value.size > 1) {
-            notify(_songs.value.shuffled())
-        } else {
+        if (previous == mode) {
             persist()
+            return
+        }
+        when (mode) {
+            PlayMode.RANDOM -> {
+                if (_songs.value.size > 1) {
+                    notify(shuffledKeepingCurrentFirst(_songs.value))
+                } else {
+                    persist()
+                }
+            }
+
+            PlayMode.SEQUENTIAL -> {
+                // 还原原始顺序；原始快照为空（例如旧版本遗留的队列）时保持现状
+                if (originalOrder.isNotEmpty()) {
+                    notify(originalOrder.toList())
+                } else {
+                    persist()
+                }
+            }
+
+            PlayMode.SINGLE -> persist()
         }
     }
 
@@ -238,7 +329,16 @@ object PlaylistRepository {
                 if (song == null && path != null) song = DatabaseHelper.querySongByPath(path)
                 if (song != null) restored.add(song)
             }
-            notify(restored)
+            // 第二十二轮：恢复出来的就是"原始顺序"（持久化的正是入列顺序）。
+            // 若上次退出时处于随机模式，_songs 需要按随机顺序呈现，
+            // 但 originalOrder 必须保留这份原始顺序，供切回顺序模式时还原。
+            originalOrder = restored.toList()
+            val next = if (_playMode.value == PlayMode.RANDOM) {
+                shuffledKeepingCurrentFirst(originalOrder)
+            } else {
+                originalOrder
+            }
+            notify(next)
             restored.size
         } catch (e: Exception) {
             Log.w(TAG, "恢复播放列表失败: ${e.message}")

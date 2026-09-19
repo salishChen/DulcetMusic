@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -61,6 +62,7 @@ import com.mtechviral.musicfinderexample.core.designsystem.component.EntityActio
 import com.mtechviral.musicfinderexample.core.designsystem.component.EntityActionSheet
 import com.mtechviral.musicfinderexample.core.designsystem.component.EntityActionTarget
 import com.mtechviral.musicfinderexample.core.designsystem.component.SongArtwork
+import com.mtechviral.musicfinderexample.core.model.PlayMode
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.player.LyricsOverlayManager
 import com.mtechviral.musicfinderexample.core.player.NowPlayingUiState
@@ -138,6 +140,9 @@ fun NowPlayingOverlay(
         // 兜底：若进度仍处于展开态（队列被清空 / 当前歌曲被移除），把进度归零，
         // 否则底部播放栏会因 progress 恒为 1 而一直保持隐藏。
         // 以「可见性布尔量」为 key，保证每次进入展开态只触发一次 close()。
+        //
+        // 注意（需求 5）：队列清空后 currentSong 是**占位曲目**而非 null，
+        // 因此不会走到这里 —— 播放页照常可展开，只是内容换成占位展示。
         val showing = progress > VISIBLE_EPSILON
         LaunchedEffect(showing) {
             if (showing) NowPlayingUiState.close()
@@ -176,6 +181,9 @@ private fun NowPlayingContent(
     val currentIndex by PlayerController.currentIndex.collectAsStateWithLifecycle()
     val overlayVisible by LyricsOverlayManager.isVisible.collectAsStateWithLifecycle()
     val overlayLocked by LyricsOverlayManager.isLocked.collectAsStateWithLifecycle()
+
+    // 需求 5：占位态（队列已清空）——封面/歌词/时长等都没有真实内容
+    val placeholderMode = song.isPlaceholder
 
     // ---------- 可见性 / 收起完成检测 ----------
     val pageVisible = progress > VISIBLE_EPSILON
@@ -442,19 +450,28 @@ private fun NowPlayingContent(
                 },
         ) {
             // 共享背景：模糊封面 + 暗化（Dart MpArtwork + blurFilter + 黑 35%）
-            SongArtwork(
-                song = song,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .blur(BACKGROUND_BLUR),
-                cornerRadius = 0.dp,
-                contentScale = ContentScale.Crop,
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = BACKGROUND_SCRIM_ALPHA)),
-            )
+            // 需求 5：占位态没有封面可模糊，改用跟随主题的纯色背景
+            if (placeholderMode) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background),
+                )
+            } else {
+                SongArtwork(
+                    song = song,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .blur(BACKGROUND_BLUR),
+                    cornerRadius = 0.dp,
+                    contentScale = ContentScale.Crop,
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = BACKGROUND_SCRIM_ALPHA)),
+                )
+            }
 
             // 竖向翻页：第 0 页「播放页」/ 第 1 页「播放列表」
             // （Dart `PageView(scrollDirection: Axis.vertical)`，两页共用上面这张模糊封面）
@@ -474,6 +491,7 @@ private fun NowPlayingContent(
                     NowPlayingTopBar(
                         song = song,
                         onCollapse = requestClose,
+                        // 占位态没有真实歌曲，顶栏「更多」已在内部隐藏
                         onMore = { actionSheetSong = song },
                     )
                     NowPlayingMiddleContent(
@@ -493,8 +511,7 @@ private fun NowPlayingContent(
                                 callbacks = lyricDrag,
                                 axisLock = axisLock,
                             ),
-                    )
-                    // 播放条 + 主控整体上移 30px（Dart：Transform.translate(0, -30)）
+                    )                    // 播放条 + 主控整体上移 30px（Dart：Transform.translate(0, -30)）
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -504,16 +521,22 @@ private fun NowPlayingContent(
                             onSeek = { positionMs ->
                                 scope.launch { PlayerController.seekTo(positionMs) }
                             },
+                            // 需求 5：占位态显示 `--:--` 且进度条不可拖动
+                            placeholderMode = placeholderMode,
                         )
                         NowPlayingControlRow(
                             isPlaying = isPlaying,
                             onPrevious = { scope.launch { PlayerController.skipToPrevious() } },
                             onPlayPause = {
-                                scope.launch {
-                                    if (isPlaying) PlayerController.pause() else PlayerController.resumeOrPlay()
+                                // 需求 5：占位态下播放/暂停无实际内容可播，点击不产生效果
+                                if (!placeholderMode) {
+                                    scope.launch {
+                                        if (isPlaying) PlayerController.pause() else PlayerController.resumeOrPlay()
+                                    }
                                 }
                             },
                             onNext = { scope.launch { PlayerController.skipToNext() } },
+                            placeholderMode = placeholderMode,
                         )
                         Spacer(Modifier.height(4.dp))
                     }
@@ -559,6 +582,12 @@ private fun NowPlayingContent(
                     // 按**下标**删除（不能用 removeSong(song)：`path` 会把同名副本一并删掉）；
                     // 若删的正是当前播放项，PlayerController.syncQueue 会接续播放下一首。
                     onRemoveIndex = { index -> PlaylistRepository.removeAt(index) },
+                    // 第二十二轮需求 3：底部左侧的模式胶囊 —— 与播放页底部同一个
+                    // PlayerController.playMode，点击循环切换（顺序 → 随机 → 单曲）。
+                    playMode = playMode,
+                    onCyclePlayMode = { PlayerController.togglePlayMode() },
+                    // 第二十二轮需求 1：顶部区下滑返回播放页
+                    onSwipeDown = showNowPlaying,
                 )
             }
         }

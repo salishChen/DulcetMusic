@@ -41,11 +41,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -99,6 +97,11 @@ import kotlin.math.abs
  *
  * @param onOpenNowPlaying 点击栏体 / 封面时打开「正在播放」页
  * @param hideWhenEmpty 当前歌曲为空时是否不渲染任何内容（默认 true）
+ *
+ * 需求 5（清空队列后播放栏不消失）**不依赖本参数**：清空队列时
+ * `PlayerController` 会把 `currentSong` 置为[Song.placeholder]（非 null），
+ * 因此播放栏照常渲染，只是内容变为占位展示。保持默认 true 以免改变冷启动
+ * （尚未播放任何歌曲）时"不显示播放栏"的既有行为。
  */
 @Composable
 fun MiniPlayerBar(
@@ -115,7 +118,10 @@ fun MiniPlayerBar(
     val progress by NowPlayingUiState.progress.collectAsStateWithLifecycle()
 
     val track = song
-    val hasSong = track != null
+    // 第二十二轮需求 5：清空队列后 currentSong 为占位曲目 —— 播放栏继续显示
+    // （歌名「愉乐~愉悦~」/ 歌手「Hi~」），但禁止左右滑动切歌、上划仍可进播放列表。
+    val isPlaceholder = track?.isPlaceholder == true
+    val hasSong = track != null && !isPlaceholder
 
     val scope = rememberCoroutineScope()
     // 栏内内容水平偏移（左划为负、右划为正，Dart `_barOffset`）。
@@ -164,7 +170,11 @@ fun MiniPlayerBar(
                 // 这里以「随进度向下移出自身高度」等价替代（发生在完全透明之后，肉眼不可见）。
                 translationY = progress * size.height
             }
-            .shadow(elevation = 6.dp, shape = RectangleShape)
+            // 第二十二轮修复：去掉 `shadow(elevation = 6.dp)`。
+            // 阴影绘制在组件**边界之外**，会在栏体上方多出一条灰带，
+            // 压住身后最后一行的歌曲内容（反馈："顶部多出来了一小块儿，遮挡了其他内容"）。
+            // 栏体本身已有不透明底色，并用下面的 drawBehind 画了 1px 顶部描边，
+            // 分隔效果足够，无需再叠一层阴影。
             .background(barColor)
             .drawBehind {
                 // Dart：顶部 0.5 宽的 divider 描边
@@ -276,6 +286,8 @@ fun MiniPlayerBar(
 
                         if (direction == true) {
                             // ── 水平：栏内内容跟手平移（受限挂起作用域内只做状态赋值）──
+                            // 需求 5：占位态（队列已清空）**禁止左右滑动切歌** ——
+                            // 消费事件并直接返回，栏体完全不动、也不会切歌。
                             if (!hasSong) {
                                 change.consume()
                                 continue
@@ -285,10 +297,7 @@ fun MiniPlayerBar(
                             change.consume()
                         } else {
                             // ── 竖直：上划驱动播放页展开进度 ──
-                            if (!hasSong) {
-                                change.consume()
-                                continue
-                            }
+                            // 需求 5：占位态仍允许**上划进入播放列表**（占位曲目同样可展开）
                             if (!routePushed) {
                                 // 未展开时只响应上划（Dart：`if (d.delta.dy >= 0) return;`）
                                 if (delta.y >= 0f) {

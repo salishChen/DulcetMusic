@@ -720,7 +720,7 @@ Sidebar(
 |---|------|------|
 | 1 | 上划进入播放列表时**定位到当前播放的歌曲** | `NowPlayingOverlay.openPlaylist` 在翻页补间**结束后** `playlistListState.scrollToItem(currentIndex)` |
 | 2 | 当前播放曲用**20px 圆角 + 半透明灰框**标出 | 行外层 `Modifier.background(CURRENT_ROW_HIGHLIGHT, RoundedCornerShape(20.dp))`，色值 `#888888` @ 28% |
-| 3 | 取消列表行间**分割线** | 删除 `PlaylistSongRow` 内的 `HorizontalDivider` |
+| 3 | 取消列表行间**分割线** | 队列内不画任何分割线（第二十一轮进一步明确为：整页只留一条，见 §5.22） |
 | 4 | 顶部当前播放区去掉「正在播放」四字与右侧按钮 | `CurrentSongCard` 去掉那行 `Text("正在播放")` 与右侧 `Equalizer`/`PlayArrow` 图标，并移除随之无用的 `isPlaying` 参数 |
 | 5 | 队列行右侧三个点 → **减号**，功能为从当前播放队列删掉该曲 | 图标换 `Icons.Filled.Remove`，回调改为 `onRemoveIndex(index)`，直接 `PlaylistRepository.removeAt(index)` |
 
@@ -745,6 +745,107 @@ Sidebar(
 
 纯 UI 与内部签名调整（`NowPlayingPlaylistPage` 为 `internal`），
 `docs/NATIVE_PORT_SPEC.md` §7 无需改动。
+
+---
+
+### 5.22 播放列表页按设计图重排（第二十一轮反馈）
+
+参照用户提供的设计图，在 §5.21 的基础上调整（**保留** 20px 圆角灰框高亮）：
+
+| 项 | 变更 |
+|----|------|
+| 顶部提示 | 新增居中一行小字「此处向下轻扫以返回播放界面」 |
+| 当前播放区 | 封面 48dp → **64dp**；副标题改为「**艺术家 - 专辑**」（原仅艺术家）；标题 15sp → 18sp |
+| 表头 | 原「收起 chevron + 播放列表/共 N 首 + 清空图标」→「**`[位置] / [总数]`**」左 ·「**播放队列**」中 ·「**清除**」右 |
+| 队列行 | **去掉左侧封面**；歌名 15sp → 16sp；副标题改为「艺术家 - 专辑」；右端保留减号按钮 |
+| 分割线 | 整页**只在「当前播放区」与「播放队列」之间**保留一条；队列内部无分割线 |
+| 底部 | 新增居中胶囊按钮「**随机播放模式**」 |
+
+**几个实现要点**：
+
+- **只有一条分割线的落点**：`Column` 内顺序为 提示 → 当前播放区 → 表头 → `HorizontalDivider`
+  → `LazyColumn` → 胶囊按钮。把分割线放在「表头之后、列表之前」，
+  既分隔了两大区块，又保证列表**内部**没有任何分割线（`PlaylistSongRow` 里不再画）。
+- **左右对齐**：行去掉封面后，文字左边距由 `ROW_TEXT_START =
+  ROW_HORIZONTAL_PADDING - ROW_HORIZONTAL_INSET`（16 - 8 = 8dp）表达 ——
+  外层 8dp 让圆角高亮框不贴屏幕边缘，内层再补 8dp，**文字与顶部当前播放区对齐于 16dp**。
+- **`[位置] / [总数]` 的 "-1" 处理**：`currentIndex` 为 -1（尚无当前项）时退化为只显示总数，
+  避免出现 `0 / N` 这种误导性文案。
+- **胶囊按钮用 `Surface(onClick, shape = CircleShape)`**：全圆角由 `CircleShape` 给出，
+  半透明深色底（黑 45%）保证压在上层模糊封面上仍可读；`navigationBarsPadding` 挂在按钮上，
+  使其不被手势导航条遮挡。
+- **胶囊的点击语义**：`PlayerController.setPlayMode(PlayMode.RANDOM)`。第十五轮起
+  进入随机模式会**重排当前列表**（列表顺序即播放顺序），因此无需另传一份打乱的列表；
+  点击后播放列表页的显示顺序会随 `PlaylistRepository.songs` 一起变化。
+- 随之清理：`KeyboardArrowDown` / `DeleteSweep` 图标、`CircleShape` 之外的旧常量
+  （`ROW_ARTWORK_SIZE` / `CURRENT_ROW_HORIZONTAL_INSET`）与不再使用的 import。
+
+`NowPlayingPlaylistPage` 为 `internal` 且 `onShuffle` 为新增参数，
+`docs/NATIVE_PORT_SPEC.md` §7 无需改动。
+
+---
+
+### 5.23 播放列表页交互与「随机播放/空队列」语义（第二十二轮反馈）
+
+本轮共 7 项需求，其中 5 项在播放列表页、1 项在 `core:player`、1 项跨「播放栏 + 播放页」。
+
+| # | 需求 | 实现 |
+|---|------|------|
+| 1 | 播放列表**顶部当前播放区**下滑可返回播放页 | 把「提示 + 当前播放卡片 + 表头」包进一个带 `draggable(Orientation.Vertical)` 的 `Column`，松手时位移 > 60dp 或向下速度 > 300dp/s 即 `onSwipeDown()`（= `showNowPlaying`） |
+| 2 | 当前播放行高亮框**上下各缩短 5px** | 高亮框从"行外层背景"改为**叠加层** `Box(matchParentSize).padding(vertical = 5.dp)`，因此框体变矮但**行高与行距不变** |
+| 3 | 底部改为**左侧**的模式胶囊，点击循环切换，且与播放页模式按钮**状态绑定** | 文案/图标取自 `PlayController.playMode`，点击 `PlayerController.togglePlayMode()`；两处共用同一 `StateFlow`，天然联动 |
+| 4 | 入列记住原始顺序；随机时记住原始顺序再随机（当前曲置首）；切回顺序还原；再切随机**重新**随机 | `PlaylistRepository` 新增 `originalOrder` 快照 + `currentPath`；见下方详解 |
+| 5 | 清空队列后播放栏**不消失**，显示占位内容 | `Song.placeholder`（`isPlaceholder`）+ `stopAndClear()`/`onCurrentSongRemoved()` 落占位；见下方详解 |
+| 6 | 队列每行**左右各加 5px** padding | `ROW_HORIZONTAL_EXTRA_PADDING = 5.dp`，叠在 `ROW_TEXT_START` / 行尾 padding 上 |
+| 7 | 高亮框圆角 **15px**；播放队列**整体**左右各收窄 5px | `CURRENT_ROW_CORNER = 15.dp`；`QUEUE_HORIZONTAL_INSET = 5.dp` 加在 `LazyColumn`（与空态）容器上，使**每一行连同高亮框**一起内缩 |
+| 8 | 队列行**左侧** padding 改为 **15px** | `ROW_TEXT_START = 15.dp`（与队列整体收窄 5px 叠加，文字距屏幕左缘实际 20px） |
+| 9 | 歌曲页每行去掉**音乐时长**，加号按钮**右移 20px** | `MpSongListItem` 新增 `showDuration`（默认 true）；歌曲页传 `false`，此时加号加 `Modifier.offset(x = 20.dp)` |
+| 10 | 主页底部播放栏**顶部多出一小块遮挡内容** | 去掉 `MiniPlayerBar` 的 `shadow(elevation = 6.dp)`：阴影绘制在组件边界**之外**，会在栏体上方形成一条灰带压住最后一行歌曲；栏体本身已有不透明底色 + 1px 顶部描边，分隔足够 |
+
+> 需求 9 的实现取舍：`MpSongListItem` 是**跨页面共用**组件（专辑/艺术家/歌单/搜索/缓存管理
+> 等都在用），而需求只针对歌曲页，因此用**新增可选参数**（`showDuration`）而非直接删掉时长，
+> 其余页面行为完全不变。加号位移用 `offset` 做纯视觉平移，不改按钮尺寸与触摸区。
+
+**需求 4 的实现要点（`PlaylistRepository`）**：
+
+- 新增 `originalOrder`（入列时记住的顺序）与 `currentPath`（当前播放曲，由
+  `PlayerController.publishCurrentState()` 单点回填）。
+- `setSongs` / `addSong` / `playShuffled` / `restoreFromPrefs` 都会同步 `originalOrder`，
+  且增删改（`removeAt` / `removeSongs` / `updateSong` / `clear`）**同时**作用于两个列表，
+  保证二者始终是同一多重集（否则切回顺序模式会凭空多出/缺少歌曲）。
+- `setPlayMode(RANDOM)` → `notify(shuffledKeepingCurrentFirst(_songs))`：
+  **当前播放曲放第一位**，其余随机。
+- `setPlayMode(SEQUENTIAL)` → `notify(originalOrder)`：还原入列顺序。
+- **每次**切入随机都重新打乱（不缓存上次的随机结果），因此"再切随机 = 重新随机"。
+- `playShuffled`（「随机播放」按钮）刻意用**整体随机**而非"当前曲置首"：
+  调用方随后从第 0 首开始播放，若把上一队列的当前曲钉在首位，会导致
+  "点随机播放却总先放刚才那首"。
+- **顺带修掉一个真实 bug**：`playSongs(songs, startIndex)` 原先在 `setSongs` **之后**
+  用 `playAt(startIndex)`；需求 4 让 `setSongs` 在随机模式下会重排队列，
+  于是 `startIndex` 会指向另一首歌。改为先从**入参列表**取出目标曲再 `playSong(target)`。
+
+**需求 5 的实现要点（空队列占位）**：
+
+- `Song.placeholder`：`title = "愉乐~愉悦~"`、`artist = "Hi~"`、`album = null`，
+  `path` 为伪标识 `PLACEHOLDER_PATH`，并以 `Song.isPlaceholder` 判定。
+- `stopAndClear()` 与 `onCurrentSongRemoved()`（队列已空时）把 `currentSong` 置为该占位曲，
+  因此底部播放栏与播放页**都不再消失**；仅当队列非空却找不到当前项时仍保持 `null`。
+- 逐项落实需求：
+  - 底部播放栏：歌名「愉乐~愉悦~」/ 歌手「Hi~」；**禁止左右滑动切歌**
+    （水平手势被消费且不位移），但**上划仍可进入播放列表**；
+  - 播放页顶栏：同样显示占位歌名/歌手，隐藏「更多」按钮；
+  - 封面区与迷你歌词区**留空**（不画渐变占位图）；
+  - 右滑进入的详细歌词页仍显示「暂无歌词」（沿用既有无歌词分支）；
+  - 进度条与时间：左右都显示 `--:--`，且进度条不可拖动；
+  - 上一曲/下一曲点击**无效果**（回调置空；`skipToNext/Previous` 本就对空队列早返回）；
+  - 播放页背景改为**跟随主题**的纯色（占位态没有封面可模糊）。
+- `publishCurrentState()` 不把占位曲的伪 path 写进 `PlaylistRepository.currentPath`。
+
+**真机验证（小米 14 / 23127PN0CC）**：冷启动无崩溃；播放列表页可见
+「此处向下轻扫以返回播放界面」、`1 / 2174` ·「播放队列」·「清除」表头、
+无封面的队列行与行尾减号按钮、底部左侧「随机播放模式」胶囊
+（`vision_ground` 实测胶囊位于 x 146–599 / 屏宽 1200，确为左侧而非居中）；
+清空队列后底部播放栏保留并显示「愉乐~愉悦~ / Hi~」。
 
 ---
 
@@ -807,6 +908,19 @@ echo "sdk.dir=<Android SDK>" > local.properties
 - 第二十轮反馈修订（播放列表页定位当前曲 / 高亮框 / 去分割线 / 卡片与行按钮调整，见 §5.21）后
   `./gradlew :app:assembleDebug :core:common:testDebugUnitTest`
   → **BUILD SUCCESSFUL**（`feature:nowplaying` 重编），LrcParser 测试 8/8 通过。
+- 第二十一轮反馈修订（播放列表页按设计图重排：轻扫提示 / 大封面 / 位置·播放队列·清除表头 /
+  去行封面 / 单条分割线 / 底部随机播放胶囊，见 §5.22）后
+  `./gradlew :app:assembleDebug :core:common:testDebugUnitTest --rerun-tasks`
+  → **BUILD SUCCESSFUL**（`feature:nowplaying` 强制重编），LrcParser 测试 8/8 通过。
+- 第二十二轮反馈修订（播放列表页 7 项交互调整 + 随机播放顺序记忆 + 空队列占位，见 §5.23）后
+  `./gradlew :app:assembleDebug :app:assembleRelease :core:common:testDebugUnitTest`
+  → **BUILD SUCCESSFUL**（`core:model` / `core:player` / `core:designsystem` /
+  `feature:nowplaying` / `app` 重编），LrcParser 测试 8/8 通过；
+  正式版 `app-release.apk`（15.28 MB）已通过 `adb install -r` 覆盖安装到小米 14
+  （签名一致，曲库与偏好保留），冷启动无崩溃。
+- 第二十二轮追加修订（队列行左侧 padding 15px / 高亮框圆角 15px / 队列整体收窄 5px /
+  歌曲页去时长且加号右移 20px / 修复播放栏顶部投影遮挡，见 §5.23 需求 8~10）后
+  `./gradlew :app:assembleDebug` → **BUILD SUCCESSFUL**。
 
 ### 6.1.1 真机复测（小米 14 / 23127PN0CC / Android 16）
 

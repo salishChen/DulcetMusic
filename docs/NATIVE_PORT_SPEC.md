@@ -261,6 +261,8 @@ object PlaylistRepository {                    // 等价旧版 PlaylistData
   fun togglePlayMode(): PlayMode; fun setPlayMode(mode: PlayMode)
   /** 随机播放入口：把列表打乱后存入并切到 RANDOM，返回实际顺序（第十五轮新增） */
   fun playShuffled(songs: List<Song>): List<Song>
+  /** 当前播放曲 path，由 PlayerController 回填；随机重排时用于把当前曲置于首位（第二十二轮） */
+  var currentPath: String?
   suspend fun restoreFromPrefs(): Int
 }
 
@@ -372,6 +374,9 @@ val MaterialTheme.ytTextSecondary: Color   // 次要文字色（随明暗切换�
     song: Song, isCurrent: Boolean,
     onClick: () -> Unit, onMoreClick: () -> Unit,
     modifier: Modifier = Modifier, showArtwork: Boolean = true, showDivider: Boolean = true,
+    showAddButton: Boolean = true,
+    /** 是否显示时长（歌曲页传 false：隐藏时长并把加号右移 20dp；第二十二轮新增） */
+    showDuration: Boolean = true,
 )
 
 /** 一级页面统一顶栏：左上角目录按钮 + 页面名 + 右侧 actions */
@@ -523,7 +528,7 @@ object AppRoutes {
   - 收藏/曲库删除走 `removeSongs(paths)`，仍是"删掉该歌的全部副本"，语义正确；
   - 与 Dart 差异：Dart `addSong` 会先 `contains` 判重、已存在则返回 false 不入列
     （`playlist_data.dart:70-75`）；此处按需求刻意取消判重。
-- **随机模式：随机化的是列表本身**（第十五轮修正）：
+- **随机模式：随机化的是列表本身**（第十五轮修正，第二十二轮补充顺序记忆）：
   `PlayMode.RANDOM` 不再映射到 `shuffleModeEnabled = true`，而是把当前播放列表
   **真正重排**（`PlaylistRepository.setPlayMode(RANDOM)` 在切入随机时打乱列表；
   「随机播放」按钮走 `playShuffled`，一次通知完成"打乱 + 切模式"），之后按列表顺序
@@ -531,6 +536,22 @@ object AppRoutes {
   播放器会在已打乱的列表上再乱序一次，与界面显示对不上。
   注意与 Dart 的差异：Dart 只维护私有 `_shuffleOrder` 下标序列，从不改动
   `playlistData.songs`，界面列表顺序不变；此处按需求刻意改为重排列表本身。
+- **原始顺序记忆与还原**（第二十二轮）：
+  `PlaylistRepository` 另行保存一份入列时的原始顺序 `originalOrder`：
+  - 切入 `RANDOM`：`originalOrder` 保持不动，`songs` 重排为
+    「**当前播放曲置于首位** + 其余随机」（当前曲由 `PlayerController` 回填 `currentPath`）；
+  - 切回 `SEQUENTIAL`：`songs` 还原为 `originalOrder`；
+  - **每次**切入 `RANDOM` 都重新随机（不复用上次结果）；
+  - `SINGLE` 不改动列表顺序；
+  - 增删改（`addSong`/`setSongs`/`removeAt`/`removeSongs`/`updateSong`/`clear`/`restoreFromPrefs`）
+    同时作用于两个列表，保证二者始终是同一多重集。
+- **空队列占位**（第二十二轮）：
+  清空播放队列后 `PlayerController.currentSong` **不置空**，而是置为
+  `Song.placeholder`（`title = "愉乐~愉悦~"`、`artist = "Hi~"`、`album = null`，
+  `isPlaceholder == true`）。因此底部播放栏与「正在播放」页保持可见：
+  封面区与迷你歌词区留空、右滑的详细歌词页显示「暂无歌词」、
+  时间显示 `--:--`、进度条不可拖动、上一曲/下一曲点击无效果、
+  播放栏禁止左右滑动切歌（但上划仍可进入播放列表）。
 - **单曲循环下手动切歌仍换曲**（第十四轮修正）：
   `PlayMode.SINGLE` 只映射到 ExoPlayer 的 `REPEAT_MODE_ONE`，即**只影响"播完自动续播"**；
   `skipToNext()` / `skipToPrevious()`（播放页与迷你播放栏的上一曲/下一曲，以及通知栏

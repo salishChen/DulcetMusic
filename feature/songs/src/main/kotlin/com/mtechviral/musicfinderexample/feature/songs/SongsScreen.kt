@@ -380,6 +380,8 @@ fun SongsScreen(
                             MpSongListItem(
                                 song = song,
                                 isCurrent = song.path == currentPath,
+                                // 需求：歌曲页去掉每行右侧的时长，并把加号右移 20px
+                                showDuration = false,
                                 onClick = {
                                     if (suppressClickPath == song.path) {
                                         // 长按进入多选后，子级 clickable 补发的那次点击：忽略

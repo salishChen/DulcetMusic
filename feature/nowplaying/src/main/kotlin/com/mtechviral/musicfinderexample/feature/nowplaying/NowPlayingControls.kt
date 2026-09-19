@@ -130,12 +130,15 @@ internal fun NowPlayingTopBar(
                 ),
             )
         }
-        IconButton(onClick = onMore) {
-            Icon(
-                imageVector = Icons.Filled.MoreVert,
-                contentDescription = "更多",
-                tint = Color.White,
-            )
+        // 占位态（队列已清空，需求 5）：没有真实歌曲可操作，隐藏「更多」入口
+        if (!song.isPlaceholder) {
+            IconButton(onClick = onMore) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "更多",
+                    tint = Color.White,
+                )
+            }
         }
     }
 }
@@ -151,6 +154,8 @@ internal fun NowPlayingTopBar(
 internal fun NowPlayingProgressRow(
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    /** 占位态（队列已清空）：时间显示 `--:--` 且进度条不可拖动（需求 5） */
+    placeholderMode: Boolean = false,
 ) {
     val position by PlayerController.position.collectAsStateWithLifecycle()
     val duration by PlayerController.duration.collectAsStateWithLifecycle()
@@ -159,8 +164,25 @@ internal fun NowPlayingProgressRow(
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableStateOf(0f) }
 
-    // Dart：max <= 0 时进度条与时间文本整体不渲染
-    if (max <= 0f) return
+    // 需求 5：占位态只显示左右两个 `--:--`，不画进度条、不响应拖动
+    if (placeholderMode || max <= 0f) {
+        Row(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "--:--",
+                style = TextStyle(color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp),
+            )
+            Text(
+                text = "--:--",
+                style = TextStyle(color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp),
+            )
+        }
+        return
+    }
 
     val displayValue = if (dragging) dragValue else position.toFloat().coerceIn(0f, max)
 
@@ -320,6 +342,8 @@ internal fun NowPlayingControlRow(
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 占位态（队列已清空）：上一曲 / 下一曲点击无效果（需求 5） */
+    placeholderMode: Boolean = false,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -329,7 +353,8 @@ internal fun NowPlayingControlRow(
         MpControlButton(
             icon = Icons.Filled.SkipPrevious,
             contentDescription = "上一首",
-            onClick = onPrevious,
+            // 需求 5：占位态下上一曲/下一曲"点击无效果"——按钮照常显示但回调置空
+            onClick = { if (!placeholderMode) onPrevious() },
             size = 48.dp,
             iconSize = 39.dp,
             tint = Color.White,
@@ -345,7 +370,7 @@ internal fun NowPlayingControlRow(
         MpControlButton(
             icon = Icons.Filled.SkipNext,
             contentDescription = "下一首",
-            onClick = onNext,
+            onClick = { if (!placeholderMode) onNext() },
             size = 48.dp,
             iconSize = 39.dp,
             tint = Color.White,

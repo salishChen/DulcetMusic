@@ -99,6 +99,9 @@ internal fun NowPlayingMiddleContent(
     val position by PlayerController.position.collectAsStateWithLifecycle()
     val lines = remember(song.path, song.lyrics) { LrcParser.parse(song.lyrics) }
     val activeIndex = remember(lines, position) { LrcParser.activeIndex(lines, position) }
+    // 需求 5：占位态（队列已清空）——封面区与迷你歌词区**留空**；
+    // 但右滑进入的详细歌词页仍显示「暂无歌词」。
+    val placeholderMode = song.isPlaceholder
 
     // 歌词面板展开后，当前行变化时自动滚动居中（Dart: _scrollToActive）
     LaunchedEffect(lines, lyricsOpen, activeIndex) {
@@ -125,13 +128,19 @@ internal fun NowPlayingMiddleContent(
                     .weight(5f),
                 contentAlignment = Alignment.Center,
             ) {
-                NowPlayingArtwork(
-                    song = song,
-                    screenWidthDp = configuration.screenWidthDp.dp,
-                    onTap = onOpenLyrics,
-                )
+                // 占位态：封面区留空（不画渐变占位，也不显示任何图标）
+                if (!placeholderMode) {
+                    NowPlayingArtwork(
+                        song = song,
+                        screenWidthDp = configuration.screenWidthDp.dp,
+                        onTap = onOpenLyrics,
+                    )
+                }
             }
-            MiniLyrics(lines = lines, activeIndex = activeIndex, onTap = onOpenLyrics)
+            // 占位态：迷你歌词区同样留空
+            if (!placeholderMode) {
+                MiniLyrics(lines = lines, activeIndex = activeIndex, onTap = onOpenLyrics)
+            }
             Spacer(Modifier.weight(1f))
         }
 

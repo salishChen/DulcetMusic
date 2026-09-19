@@ -295,13 +295,19 @@ object PlayerController {
         }
     }
 
-    /** 整列播放：替换播放列表并从指定下标开始 */
+    /**
+     * 整列播放：替换播放列表并从指定下标开始。
+     *
+     * 注意（第二十二轮需求 4）：随机模式下 [PlaylistRepository.setSongs] 会**重排队列**，
+     * 因此不能把 [startIndex] 直接当作"入列后"的下标（会播成另一首）。
+     * 这里先把目标歌曲从**入参列表**中取出来，再按 path 定位播放 ——
+     * 无论队列是否被重排，都会播到调用方指定的那一首。
+     */
     suspend fun playSongs(songs: List<Song>, startIndex: Int = 0): Boolean {
         if (songs.isEmpty()) return false
+        val target = songs[startIndex.coerceIn(0, songs.size - 1)]
         PlaylistRepository.setSongs(songs)
-        // 用下标而非 Song 启动：列表刚被设为 songs，下标与之一一对应；
-        // 若改用 playSong(target)，同一首歌有重复时 indexOfFirst 会命中第一份而非 startIndex
-        return playAt(startIndex.coerceIn(0, songs.size - 1))
+        return playSong(target)
     }
 
     /**
@@ -325,6 +331,9 @@ object PlayerController {
     /** 恢复播放（暂停态）或重播当前歌曲；无当前歌曲则空操作 */
     suspend fun resumeOrPlay() {
         val song = _currentSong.value ?: return
+        // 占位曲目（队列已清空）没有可播放内容，且 _currentIndex 为 -1：
+        // 直接返回，避免掉进下面的 playAt(-1) 分支
+        if (song.isPlaceholder) return
         val p = awaitPlayer() ?: return
         when {
             // 按下标恢复：同一首歌有多份时，应重播"当前那一份"而不是第一份
@@ -423,7 +432,9 @@ object PlayerController {
         p?.stop()
         p?.clearMediaItems()
         _isPlaying.value = false
-        _currentSong.value = null
+        // 第二十二轮需求 5：清空后**不置空** currentSong，而是放入占位曲目，
+        // 使底部播放栏与播放页保持可见（歌名「愉乐~愉悦~」/ 歌手「Hi~」）。
+        _currentSong.value = Song.placeholder
         _currentIndex.value = -1
         _duration.value = null
         _position.value = 0L
@@ -431,9 +442,14 @@ object PlayerController {
         publishCurrentState()
     }
 
-    /** 播放列表中的当前歌曲被移除后调用：清空当前歌曲状态 */
+    /**
+     * 播放列表中的当前歌曲被移除后调用。
+     *
+     * 第二十二轮需求 5：队列**已空**时改为放入占位曲目（保留播放栏与播放页）；
+     * 队列仍有歌曲（只是当前项没了）时保持原有的"清空当前歌曲"语义。
+     */
     private fun onCurrentSongRemoved() {
-        _currentSong.value = null
+        _currentSong.value = if (PlaylistRepository.length == 0) Song.placeholder else null
         _currentIndex.value = -1
         _duration.value = null
         _position.value = 0L
@@ -924,6 +940,13 @@ object PlayerController {
     }
 
     private fun publishCurrentState() {
+        // 第二十二轮需求 4：把当前播放曲回填给队列仓库，
+        // 供"进入随机模式时把当前曲钉在首位"使用。
+        // 放在这里是因为所有改变当前歌曲的路径（playAt / 自动续播 / 停止清空）
+        // 最后都会走 publishCurrentState()，单点同步不会漏。
+        // 占位曲目不是真实歌曲（其 path 是伪标识），不能写进队列仓库。
+        val cur = _currentSong.value
+        PlaylistRepository.currentPath = if (cur == null || cur.isPlaceholder) null else cur.path
         updateWidget()
     }
 
