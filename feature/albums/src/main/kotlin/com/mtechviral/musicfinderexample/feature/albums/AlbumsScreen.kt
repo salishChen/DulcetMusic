@@ -44,7 +44,6 @@ import com.mtechviral.musicfinderexample.core.designsystem.theme.ytTextSecondary
 import com.mtechviral.musicfinderexample.core.model.Album
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.player.PlayerController
-import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 import com.mtechviral.musicfinderexample.feature.home.LocalOpenSidebar
 import kotlinx.coroutines.launch
 
@@ -127,8 +126,10 @@ fun AlbumsScreen(onOpenAlbum: (String) -> Unit = {}) {
             onDismiss = { actionAlbum = null },
             // 整列播放（对应 Dart setSongs + 从首曲起播）
             onPlay = { songs -> scope.launch { PlayerController.playSongs(songs, 0) } },
-            // "添加到播放队列"：PlaylistRepository 无"插入下一首"API，与 Dart addSong 一致追加
-            onPlayNext = { songs -> songs.forEach { PlaylistRepository.addSong(it) } },
+            // "添加到播放队列"：队列写入已在弹窗内部完成（PlaylistRepository.addSong 追加；
+            // 该 API 无"插入下一首"变体，与 Dart 一致）。契约：onPlayNext 仅作刷新通知，
+            // 此处不可再 addSong —— 第十六轮起 addSong 取消判重，重复调用会真的加入两份。
+            onPlayNext = { },
             onAddToPlaylist = { songs -> pickingSongs = songs },
             onToggleLike = {
                 // 喜欢状态已在弹窗内部写入，这里只刷新列表

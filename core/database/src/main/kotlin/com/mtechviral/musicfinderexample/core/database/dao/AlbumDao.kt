@@ -13,8 +13,9 @@ import com.mtechviral.musicfinderexample.core.model.Song
 /**
  * 专辑聚合查询（GROUP BY album，在 SQL 层聚合，不单独入库）。
  *
- * 对应原 Flutter 工程 `DatabaseHelper` 中的 `queryAlbums` / `queryAlbumsByArtist`
- * / `queryLikedAlbums`。
+ * 对应原 Flutter 工程 `DatabaseHelper` 中的 `queryAlbums` / `queryAlbumsByArtist`。
+ *
+ * 注：`queryLikedAlbums` 已随「喜欢只针对单曲」的需求变更删除。
  */
 class AlbumDao(private val musicDatabase: MusicDatabase) {
 
@@ -50,21 +51,6 @@ class AlbumDao(private val musicDatabase: MusicDatabase) {
         GROUP BY album
         ORDER BY album COLLATE NOCASE ASC
     """.trimIndent(), arrayOf(artist))
-
-    /** 喜欢的专辑（通过歌曲聚合） */
-    fun queryLikedAlbums(): List<Album> = query("""
-        SELECT album AS title,
-               COALESCE(MAX(albumArtist), MAX(artist)) AS artist,
-               MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
-               MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
-               MAX(cachedArtworkPath) AS coverArtworkPath,
-               MAX(coverArtId) AS coverArtId,
-               COUNT(*) AS songCount
-        FROM songs
-        WHERE album IS NOT NULL AND album != '' AND isLiked = 1
-        GROUP BY album
-        ORDER BY album COLLATE NOCASE ASC
-    """.trimIndent())
 
     /** 专辑内全部歌曲（按音轨号排序） */
     fun querySongsByAlbum(album: String): List<Song> =

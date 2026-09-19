@@ -54,8 +54,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.mtechviral.musicfinderexample.core.cache.CacheService
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
+import com.mtechviral.musicfinderexample.core.designsystem.component.EntityActionItem
 import com.mtechviral.musicfinderexample.core.designsystem.component.EntityActionSheet
 import com.mtechviral.musicfinderexample.core.designsystem.component.EntityActionTarget
 import com.mtechviral.musicfinderexample.core.designsystem.component.SongArtwork
@@ -171,6 +173,7 @@ private fun NowPlayingContent(
     val playMode by PlayerController.playMode.collectAsStateWithLifecycle()
     val isPlaying by PlayerController.isPlaying.collectAsStateWithLifecycle()
     val isMuted by PlayerController.isMuted.collectAsStateWithLifecycle()
+    val currentIndex by PlayerController.currentIndex.collectAsStateWithLifecycle()
     val overlayVisible by LyricsOverlayManager.isVisible.collectAsStateWithLifecycle()
     val overlayLocked by LyricsOverlayManager.isLocked.collectAsStateWithLifecycle()
 
@@ -209,8 +212,9 @@ private fun NowPlayingContent(
     }
 
     // ---------- 弹窗 ----------
+    // 播放页右上角「更多」的歌曲操作弹窗（第二十轮起播放列表行不再使用它）。
+    // 第十六轮曾因此记录"被点的队列下标"，现已随行内「减号」按钮一并移除。
     var actionSheetSong by remember { mutableStateOf<Song?>(null) }
-    var addToPlaylistSongs by remember { mutableStateOf<List<Song>?>(null) }
 
     // 喜欢状态本地镜像：DatabaseHelper 写库后 PlayerController.currentSong 不会立即刷新
     var likedOverride by remember(song.path) { mutableStateOf(song.isLiked) }
@@ -235,10 +239,20 @@ private fun NowPlayingContent(
         }
     }
 
-    /** 打开播放列表：竖向翻到第 1 页（Dart `_goToPlaylist`） */
+    /**
+     * 打开播放列表：竖向翻到第 1 页（Dart `_goToPlaylist`）。
+     *
+     * 第二十轮需求：翻到播放列表后**定位到当前播放的歌曲**。
+     * 放在补间结束之后执行，避免与翻页动画抢帧；用 `scrollToItem`（瞬时定位）
+     * 而不是 `animateScrollToItem`，以免出现"翻页 + 列表滚动"两段动画叠加。
+     * 下标在滚动那一刻才从 `PlayerController.currentIndex` 读取（不捕获旧值），
+     * 因此补间期间若已切歌，也仍会定位到正确的当前曲。
+     */
     val openPlaylist: () -> Unit = {
         scope.launch {
             pageAnim.animateTo(PLAYLIST_PAGE, tween(PAGE_ANIM_MS, easing = FastOutSlowInEasing))
+            val idx = PlayerController.currentIndex.value
+            if (idx >= 0) playlistListState.scrollToItem(idx)
         }
     }
 
@@ -266,6 +280,8 @@ private fun NowPlayingContent(
             likedOverride = next
             scope.launch {
                 DatabaseHelper.toggleLikeSong(songId)
+                // 设置「缓存我喜欢」开启时，标记为喜欢后自动缓存远程歌曲（音频 + 封面）
+                if (next) CacheService.autoCacheLiked(songId)
                 MusicLibrary.reload()
                 val fresh = DatabaseHelper.querySongById(songId)
                 if (fresh != null) {
@@ -528,61 +544,57 @@ private fun NowPlayingContent(
             ) {
                 NowPlayingPlaylistPage(
                     songs = playlistSongs,
+                    currentIndex = currentIndex,
                     currentSong = song,
-                    isPlaying = isPlaying,
                     listState = playlistListState,
                     onCollapse = showNowPlaying,
                     onClear = clearPlaylist,
-                    onPlaySong = { target ->
-                        scope.launch { PlayerController.playSong(target) }
+                    onPlayIndex = { index ->
+                        // 按下标播放：同一首歌有多份时，点哪一行就播哪一份
+                        scope.launch { PlayerController.playAt(index) }
                         // Dart：点歌后翻回播放页（`_goToNowPlaying`）
                         showNowPlaying()
                     },
-                    onMoreSong = { target -> actionSheetSong = target },
+                    // 第二十轮：每行右侧改为「减号」= 直接从当前播放队列删掉该曲。
+                    // 按**下标**删除（不能用 removeSong(song)：`path` 会把同名副本一并删掉）；
+                    // 若删的正是当前播放项，PlayerController.syncQueue 会接续播放下一首。
+                    onRemoveIndex = { index -> PlaylistRepository.removeAt(index) },
                 )
             }
         }
     }
 
     // ---------- 弹窗 ----------
+    // 播放页右上角「更多」的歌曲操作弹窗。
+    // 需求：本页弹窗不提供「播放 / 添加到播放队列 / 添加到歌单」，并移除标题栏右上角关闭按钮；
+    // 其他页面（歌曲页 / 专辑 / 艺术家 / 歌单详情）的同一弹窗不受影响。
+    //
+    // 第二十轮：播放列表每行的「更多」已改为「减号」按钮（直接移出队列，不再弹窗），
+    // 因此本弹窗现在**只由播放页顶栏**打开，且始终针对当前播放曲 ——
+    // 其「从播放列表移除」直接按 `currentIndex` 删除，不再需要单独记录行下标。
     val sheetSong = actionSheetSong
     if (sheetSong != null) {
         EntityActionSheet(
             entity = EntityActionTarget.SongTarget(listOf(sheetSong)),
             onDismiss = { actionSheetSong = null },
-            onPlay = { songs ->
-                actionSheetSong = null
-                scope.launch { PlayerController.playSongs(songs, 0) }
-            },
-            // 契约：onPlayNext = 「添加到播放队列」
-            // （弹窗内部已逐首 PlaylistRepository.addSong，此处按 path 去重为幂等兜底）
-            onPlayNext = { songs ->
-                actionSheetSong = null
-                songs.forEach { PlaylistRepository.addSong(it) }
-            },
-            // 契约：onAddToPlaylist = 「添加到歌单」，由本页弹出歌单选择器
-            onAddToPlaylist = { songs ->
-                actionSheetSong = null
-                addToPlaylistSongs = songs
-            },
             // 契约：弹窗内部已完成 toggleLikeSong，这里只能刷新展示
             onToggleLike = { songs -> songs.firstOrNull()?.let(refreshLikeState) },
             // 本页语境下的「删除」= 从播放队列移除（Dart 播放列表 Dismissible 的等价语义）；
             // 必须传 deleteFromLibrary = false，否则弹窗会 DatabaseHelper.deleteSong 永久删库
-            onDelete = { songs ->
+            onDelete = {
                 actionSheetSong = null
-                songs.forEach { PlaylistRepository.removeSong(it) }
+                // 按**下标**移除当前那一份；不能用 removeSong(song) —— 那会按 path
+                // 把列表里所有同名单曲一并删掉（第十六轮起列表允许重复）
+                if (currentIndex >= 0) PlaylistRepository.removeAt(currentIndex)
             },
             deleteFromLibrary = false,
             deleteLabel = "从播放列表移除",
-        )
-    }
-
-    val songsToAdd = addToPlaylistSongs
-    if (songsToAdd != null) {
-        NowPlayingAddToPlaylistDialog(
-            songs = songsToAdd,
-            onDismiss = { addToPlaylistSongs = null },
+            hiddenItems = setOf(
+                EntityActionItem.PLAY,
+                EntityActionItem.ADD_TO_QUEUE,
+                EntityActionItem.ADD_TO_PLAYLIST,
+            ),
+            showHeaderCloseButton = false,
         )
     }
 }

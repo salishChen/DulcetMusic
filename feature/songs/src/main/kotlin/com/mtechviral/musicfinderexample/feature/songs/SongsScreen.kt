@@ -17,7 +17,11 @@
  *        点击行 = 切换选中（不播放、不弹菜单）
  *      · 批量操作文案与 Dart 一致：'已添加 N 首歌曲到播放队列'、
  *        确认删除（'确认删除' / '确定要删除选中的 N 首歌曲吗？'）→ '已删除 N 首歌曲'
- *  - "播放全部 / 随机播放"：规范第 9 节《播放列表行为约定》。
+ *  - "随机播放"：规范第 9 节《播放列表行为约定》。
+ *    （第十八轮：按需求去掉顶部的「播放全部」按钮；
+ *     第十九轮：按需求去掉顶部的「随机播放」按钮，该条只剩「共 N 首」。
+ *     整列播放仍可通过点击任意歌曲触达；随机播放可由播放页底部的播放模式按钮进入随机模式，
+ *     届时列表本身会被重排。）
  *
  * 屏幕由 `:app` 的 HomeShell 直接按索引调用（不经过 NavHost），因此跳转一律用
  * "默认参数 + 回调"，默认空实现时页面可独立渲染、不崩溃。
@@ -54,13 +58,11 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.ManageSearch
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
-import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Timer
@@ -96,6 +98,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -109,9 +112,9 @@ import com.mtechviral.musicfinderexample.core.designsystem.component.SongArtwork
 import com.mtechviral.musicfinderexample.core.designsystem.theme.BrandCyan
 import com.mtechviral.musicfinderexample.core.designsystem.theme.BrandPurple
 import com.mtechviral.musicfinderexample.core.designsystem.theme.ytTextSecondary
-import com.mtechviral.musicfinderexample.core.model.PlayMode
 import com.mtechviral.musicfinderexample.core.model.Playlist
 import com.mtechviral.musicfinderexample.core.model.Song
+import com.mtechviral.musicfinderexample.core.player.LibrarySongDeleter
 import com.mtechviral.musicfinderexample.core.player.PlayerController
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 import com.mtechviral.musicfinderexample.feature.home.LocalOpenSidebar
@@ -234,12 +237,10 @@ fun SongsScreen(
                     },
                     onAddToQueue = {
                         // Dart `_addToQueue`：逐首 PlaylistRepository.addSong
-                        var addedCount = 0
-                        selectedSongs.forEach { song ->
-                            if (PlaylistRepository.addSong(song)) addedCount++
-                        }
+                        // 第十六轮：addSong 不再判重（允许重复入列），因此选中即全部加入
+                        selectedSongs.forEach { song -> PlaylistRepository.addSong(song) }
                         scope.launch {
-                            snackbarHostState.showSnackbar("已添加 $addedCount 首歌曲到播放队列")
+                            snackbarHostState.showSnackbar("已添加 ${selectedSongs.size} 首歌曲到播放队列")
                         }
                         exitSelectionMode()
                     },
@@ -361,20 +362,10 @@ fun SongsScreen(
                 loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                 library.isEmpty() -> EmptyLibraryView(onOpenScan = onOpenScan)
                 else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    // 多选态隐藏顶部操作条（对应 Dart 多选列表本身没有该操作条）
+                    // 多选态隐藏顶部信息条（对应 Dart 多选列表本身没有该操作条）
                     if (!selectionMode) {
                         item(key = "songs_header") {
-                            SongsHeader(
-                                count = sortedSongs.size,
-                                onPlayAll = {
-                                    scope.launch { PlayerController.playSongs(sortedSongs, 0) }
-                                },
-                                onShuffle = {
-                                    // 随机播放：切换播放模式为随机的，再以打乱后的顺序整列播放
-                                    PlaylistRepository.setPlayMode(PlayMode.RANDOM)
-                                    scope.launch { PlayerController.playSongs(sortedSongs.shuffled(), 0) }
-                                },
-                            )
+                            SongsHeader(count = sortedSongs.size)
                         }
                     }
                     items(sortedSongs, key = { it.path }) { song ->
@@ -462,9 +453,8 @@ fun SongsScreen(
                             showDeleteConfirm = false
                             scope.launch {
                                 val targets = selectedSongs
-                                targets.forEach { song ->
-                                    song.id?.let { DatabaseHelper.deleteSong(it) }
-                                }
+                                // 删库 + 同步移出播放列表（若删的是正在播放的歌，会自动接续下一首）
+                                LibrarySongDeleter.delete(targets)
                                 // Dart：删除后 queryAllSongs + songData.updateSongs(refreshed)
                                 MusicLibrary.updateSongs(DatabaseHelper.queryAllSongs())
                                 snackbarHostState.showSnackbar("已删除 ${targets.size} 首歌曲")
@@ -548,7 +538,12 @@ private fun SelectableSongRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(checked = isSelected, onCheckedChange = { onToggle() })
-        SongArtwork(song = song, modifier = Modifier.size(40.dp), cornerRadius = 8.dp)
+        SongArtwork(
+            song = song,
+            modifier = Modifier.size(40.dp),
+            cornerRadius = 8.dp,
+            maxSizePx = with(LocalDensity.current) { 40.dp.roundToPx() },
+        )
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -630,33 +625,24 @@ private fun SortMenuItem(
     )
 }
 
-/** 列表顶部操作条：播放全部 / 随机播放（规范第 9 节） */
+/**
+ * 列表顶部信息条：曲目数（规范第 9 节）。
+ *
+ * 第十八轮调整：按需求去掉「播放全部」按钮。
+ * 第十九轮调整：按需求再去掉「随机播放」按钮 —— 该条只剩曲目数文本，
+ * 因此不再需要回调参数、右侧留白与按钮。整列/随机播放仍可分别通过
+ * 「点击任意歌曲」与播放页底部的播放模式按钮（切到随机模式会重排列表）触达。
+ */
 @Composable
-private fun SongsHeader(count: Int, onPlayAll: () -> Unit, onShuffle: () -> Unit) {
-    Row(
+private fun SongsHeader(count: Int) {
+    Text(
+        text = "共 $count 首",
+        fontSize = 13.sp,
+        color = MaterialTheme.ytTextSecondary,
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Start,
-    ) {
-        Text(
-            text = "共 $count 首",
-            fontSize = 13.sp,
-            color = MaterialTheme.ytTextSecondary,
-        )
-        Spacer(modifier = Modifier.weight(1f))
-        TextButton(onClick = onPlayAll) {
-            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(4.dp))
-            Text("播放全部")
-        }
-        TextButton(onClick = onShuffle) {
-            Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(4.dp))
-            Text("随机播放")
-        }
-    }
+    )
 }
 
 /** 空状态：引导用户去扫描音乐（文案与 Dart `_emptyView` 完全一致） */

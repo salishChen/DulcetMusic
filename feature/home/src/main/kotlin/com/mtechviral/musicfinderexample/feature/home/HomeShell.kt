@@ -13,7 +13,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,8 +30,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mtechviral.musicfinderexample.core.player.NowPlayingUiState
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 /**
@@ -60,7 +63,10 @@ fun HomeShell(
     val sidebarWidthPx = with(density) { sidebarWidth.toPx() }
     val liftDistancePx = with(density) { LIFT_DISTANCE.toPx() }
 
-    val isOpen = sidebarProgress.value > 0.5f
+    // 用 derivedStateOf 只在「跨过 50%」时触发一次重组。
+    // 直接写 `sidebarProgress.value > 0.5f` 会在拖动/补间期间每帧重组整页
+    // （含 LazyColumn 里的所有可见行），这是侧边栏滑动明显卡顿的主因。
+    val isOpen by remember { derivedStateOf { sidebarProgress.value > 0.5f } }
 
     // 侧边栏是否正在被手指拖动（拖动期间即使越过 50% 也要继续跟手，见下方说明）
     var sidebarDragging by remember { mutableStateOf(false) }
@@ -94,12 +100,16 @@ fun HomeShell(
 
     val saveableStateHolder = rememberSaveableStateHolder()
 
-    // 播放页展开进度（0=收在底部，1=完全展开）
-    val nowPlayingProgress by NowPlayingUiState.progress.collectAsStateWithLifecycle()
-    // 后半段（0.5~1）才上移淡出，避免播放页刚露出时主页过早露底
-    val liftT = ((nowPlayingProgress - 0.5f) / 0.5f).coerceIn(0f, 1f)
+    // 播放页展开进度（0=收在底部，1=完全展开）。
+    // 镜像成 Compose 状态，并且**只在下方的 graphicsLayer 里读取**（延迟读取），
+    // 这样 300ms 展开/收起补间期间不会每帧重组整页。
+    val nowPlayingProgressState = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        NowPlayingUiState.progress.collect { nowPlayingProgressState.floatValue = it }
+    }
 
-    // 供内部有横向分页的页面（「喜欢」页 Tab）把滚到边界后的剩余横向位移转交进来
+    // 供内部有横向滚动区的一级页面把「滚到边界后的剩余横向位移」转交进来
+    // （最初用于「喜欢」页三 Tab 分页器；该页改为单个歌曲列表后当前无调用方）
     val sidebarDragHandle = remember(sidebarWidthPx) {
         SidebarDragHandle(
             dragBy = { dx -> dragSidebar(dx) },
@@ -119,6 +129,9 @@ fun HomeShell(
             modifier = modifier
                 .fillMaxSize()
                 .graphicsLayer {
+                    // 后半段（0.5~1）才上移淡出，避免播放页刚露出时主页过早露底
+                    val liftT = ((nowPlayingProgressState.floatValue - 0.5f) / 0.5f)
+                        .coerceIn(0f, 1f)
                     translationY = -liftDistancePx * liftT
                     alpha = 1f - liftT
                 },
@@ -135,7 +148,20 @@ fun HomeShell(
                     .fillMaxHeight()
                     .graphicsLayer {
                         translationX = sidebarWidthPx * (sidebarProgress.value - 1f)
-                    },
+                    }
+                    // 需求：在侧边栏**内部**左划也要能收起侧边栏，与「在歌曲页面内左划」
+                    // 完全一致。原先只有主页 Box 里的拦截层处理左滑，而该拦截层位于
+                    // 主页 Box 之内（整个 Box 已被 translationX 推到右半屏），因此只覆盖
+                    // 右半边；侧边栏自己所在的左半屏没有任何手势处理 —— 左划毫无反应。
+                    // 这里补上同款横向 draggable（与下面拦截层写法一致）：
+                    // 左划 → settleSidebar 判为"收回"，右划 → 回到展开态。
+                    // 纵向滑动不受影响（Orientation.Horizontal 不参与纵向手势竞争），
+                    // 侧边栏内的 LazyColumn 仍可正常滚动、条目仍可点击。
+                    .draggable(
+                        orientation = Orientation.Horizontal,
+                        state = rememberDraggableState { delta -> dragSidebar(delta) },
+                        onDragStopped = { velocity -> settleSidebar(velocity) },
+                    ),
             )
 
             // ---- 主页（画布右侧，保持屏幕宽度，随画布整体平移） ----

@@ -143,21 +143,18 @@ suspend fun updateArtworkCache(songId: Long, artworkPath: String)
 suspend fun updateSongLyrics(songId: Long, lyrics: String)
 suspend fun querySongsNeedingArtworkCache(): List<Song>
 
-// 统计 / 喜欢
+// 统计 / 喜欢（喜欢只针对单曲：不再有 queryLikedAlbums / queryLikedArtists / toggleLikeArtist）
 suspend fun incrementPlayCount(songId: Long)
 suspend fun queryTopPlayed(limit: Int = 20): List<Song>
 suspend fun queryRecentlyPlayed(limit: Int = 50): List<Song>
 suspend fun toggleLikeSong(songId: Long)
 suspend fun queryLikedSongs(): List<Song>
 suspend fun queryLikedSongCount(): Int
-suspend fun queryLikedAlbums(): List<Album>
-suspend fun queryLikedArtists(): List<Artist>
 
-// 艺术家元数据
+// 艺术家元数据（toggleLikeArtist 已随"喜欢只针对单曲"删除；isLiked 列保留但不再读写）
 suspend fun upsertArtistMeta(name: String, artistId: String?, coverArtId: String?)
 suspend fun upsertArtistMetaBatch(artists: List<Triple<String, String?, String?>>)
 suspend fun updateArtistArtworkCache(artistName: String, artworkPath: String)
-suspend fun toggleLikeArtist(artistName: String)
 suspend fun queryArtistMeta(name: String): ArtistMeta?
 suspend fun queryAllArtistMeta(): List<ArtistMeta>
 ```
@@ -247,11 +244,38 @@ object CacheService {
 object PlaylistRepository {                    // 等价旧版 PlaylistData
   val songs: StateFlow<List<Song>>; val playMode: StateFlow<PlayMode>
   val current: List<Song>; val length: Int
-  fun contains(song): Boolean; fun addSong(song): Boolean
-  fun setSongs(songs: List<Song>); fun removeSong(song); fun removeAt(index: Int)
+  /** 只回答"有无"；列表允许重复，故不表示"仅一份" */
+  fun contains(song): Boolean
+  /** 追加到末尾，**不判重**（第十六轮：允许同一首歌重复出现），无返回值 */
+  fun addSong(song: Song)
+  fun setSongs(songs: List<Song>)
+  /** 按 path 移除**全部**同名单曲 */
+  fun removeSong(song: Song)
+  /** 按**位置**精确移除一项（重复歌曲时只删被点的那一份） */
+  fun removeAt(index: Int)
+  /** 按 path 批量移出播放列表，返回实际移除数量（第十二轮新增：
+   *  曲库删除歌曲时同步清理播放列表，整批只 notify 一次） */
+  fun removeSongs(paths: Collection<String>): Int
+  /** 更新该 path 的**全部**副本（歌词/封面/喜欢状态，第十六轮起多处一并更新） */
   fun updateSong(updatedSong: Song); fun clear()
   fun togglePlayMode(): PlayMode; fun setPlayMode(mode: PlayMode)
+  /** 随机播放入口：把列表打乱后存入并切到 RANDOM，返回实际顺序（第十五轮新增） */
+  fun playShuffled(songs: List<Song>): List<Song>
   suspend fun restoreFromPrefs(): Int
+}
+
+/**
+ * 曲库永久删除的统一入口（第十二轮新增）。
+ *
+ * 为什么需要：删除（DatabaseHelper）与播放队列（PlaylistRepository）是两个独立结构，
+ * 只删库会留下"播放列表里还有一首已不存在的歌"。
+ *
+ * 语义：逐首 deleteSong 后 `PlaylistRepository.removeSongs(paths)`；
+ * 若被删的是当前播放项，由 PlayerController 接续播放下一首（见下）。
+ */
+object LibrarySongDeleter {
+  /** @return 实际发起删除的歌曲数（仅统计已入库、即有 id 的歌曲） */
+  suspend fun delete(songs: Collection<Song>): Int
 }
 
 object PlayerController {                      // 等价旧版 MpAudioHandler
@@ -266,6 +290,10 @@ object PlayerController {                      // 等价旧版 MpAudioHandler
   val connected: StateFlow<Boolean>
   suspend fun playSong(song: Song): Boolean
   suspend fun playSongs(songs: List<Song>, startIndex: Int = 0): Boolean
+  /** 按下标播放，重复歌曲时用于精确指定播放哪一份（第十六轮新增） */
+  suspend fun playAt(index: Int, openNowPlaying: Boolean = true): Boolean
+  /** 「随机播放」：列表本身随机排序后整列播放（第十五轮新增） */
+  suspend fun playShuffled(songs: List<Song>, startIndex: Int = 0): Boolean
   suspend fun resumeOrPlay(); suspend fun pause(); suspend fun togglePlayPause()
   fun togglePlayPauseAsync()
   suspend fun skipToNext(); suspend fun skipToPrevious()
@@ -360,7 +388,8 @@ val MaterialTheme.ytTextSecondary: Color   // 次要文字色（随明暗切换�
     hideWhenEmpty: Boolean = true,
 )
 
-/** 实体操作菜单（底部弹出）：歌曲 / 专辑 / 艺术家 三种重载 */
+/** 实体操作菜单（底部弹出）：歌曲 / 专辑 / 艺术家 三种目标
+ *  「喜欢 / 取消喜欢」仅 SongTarget（且仅单首）显示；专辑/艺术家目标不提供该入口 */
 @Composable fun EntityActionSheet(
     entity: EntityActionTarget,
     onDismiss: () -> Unit,
@@ -369,12 +398,20 @@ val MaterialTheme.ytTextSecondary: Color   // 次要文字色（随明暗切换�
     onAddToPlaylist: (List<Song>) -> Unit = {},
     onToggleLike: (List<Song>) -> Unit = {},
     onDelete: (List<Song>) -> Unit = {},
-    /** true（默认）= 弹窗内部先 deleteSong + reload 再回调 onDelete；
-     *  false = 不做库删除，仅回调（歌单详情页"从本歌单移除"用） */
+    /** true（默认）= 弹窗内部先 `LibrarySongDeleter.delete`（deleteSong + 移出播放列表）
+     *  + reload 再回调 onDelete；false = 不做库删除，仅回调（歌单详情页"从本歌单移除"用） */
     deleteFromLibrary: Boolean = true,
     /** 删除项文案 */
     deleteLabel: String = "永久删除",
+    /** 需要隐藏的菜单项（默认全部显示）。播放页 / 播放列表的「更多」用它去掉
+     *  「播放 / 添加到播放队列 / 添加到歌单」。 */
+    hiddenItems: Set<EntityActionItem> = emptySet(),
+    /** 是否显示标题栏右上角关闭按钮（默认 true）；隐藏后仍可点遮罩/返回键/选项关闭 */
+    showHeaderCloseButton: Boolean = true,
 )
+
+/** 可单个隐藏的菜单项 */
+enum class EntityActionItem { PLAY, ADD_TO_QUEUE, ADD_TO_PLAYLIST }
 
 sealed interface EntityActionTarget {
     data class SongTarget(val songs: List<Song>) : EntityActionTarget
@@ -433,7 +470,7 @@ object AppRoutes {
 | albums | `fun NavGraphBuilder.albumsGraph(navController: NavController)` | `albums`、`album_detail/{title}` | `AlbumsScreen(onOpenAlbum: (String) -> Unit = {})` / `AlbumDetailScreen(albumTitle: String, onBack: () -> Unit = {})` |
 | artists | `fun NavGraphBuilder.artistsGraph(navController: NavController)` | `artists`、`artist_detail/{name}` | `ArtistsScreen(onOpenArtist: (String) -> Unit = {})` / `ArtistDetailScreen(artistName: String, onOpenAlbum: (String) -> Unit = {}, onBack: () -> Unit = {})` |
 | playlists | `fun NavGraphBuilder.playlistsGraph(navController: NavController)` | `playlists`、`playlist_detail/{id}` | `PlaylistsScreen(onOpenPlaylist: (Long) -> Unit = {})` / `PlaylistDetailScreen(playlistId: Long, onBack: () -> Unit = {})` |
-| favorites | `fun NavGraphBuilder.favoritesGraph(navController: NavController)` | `favorites` | `FavoritesScreen()` |
+| favorites | `fun NavGraphBuilder.favoritesGraph(navController: NavController)` | `favorites` | `FavoritesScreen()`（只展示喜欢的歌曲，无专辑/艺术家 Tab） |
 | search | `fun NavGraphBuilder.searchGraph(navController: NavController)` | `search` | `SearchScreen(onBack: () -> Unit = {})` |
 | scan | `fun NavGraphBuilder.scanGraph(navController: NavController)` | `scan` | `ScanScreen(onOpenSubsonicConfig: () -> Unit = {})` |
 | stats | `fun NavGraphBuilder.statsGraph(navController: NavController)` | `stats` | `StatsScreen()` |
@@ -463,12 +500,51 @@ object AppRoutes {
 
 ### 播放列表行为约定（所有页面统一）
 
-- 点击列表中的歌曲：`PlaylistRepository.setSongs(list)` 后 `PlayerController.playSong(song)`
-  （等价旧版"点击整列播放"：旧版在 `MpSongListItem`/页面里 `playlistData.setSongs(...)`）。
+- 点击列表中的歌曲：`PlaylistRepository.setSongs(list)` 后 `PlayerController.playSong(song)`；
+  **播放列表页的每行点击**改用 `PlayerController.playAt(index)`（同一首歌可重复，按下标才精确）。
 - 点击专辑/艺术家/歌单/喜欢的"播放全部"：`PlayerController.playSongs(songs, 0)`。
-- 点击"随机播放"：`PlaylistRepository.setPlayMode(PlayMode.RANDOM)` + `playSongs(shuffled, 0)`。
-- 当前播放行高亮：`PlayerController.currentSong.collectAsStateWithLifecycle()`，比较 `song.path`。
+- 点击"随机播放"：`PlayerController.playShuffled(songs, 0)` —— 把歌曲列表**本身**
+  随机排序后按下标 0 开始播放（第十五轮修正，见下）。
+- 当前播放行高亮：普通列表用 `PlayerController.currentSong` 比较 `song.path`；
+  **播放列表页**改用 `PlayerController.currentIndex` 比较**下标**（第十六轮起列表允许重复，
+  按 path 比较会把同名副本全部点亮）。
+- **播放列表允许同一首歌出现多次**（第十六轮）：
+  `PlaylistRepository.addSong(song)` **不再判重**，重复调用即重复入列
+  （需求：向播放列表添加歌曲时不检测列表内是否已存在）。
+  由此带来的一组约束：
+  - `addSong` 不再返回 Boolean（旧返回值"是否新增"已无意义），提示文案不再有
+    "该歌曲已在播放列表中"分支；
+  - **`EntityActionSheet` / `SongInfoBottomSheet` 内部已执行 `addSong`**，
+    因此调用方的 `onPlayNext` 只作刷新通知，**不得再 `addSong`**（否则重复入列两份）；
+  - 播放列表页删除一行用 `removeAt(index)`（按位置），**不能**用 `removeSong(song)`
+    （按 path 会删掉全部同名副本）；
+  - `updateSong(updated)` 会更新该 path 的**全部副本**，避免第 2 份残留旧的
+    歌词 / 喜欢 / 缓存状态；
+  - 收藏/曲库删除走 `removeSongs(paths)`，仍是"删掉该歌的全部副本"，语义正确；
+  - 与 Dart 差异：Dart `addSong` 会先 `contains` 判重、已存在则返回 false 不入列
+    （`playlist_data.dart:70-75`）；此处按需求刻意取消判重。
+- **随机模式：随机化的是列表本身**（第十五轮修正）：
+  `PlayMode.RANDOM` 不再映射到 `shuffleModeEnabled = true`，而是把当前播放列表
+  **真正重排**（`PlaylistRepository.setPlayMode(RANDOM)` 在切入随机时打乱列表；
+  「随机播放」按钮走 `playShuffled`，一次通知完成"打乱 + 切模式"），之后按列表顺序
+  顺序播放。这样界面上的列表顺序与实际播放顺序一致；若仍打开播放器内部 shuffle，
+  播放器会在已打乱的列表上再乱序一次，与界面显示对不上。
+  注意与 Dart 的差异：Dart 只维护私有 `_shuffleOrder` 下标序列，从不改动
+  `playlistData.songs`，界面列表顺序不变；此处按需求刻意改为重排列表本身。
+- **单曲循环下手动切歌仍换曲**（第十四轮修正）：
+  `PlayMode.SINGLE` 只映射到 ExoPlayer 的 `REPEAT_MODE_ONE`，即**只影响"播完自动续播"**；
+  `skipToNext()` / `skipToPrevious()`（播放页与迷你播放栏的上一曲/下一曲，以及通知栏
+  与耳机按键经由 MediaSession 的同类命令）在单曲循环下**仍然切换到相邻曲目**。
+  Media3 已内建该语义：`getNextMediaItemIndex()` / `getPreviousMediaItemIndex()` 使用
+  `getRepeatModeForNavigation()`（把 `REPEAT_MODE_ONE` 视作 `REPEAT_MODE_OFF`）。
+  单曲循环下走到队列首/尾时，`PlayerController` 会环绕到另一端（仅一首歌时即重播本曲）。
 - 所有"更多"入口弹出 `EntityActionSheet`。
+- **删除正在播放的歌曲**（第十二轮新增，Dart 无此行为）：从曲库永久删除时，
+  `LibrarySongDeleter.delete(songs)` 会同步把歌曲移出 `PlaylistRepository`，
+  若被删的正是当前播放项，`PlayerController` 接续播放**原本紧随其后的那首**
+  （其后已无存活项则绕回列表开头）；原本暂停则保持暂停。
+  队列更新走 `PlaylistRepository.songs` → `PlayerController.syncQueue` 的既有通道，
+  调用方无需手动操作 ExoPlayer 队列。
 
 ### `EntityActionSheet` 回调契约（重要）
 
@@ -478,9 +554,15 @@ artist：`toggleLikeArtist` + 该艺术家每首歌 `toggleLikeSong`），随后
 （`MusicLibrary.reload()` / 重查列表 / 更新本地 state），**不得**再次调用
 `toggleLikeSong` / `toggleLikeArtist`，否则会二次取反。
 
-回调真实语义：`onPlayNext` = "添加到播放队列"（`PlaylistRepository.addSong` 追加）；
+回调真实语义：`onPlayNext` = "添加到播放队列"（`PlaylistRepository.addSong` 追加，
+**写入已在弹窗内部完成**，调用方只作刷新通知，不得再 `addSong` —— 第十六轮起 addSong
+不再判重，重复调用会入列两份）；
 `onAddToPlaylist` = "添加到歌单"（调用方弹歌单选择器，内部 `addSongToPlaylist`）；
 `onDelete(songs)` 之后同样只做刷新。
+
+`deleteFromLibrary = true` 时弹窗内部执行 `LibrarySongDeleter.delete(songs)`
+（= `deleteSong` + 移出播放列表）；`false` 时不写库，删除项文案取 `deleteLabel`
+且始终显示（歌单详情页"从本歌单移除"）。
 
 ---
 

@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -31,15 +30,13 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OfflinePin
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -47,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -63,23 +61,46 @@ private val ROW_ARTWORK_SIZE = 48.dp
 private val ROW_ARTWORK_CORNER = 6.dp
 
 /**
+ * 当前播放行的高亮框（第二十轮需求）：20px 圆角 + 半透明灰底。
+ * 取代原先"仅靠 equalizer 图标"的提示方式，整行一眼可辨。
+ */
+private val CURRENT_ROW_CORNER = 20.dp
+private val CURRENT_ROW_HIGHLIGHT = Color(0xFF888888).copy(alpha = 0.28f)
+
+/** 高亮框相对屏幕左右各留出的空白，使框体不贴边（封面仍与顶部卡片对齐于 16dp） */
+private val CURRENT_ROW_HORIZONTAL_INSET = 8.dp
+
+/**
  * 播放列表页（竖向 PageView 第 1 页）。
  *
  * @param songs 播放列表内容（PlaylistRepository.songs）
- * @param currentSong 当前播放歌曲（用于高亮当前行与顶部卡片）
+ * @param currentIndex 当前播放项在 [songs] 中的**下标**（用于高亮当前行）
+ * @param currentSong 当前播放歌曲（顶部当前歌曲卡片）
  * @param listState 列表滚动状态（父级持有；列表滚到顶部后继续下滑由竖向 PageView
  *   接管并翻回播放页）
+ *
+ * 注意（第十六轮）：同一首歌可在播放列表内出现多次，因此**不能**再用 `song.path`
+ * 作为列表 key（重复 key 会让 LazyColumn 抛 "Key was already used"），
+ * 也不能用 `item.path == currentSong.path` 判断当前行（会把所有同名单曲都点亮）。
+ * 统一改为按**下标**定位：key 用下标，高亮比下标，点击/移除回调也传下标。
+ *
+ * 第二十轮调整（按需求）：
+ * - 上划进入本页时**自动滚动定位到当前播放的歌曲**（由调用方触发，见 `scrollToCurrent`）；
+ * - 当前播放行改用**20px 圆角 + 半透明灰底**的整行高亮框；
+ * - 取消每行之间的分割线；
+ * - 顶部当前播放卡片去掉「正在播放」文案与右侧播放状态图标；
+ * - 队列每行的「更多」按钮改为**减号按钮**，功能是直接从当前播放队列删掉该曲。
  */
 @Composable
 internal fun NowPlayingPlaylistPage(
     songs: List<Song>,
+    currentIndex: Int,
     currentSong: Song,
-    isPlaying: Boolean,
     listState: LazyListState,
     onCollapse: () -> Unit,
     onClear: () -> Unit,
-    onPlaySong: (Song) -> Unit,
-    onMoreSong: (Song) -> Unit,
+    onPlayIndex: (Int) -> Unit,
+    onRemoveIndex: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -133,12 +154,7 @@ internal fun NowPlayingPlaylistPage(
 
         CurrentSongCard(
             song = currentSong,
-            isPlaying = isPlaying,
             onClick = onCollapse,
-        )
-        HorizontalDivider(
-            thickness = 1.dp,
-            color = Color.White.copy(alpha = 0.24f),
         )
 
         if (songs.isEmpty()) {
@@ -161,12 +177,12 @@ internal fun NowPlayingPlaylistPage(
                     .weight(1f)
                     .navigationBarsPadding(),
             ) {
-                items(items = songs, key = { it.path }) { item ->
+                itemsIndexed(items = songs, key = { index, item -> "$index-${item.path}" }) { index, item ->
                     PlaylistSongRow(
                         song = item,
-                        isCurrent = item.path == currentSong.path,
-                        onClick = { onPlaySong(item) },
-                        onMoreClick = { onMoreSong(item) },
+                        isCurrent = index == currentIndex,
+                        onClick = { onPlayIndex(index) },
+                        onRemoveClick = { onRemoveIndex(index) },
                     )
                 }
             }
@@ -174,11 +190,15 @@ internal fun NowPlayingPlaylistPage(
     }
 }
 
-/** Dart `_currentSongCard`：封面 48 + 「正在播放」+ 歌名 + 艺术家 + 播放状态图标 */
+/**
+ * 顶部当前歌曲卡片（Dart `_currentSongCard` 的简化版）。
+ *
+ * 第二十轮调整（按需求）：去掉「正在播放」标题文字与右侧播放状态图标，
+ * 只留封面 + 歌名 + 艺术家；点击仍翻回播放页。
+ */
 @Composable
 private fun CurrentSongCard(
     song: Song,
-    isPlaying: Boolean,
     onClick: () -> Unit,
 ) {
     Row(
@@ -192,14 +212,10 @@ private fun CurrentSongCard(
             song = song,
             modifier = Modifier.size(ROW_ARTWORK_SIZE),
             cornerRadius = 8.dp,
+            maxSizePx = with(LocalDensity.current) { ROW_ARTWORK_SIZE.roundToPx() },
         )
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "正在播放",
-                style = TextStyle(color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp),
-            )
-            Spacer(Modifier.height(2.dp))
             Text(
                 text = song.title,
                 maxLines = 1,
@@ -217,34 +233,55 @@ private fun CurrentSongCard(
                 style = TextStyle(color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp),
             )
         }
-        Icon(
-            imageVector = if (isPlaying) Icons.Filled.Equalizer else Icons.Filled.PlayArrow,
-            contentDescription = null,
-            tint = Color.White,
-        )
     }
 }
 
-/** 播放列表行（Dart ListTile）：封面 48 圆角 6 / 歌名（当前行加粗）/ 艺术家 / 缓存标识 / 更多 */
+/**
+ * 播放列表行：封面 48 圆角 6 / 歌名 / 艺术家 / 缓存标识 / 减号按钮。
+ *
+ * 第二十轮调整（按需求）：
+ * - 当前播放行用 **20px 圆角 + 半透明灰底** 的整行高亮框（取代原先仅靠 equalizer 图标）；
+ * - **取消行间分割线**；
+ * - 右侧「更多」按钮改为**减号按钮**，点击即从当前播放队列删除该曲。
+ */
 @Composable
 private fun PlaylistSongRow(
     song: Song,
     isCurrent: Boolean,
     onClick: () -> Unit,
-    onMoreClick: () -> Unit,
+    onRemoveClick: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
+    // 外层承载"整行高亮框"：左右各留 8dp 使圆角框不贴屏幕边缘，
+    // 内层 padding 再补足到 16dp，保证封面与顶部卡片、与其它行**左右对齐**。
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = CURRENT_ROW_HORIZONTAL_INSET, vertical = 2.dp)
+            .then(
+                if (isCurrent) {
+                    Modifier.background(CURRENT_ROW_HIGHLIGHT, RoundedCornerShape(CURRENT_ROW_CORNER))
+                } else {
+                    Modifier
+                },
+            ),
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onClick)
-                .padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                .padding(
+                    start = 16.dp - CURRENT_ROW_HORIZONTAL_INSET,
+                    end = 4.dp,
+                    top = 6.dp,
+                    bottom = 6.dp,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             SongArtwork(
                 song = song,
                 modifier = Modifier.size(ROW_ARTWORK_SIZE),
                 cornerRadius = ROW_ARTWORK_CORNER,
+                maxSizePx = with(LocalDensity.current) { ROW_ARTWORK_SIZE.roundToPx() },
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -273,28 +310,16 @@ private fun PlaylistSongRow(
                     tint = Color.White.copy(alpha = 0.7f),
                     modifier = Modifier.size(18.dp),
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(4.dp))
             }
-            // 当前播放行（Dart：equalizer）
-            if (isCurrent) {
+            // 减号按钮：从当前播放队列中删掉该歌曲（第二十轮，取代原「更多」菜单）
+            IconButton(onClick = onRemoveClick) {
                 Icon(
-                    imageVector = Icons.Filled.Equalizer,
-                    contentDescription = "正在播放",
-                    tint = Color.White,
-                )
-            }
-            IconButton(onClick = onMoreClick) {
-                Icon(
-                    imageVector = Icons.Filled.MoreVert,
-                    contentDescription = "更多操作",
+                    imageVector = Icons.Filled.Remove,
+                    contentDescription = "从播放队列移除",
                     tint = Color.White,
                 )
             }
         }
-        HorizontalDivider(
-            modifier = Modifier.padding(start = 16.dp),
-            thickness = 0.6.dp,
-            color = Color.White.copy(alpha = 0.12f),
-        )
     }
 }

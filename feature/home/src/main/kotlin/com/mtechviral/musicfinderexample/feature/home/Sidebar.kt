@@ -73,10 +73,12 @@ val LocalSelectPage = staticCompositionLocalOf<(Int) -> Unit> { {} }
 /**
  * 侧边栏跟手拖拽接口。
  *
- * 主页（HomeShell）自身已通过 `draggable` 处理右滑打开；但页面内部若存在**横向可滚动区**
- * （当前只有「喜欢」页的三个 Tab 分页），滚动区会先把手势吃掉，导致第一个 Tab 右滑
- * 打不开侧边栏。这类页面可把自己的「滚到边界后剩下的横向位移」转交进来
- * （见 `FavoritesScreen` 的 nestedScroll 转发）。
+ * 主页（HomeShell）自身已通过 `draggable` 处理右滑打开；但页面内部若存在**横向可滚动区**，
+ * 滚动区会先把手势吃掉，导致侧边栏打不开。这类页面可把自己的「滚到边界后剩下的横向位移」
+ * 转交进来（通过 `nestedScroll` 转发）。
+ *
+ * 注：该接口最初是为「喜欢」页的三 Tab `HorizontalPager` 引入的；喜欢页改为单个歌曲列表后
+ * 已不再使用，接口保留以备后续有横向滚动的一级页面（当前无调用方）。
  *
  * @param dragBy 跟手位移（像素，向右为正，内部按侧边栏宽度换算成进度）
  * @param settle 松手结算（像素/秒，向右为正）

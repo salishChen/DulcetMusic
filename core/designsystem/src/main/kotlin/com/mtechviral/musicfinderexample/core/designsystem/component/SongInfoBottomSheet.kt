@@ -10,8 +10,8 @@
  *        与 Dart `audioHandler?.playlistData.addSong(song)` 一致）→ `onPlayNext` 为刷新通知
  *     3. 缓存歌曲（Icons.download，仅"远程且未缓存"）—— 内部 `CacheService.startCaching(song)`
  *     4. 添加到歌单（Icons.playlist_add）→ `onAddToPlaylist`（歌单选择器由调用方弹出）
- *     5. 永久删除（Icons.delete_forever，红 0xFFFF5252）—— 内部 `DatabaseHelper.deleteSong` +
- *        `MusicLibrary.reload()` → `onDelete` 为刷新通知
+ *     5. 永久删除（Icons.delete_forever，红 0xFFFF5252）—— 内部 `LibrarySongDeleter.delete`
+ *        （删库 + 同步移出播放列表）+ `MusicLibrary.reload()` → `onDelete` 为刷新通知
  *   新增（Dart 用对话框/播放页承载，本弹窗按移植要求内联展示）：
  *     - "歌曲信息"行组：歌名/艺术家/专辑/专辑艺术家/专辑内排序/时长/比特率/采样率/位深/大小/
  *       格式/编码/添加时间/修改时间/路径（用 `Formatters` 格式化，空值显示"未知"）
@@ -73,6 +73,7 @@ import com.mtechviral.musicfinderexample.core.common.LrcParser
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.model.Song
+import com.mtechviral.musicfinderexample.core.player.LibrarySongDeleter
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -148,14 +149,18 @@ private fun SongInfoContent(
                 ) {
                     val wasLiked = live.isLiked
                     val songId = live.id
+                    val autoCache = CacheService.isAutoCacheLikedEnabled()
                     scope.launch {
                         if (songId != null) DatabaseHelper.toggleLikeSong(songId)
+                        // 设置「缓存我喜欢」开启时，标记为喜欢后自动缓存（仅远程歌曲）
+                        if (!wasLiked && songId != null) CacheService.autoCacheLiked(songId)
                         MusicLibrary.reload()
-                        Toast.makeText(
-                            appContext,
-                            if (wasLiked) "已取消喜欢" else "已添加到喜欢",
-                            Toast.LENGTH_SHORT,
-                        ).show()
+                        val message = when {
+                            wasLiked -> "已取消喜欢"
+                            live.isRemote && autoCache -> "已添加到喜欢，将自动缓存"
+                            else -> "已添加到喜欢"
+                        }
+                        Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
                         onDismiss()
                     }
                 }
@@ -164,6 +169,7 @@ private fun SongInfoContent(
                 ActionTile(icon = Icons.Filled.QueueMusic, label = "添加到播放队列") {
                     onDismiss()
                     // Dart: audioHandler?.playlistData.addSong(song)
+                    // 第十六轮：addSong 不再判重，可重复加入
                     PlaylistRepository.addSong(live)
                     Toast.makeText(appContext, "已添加到播放队列", Toast.LENGTH_SHORT).show()
                     onPlayNext()
@@ -195,11 +201,11 @@ private fun SongInfoContent(
                     label = "永久删除",
                     color = SheetDangerRed,
                 ) {
-                    val songId = live.id
                     val title = live.title
                     scope.launch {
                         // Dart: DatabaseHelper.instance.deleteSong(id) + songData.reload()
-                        if (songId != null) DatabaseHelper.deleteSong(songId)
+                        // 删库 + 同步移出播放列表（若删的是正在播放的歌，会自动接续下一首）
+                        LibrarySongDeleter.delete(listOf(live))
                         MusicLibrary.reload()
                         Toast.makeText(
                             appContext,

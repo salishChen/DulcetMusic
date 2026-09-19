@@ -3,6 +3,7 @@ package com.mtechviral.musicfinderexample.core.player
 import android.content.ComponentName
 import android.content.Context
 import android.util.Log
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -46,7 +47,7 @@ import java.io.File
  * | `currentSong` / `isPlaying` ValueNotifier  | 同名 `StateFlow`                              |
  * | `_resolveNext(forward)` 手写下一首          | ExoPlayer 队列 + repeat/shuffle 模式           |
  * | `PlayMode.single` -> repeatMode one        | `Player.REPEAT_MODE_ONE`                      |
- * | `PlayMode.random` -> 打乱顺序               | `shuffleModeEnabled = true`                   |
+ * | `PlayMode.random` -> 打乱顺序               | 列表本身重排（`shuffleModeEnabled = false`）   |
  * | 通知栏/媒体会话                             | `MediaSessionService` + 自定义「歌词」按钮     |
  * | `_publishStateThrottled` 500ms             | 悬浮窗歌词推送同样节流 500ms                   |
  *
@@ -114,6 +115,18 @@ object PlayerController {
 
     private var tickerJob: Job? = null
     private var lastPublishedPosMs = -1L
+
+    /**
+     * 队列因「当前歌曲被移除」而重建后，需要为接续的歌曲补一次播放收尾。
+     *
+     * 这类重建在 Media3 中对应的 transition reason 是 `PLAYLIST_CHANGED`，
+     * 监听器据此默认跳过 `postPlayWork`；置位后由 [handleCurrentItemChanged] 消费。
+     *
+     * 置位发生在 `PlaylistRepository.songs` 的收集协程（`scope` = `Dispatchers.Main.immediate`），
+     * 消费发生在 Media3 的 `Player.Listener` 回调。两者当前都落在主线程，`@Volatile` 仅作防御。
+     */
+    @Volatile
+    private var postWorkAfterQueueRebuild = false
 
     // ===================== 初始化 / 连接 =====================
 
@@ -201,28 +214,43 @@ object PlayerController {
     // ===================== 播放控制 =====================
 
     /**
-     * 播放指定歌曲（重新定位到列表中的索引后播放）。
+     * 播放指定歌曲（按 path 定位到队列中的**第一份**后播放）。
      *
      * 支持三种播放源（与原实现一致）：
      * 1. 已缓存的远程歌曲 -> 本地文件播放
      * 2. 未缓存的远程歌曲 -> 流式播放 + 后台缓存
      * 3. 本地歌曲 -> 本地文件播放
      *
+     * 注意（第十六轮）：队列允许同一首歌重复出现，本方法只按 [Song] 定位，
+     * 因此**永远命中第一份**。要播放"指定那一行"请用 [playAt]。
+     *
      * @param openNowPlaying 是否同时在 UI 上展开「正在播放」页。
      *   与原 Flutter 端一致：从任意列表点歌都会打开播放页（`openNowPlayingPage`），
      *   而通知栏/小组件/自动续播等场景不打开。
      */
-    suspend fun playSong(song: Song, openNowPlaying: Boolean = true): Boolean {
+    suspend fun playSong(song: Song, openNowPlaying: Boolean = true): Boolean =
+        playAt(PlaylistRepository.current.indexOfFirst { it.path == song.path }, openNowPlaying)
+
+    /**
+     * 按**队列下标**播放（第十六轮新增）。
+     *
+     * 为什么需要：同一首歌可在播放列表内出现多次，只给 [Song] 无法区分是哪一份
+     * （`indexOfFirst` 永远命中第一份）。播放列表页每行点击必须用本方法，
+     * 才能播放"被点的那一行"。
+     *
+     * @param index 队列下标；越界时返回 false（不播放）
+     */
+    suspend fun playAt(index: Int, openNowPlaying: Boolean = true): Boolean {
         val songs = PlaylistRepository.current
-        val idx = songs.indexOfFirst { it.path == song.path }
-        if (idx < 0) return false
+        if (index < 0 || index >= songs.size) return false
+        val song = songs[index]
 
         val p = awaitPlayer() ?: return false
 
         var playable = resolveCachedState(song)
 
         _currentSong.value = playable
-        _currentIndex.value = idx
+        _currentIndex.value = index
         _duration.value = null
         _position.value = 0L
         lastPublishedPosMs = 0L
@@ -233,8 +261,8 @@ object PlayerController {
             val uri = resolvePlayableUri(playable)
             // 先把通知栏封面文件准备好（仅 IO，不触碰播放器），再构建媒体项
             val artUri = prepareArtworkUri(playable)
-            replaceItemIfNeeded(p, idx, playable, uri, artUri)
-            p.seekTo(idx, 0L)
+            replaceItemIfNeeded(p, index, playable, uri, artUri)
+            p.seekTo(index, 0L)
             p.prepare()
             p.play()
             _isPlaying.value = true
@@ -271,8 +299,27 @@ object PlayerController {
     suspend fun playSongs(songs: List<Song>, startIndex: Int = 0): Boolean {
         if (songs.isEmpty()) return false
         PlaylistRepository.setSongs(songs)
-        val target = songs.getOrNull(startIndex.coerceIn(0, songs.size - 1)) ?: return false
-        return playSong(target)
+        // 用下标而非 Song 启动：列表刚被设为 songs，下标与之一一对应；
+        // 若改用 playSong(target)，同一首歌有重复时 indexOfFirst 会命中第一份而非 startIndex
+        return playAt(startIndex.coerceIn(0, songs.size - 1))
+    }
+
+    /**
+     * 「随机播放」：把 [songs] 随机排序后作为播放列表并从头播放。
+     *
+     * 关键点：**随机化的是播放列表本身**，之后按列表顺序顺序播放
+     * （需求：进入随机模式时随机排序当前歌曲列表，然后顺序播放该列表）。
+     * 因此这里不能再依赖 ExoPlayer 的 `shuffleModeEnabled`——那不会改变列表
+     * 顺序，界面上看到的列表与实际播放顺序会对不上。
+     *
+     * 排序由 [PlaylistRepository.playShuffled] 完成并返回实际顺序，
+     * 这里直接取该顺序的第 [startIndex] 首开始播放，避免二次打乱。
+     */
+    suspend fun playShuffled(songs: List<Song>, startIndex: Int = 0): Boolean {
+        if (songs.isEmpty()) return false
+        val shuffled = PlaylistRepository.playShuffled(songs)
+        // 同上：用下标定位，避免重复歌曲时命中错误的那一份
+        return playAt(startIndex.coerceIn(0, shuffled.size - 1))
     }
 
     /** 恢复播放（暂停态）或重播当前歌曲；无当前歌曲则空操作 */
@@ -280,8 +327,9 @@ object PlayerController {
         val song = _currentSong.value ?: return
         val p = awaitPlayer() ?: return
         when {
+            // 按下标恢复：同一首歌有多份时，应重播"当前那一份"而不是第一份
             p.playbackState == Player.STATE_IDLE || p.mediaItemCount == 0 ->
-                playSong(song, openNowPlaying = false)
+                playAt(_currentIndex.value, openNowPlaying = false)
             p.isPlaying -> Unit
             else -> {
                 p.play()
@@ -309,31 +357,46 @@ object PlayerController {
 
     suspend fun skipToNext() {
         val p = awaitPlayer() ?: return
-        val songs = PlaylistRepository.current
-        if (songs.isEmpty()) return
-        if (PlaylistRepository.playMode.value == PlayMode.SINGLE && _currentIndex.value >= 0) {
-            // 单曲循环：原 `_resolveNext(single)` 返回当前歌曲本身
-            p.seekTo(_currentIndex.value, 0L)
-            p.play()
-            _position.value = 0L
-            return
-        }
-        p.seekToNextMediaItem()
+        if (PlaylistRepository.current.isEmpty()) return
+        p.seekTo(resolveManualSkipIndex(p, forward = true), 0L)
         p.play()
+        _position.value = 0L
     }
 
     suspend fun skipToPrevious() {
         val p = awaitPlayer() ?: return
-        val songs = PlaylistRepository.current
-        if (songs.isEmpty()) return
-        if (PlaylistRepository.playMode.value == PlayMode.SINGLE && _currentIndex.value >= 0) {
-            p.seekTo(_currentIndex.value, 0L)
-            p.play()
-            _position.value = 0L
-            return
-        }
-        p.seekToPreviousMediaItem()
+        if (PlaylistRepository.current.isEmpty()) return
+        p.seekTo(resolveManualSkipIndex(p, forward = false), 0L)
         p.play()
+        _position.value = 0L
+    }
+
+    /**
+     * 手动点按「上一曲 / 下一曲」时的目标下标。
+     *
+     * 关键点：**单曲循环（`REPEAT_MODE_ONE`）只应作用于"播完自动续播"，
+     * 手动切歌仍应切到相邻曲目**。Media3 已经内建了这个语义 ——
+     * `BasePlayer.getNextMediaItemIndex()` 走的是
+     * `getRepeatModeForNavigation()`（把 `REPEAT_MODE_ONE` 视作 `REPEAT_MODE_OFF`），
+     * 因此 `nextMediaItemIndex` / `previousMediaItemIndex` 在单曲循环下**本来就会换曲**。
+     *
+     * 原先这里额外写了一个 `PlayMode.SINGLE` 分支去 `seekTo(当前下标, 0)`，
+     * 那才是"点上一曲/下一曲只重播本曲"的真正原因（该分支源于对 Dart
+     * `_resolveNext(single)` 的字面直译，但 Dart 那套是"自动续播"与"手动切歌"
+     * 共用同一个函数，原生端两者已由 ExoPlayer 分开处理）。
+     *
+     * 边界：单曲循环下导航按 `REPEAT_MODE_OFF` 计算，走到队尾/队首时
+     * `nextMediaItemIndex` 会返回 [C.INDEX_UNSET]（此处不会换曲）。为保持
+     * 与"列表循环"一致的按键手感，此时环绕到队首/队尾；队列只有一首歌时
+     * 环绕即重播本曲（与 Dart 单曲分支的效果一致）。
+     */
+    private fun resolveManualSkipIndex(p: Player, forward: Boolean): Int {
+        val target = if (forward) p.nextMediaItemIndex else p.previousMediaItemIndex
+        if (target != C.INDEX_UNSET) return target
+        // 兜底：环绕到首/尾。仅单曲循环会走到这里
+        // （列表循环 / 随机为 REPEAT_MODE_ALL，Media3 自身就会环绕）
+        if (p.mediaItemCount <= 0) return C.INDEX_UNSET
+        return if (forward) 0 else p.mediaItemCount - 1
     }
 
     suspend fun seekTo(positionMs: Long) {
@@ -384,6 +447,11 @@ object PlayerController {
      *
      * 采用增量更新（追加 / 截断）以保持当前播放项与进度不中断；
      * 结构发生其它变化时重建队列，并尽量保持当前歌曲与播放位置。
+     *
+     * 特例——**当前歌曲被移出播放列表**（如从曲库中永久删除）：
+     * 若新列表只是旧列表的子序列（纯移除），则接续播放原本紧随其后的那首，
+     * 而不是停在队首并清空当前歌曲；其余情况（切换到另一张列表）保持原行为，
+     * 由调用方的 `playSong(...)` 接管。
      */
     private fun syncQueue(songs: List<Song>) {
         val p = controller ?: return
@@ -393,8 +461,27 @@ object PlayerController {
 
         if (songs.isEmpty()) {
             p.clearMediaItems()
+            // 队列已空：当前歌曲状态必须一并清空，否则播放栏会继续展示一首已不存在的歌
+            onCurrentSongRemoved()
             return
         }
+
+        val wasPlaying = p.playWhenReady
+        // 当前播放项以**位置**定位：第十六轮起同一首歌可在列表中重复出现，
+        // mediaId 不再唯一，因此不能用 `newIds.indexOf(mediaId)` 去找"当前项"。
+        val currentIndex = p.currentMediaItemIndex
+        // 纯移除（新列表更短且是旧列表的子序列）。允许重复 —— 用贪心匹配求"存活下标"，
+        // 而不是旧的 `id !in newIds`（重复项会被误判成"应当保留"，导致删不掉）。
+        val keepIndices = if (newIds.size < existingIds.size) {
+            greedyKeepIndices(newIds, existingIds)
+        } else {
+            null
+        }
+        // 纯重排：数量一致且**多重集**相同（同一首歌的重复份数也一致），仅顺序不同。
+        // 要求当前项有效 —— 否则没有"要保持不动的那一项"，交给 else 分支重建即可。
+        val pureReorder = currentIndex >= 0 &&
+            newIds.size == existingIds.size &&
+            existingIds.sorted() == newIds.sorted()
 
         when {
             existingIds.isEmpty() -> {
@@ -403,21 +490,55 @@ object PlayerController {
                 p.pause()
             }
 
-            newIds.size > existingIds.size && existingIds == newIds.subList(0, existingIds.size) -> {
-                // 尾部追加
+            // 尾部追加（当前项必然存活）
+            newIds.size > existingIds.size &&
+                existingIds == newIds.subList(0, existingIds.size) -> {
                 p.addMediaItems(songs.drop(existingIds.size).map { buildMediaItem(it) })
             }
 
-            existingIds.size > newIds.size && newIds == existingIds.subList(0, newIds.size) -> {
-                // 尾部截断
-                p.removeMediaItems(newIds.size, existingIds.size)
+            // 纯移除：按位置精确删除即可。当前项之前若有项被删，其下标会前移，需一并同步
+            keepIndices != null -> {
+                val removed = existingIds.indices.filter { it !in keepIndices.toHashSet() }
+                if (currentIndex !in removed) {
+                    // 从后往前删，保证下标不失效
+                    for (i in removed.asReversed()) {
+                        p.removeMediaItem(i)
+                    }
+                    if (currentIndex >= 0) _currentIndex.value = p.currentMediaItemIndex
+                } else {
+                    // 被移除的正是当前播放项：接续播放原本紧随其后的那首
+                    // （需求：删除正在播放的歌曲后继续播放下一首）。
+                    // 按**位置**计算接续项，同一首歌有多份时也能唯一确定。
+                    val successor = successorIndexAfterRemoval(keepIndices, removed, currentIndex)
+                    // 这类重建的 transition reason 是 PLAYLIST_CHANGED，监听器默认不补播放收尾
+                    // （累计播放次数 / 预缓存下一首 / 拉歌词），这里先置位、由监听器消费。
+                    // 仅当原本确有当前项时才会产生 transition，否则置位将无人消费。
+                    if (currentIndex >= 0) postWorkAfterQueueRebuild = true
+                    p.setMediaItems(songs.map { buildMediaItem(it) }, successor, 0L)
+                    // 原本在播放则继续播放下一首；原本暂停则保持暂停（删除不应擅自开始播放）
+                    p.playWhenReady = wasPlaying
+                    p.prepare()
+                }
+            }
+
+            // 纯重排（同一批歌曲换了顺序，如"进入随机播放"）：队列顺序必须真正下发，
+            // 否则随机后的播放顺序与界面显示的列表顺序不一致。当前歌曲与进度保持不变。
+            pureReorder -> {
+                val newIndex = occurrenceMappedIndex(existingIds, newIds, currentIndex)
+                val resumePosition = p.currentPosition
+                p.setMediaItems(songs.map { buildMediaItem(it) }, newIndex, resumePosition)
+                p.playWhenReady = wasPlaying
+                p.prepare()
+                // 重排后当前歌曲仍在队列中、其 window uid 未变 —— Media3 的
+                // evaluateMediaItemTransitionReason 只在 window uid 变化时才回调
+                // onMediaItemTransition，所以这里必须自己同步下标（_currentIndex
+                // 还驱动 precacheNext 的"下一首"计算，不同步会预缓存错歌）。
+                _currentIndex.value = newIndex
             }
 
             else -> {
-                val currentMediaId = p.currentMediaItem?.mediaId
-                val newIndex = newIds.indexOf(currentMediaId)
+                val newIndex = occurrenceMappedIndex(existingIds, newIds, currentIndex)
                 val resumePosition = p.currentPosition
-                val wasPlaying = p.playWhenReady
                 p.setMediaItems(
                     songs.map { buildMediaItem(it) },
                     if (newIndex >= 0) newIndex else 0,
@@ -432,6 +553,77 @@ object PlayerController {
                 }
             }
         }
+    }
+
+    /**
+     * 当前播放项在**新列表**中的下标。
+     *
+     * 第十六轮起同一首歌可在队列内重复出现，mediaId 不再唯一，
+     * 因此不能再用 `newIds.indexOf(mediaId)`；这里改按**出现次数**定位：
+     * 先算出当前项是 [oldIds] 中该 id 的第几份（occurrence），
+     * 再在 [newIds] 中找同样的第几份。
+     *
+     * @return 新下标；当前项在新列表中已不存在（或 [oldIndex] 无效）时返回 -1。
+     */
+    private fun occurrenceMappedIndex(
+        oldIds: List<String>,
+        newIds: List<String>,
+        oldIndex: Int,
+    ): Int {
+        val id = oldIds.getOrNull(oldIndex) ?: return -1
+        val occurrence = oldIds.take(oldIndex + 1).count { it == id } - 1
+        var seen = -1
+        for (i in newIds.indices) {
+            if (newIds[i] == id) {
+                seen++
+                if (seen == occurrence) return i
+            }
+        }
+        return -1
+    }
+
+    /**
+     * 贪心匹配：返回"把 [target] 按顺序匹配到 [full] 上"所得的 [full] 下标列表；
+     * 若 [target] 不是 [full] 的子序列则返回 null。
+     *
+     * 与旧的 `isSubsequence` 不同之处：这里返回**具体下标**，因而能正确处理
+     * "同一首歌在队列里出现多次"的情况。旧实现用 `id !in newIds` 反推被删项，
+     * 遇到重复项会把两份都当成"应当保留"，结果一份也删不掉。
+     */
+    private fun greedyKeepIndices(target: List<String>, full: List<String>): List<Int>? {
+        val keep = ArrayList<Int>(target.size)
+        var i = 0
+        for (t in target) {
+            while (i < full.size && full[i] != t) i++
+            if (i >= full.size) return null
+            keep.add(i)
+            i++
+        }
+        return keep
+    }
+
+    /**
+     * 计算「当前播放项被移出队列」后应接续播放的**新列表下标**。
+     *
+     * @param keep 存活的旧下标（升序）
+     * @param removed 被删的旧下标
+     * @param currentIndex 当前播放项在旧列表中的下标
+     *
+     * 优先接续紧随其后的首个存活项；若其后已无存活项（被删的是最后一首），
+     * 则绕回列表开头（等价列表循环的自然行为）。全程按位置计算，
+     * 因此同一首歌有多份时也能唯一确定接续项。
+     */
+    private fun successorIndexAfterRemoval(
+        keep: List<Int>,
+        removed: List<Int>,
+        currentIndex: Int,
+    ): Int {
+        val removedSet = removed.toHashSet()
+        val oldSize = keep.size + removed.size
+        for (old in (currentIndex + 1) until oldSize) {
+            if (old !in removedSet) return keep.indexOf(old)
+        }
+        return 0
     }
 
     private fun buildMediaItem(
@@ -479,7 +671,16 @@ object PlayerController {
         p.replaceMediaItem(index, buildMediaItem(song, uri, artworkUri))
     }
 
-    /** 播放模式的 repeat / shuffle 映射（与 Dart 端发布的通知栏状态一致） */
+    /**
+     * 播放模式的 repeat / shuffle 映射。
+     *
+     * 注意（第十五轮调整）：**随机模式不再依赖播放器的 shuffle**。
+     * 需求是"进入随机播放时随机排序当前歌曲列表，然后顺序播放该列表"，
+     * 即随机化发生在**列表本身**（由 `PlaylistRepository` 重排，见
+     * `setPlayMode` / `playShuffled`），之后按列表顺序顺序播放即可。
+     * 若仍打开 `shuffleModeEnabled`，播放器会在已打乱的列表上**再乱序一次**，
+     * 与界面显示的列表顺序不一致，因此这里统一关闭 shuffle。
+     */
     private fun applyPlayMode(mode: PlayMode) {
         val p = controller ?: return
         when (mode) {
@@ -488,8 +689,9 @@ object PlayerController {
                 p.repeatMode = Player.REPEAT_MODE_ALL
             }
 
+            // 列表本身已被随机重排，按顺序播放即可（列表循环）
             PlayMode.RANDOM -> {
-                p.shuffleModeEnabled = true
+                p.shuffleModeEnabled = false
                 p.repeatMode = Player.REPEAT_MODE_ALL
             }
 
@@ -654,6 +856,10 @@ object PlayerController {
      */
     private fun handleCurrentItemChanged(allowPostWork: Boolean) {
         val p = controller ?: return
+        // 队列因"当前歌曲被移除"重建：此时 reason 为 PLAYLIST_CHANGED，
+        // 但接续的歌曲是首次播放，仍需补做收尾（只用一次）
+        val postWork = allowPostWork || postWorkAfterQueueRebuild
+        postWorkAfterQueueRebuild = false
         val songs = PlaylistRepository.current
         val idx = p.currentMediaItemIndex
         _currentIndex.value = idx
@@ -672,7 +878,7 @@ object PlayerController {
             _position.value = p.currentPosition.coerceAtLeast(0L)
             ensureArtworkFile(resolved)
             publishCurrentState()
-            if (allowPostWork) postPlayWork(resolved)
+            if (postWork) postPlayWork(resolved)
         }
     }
 

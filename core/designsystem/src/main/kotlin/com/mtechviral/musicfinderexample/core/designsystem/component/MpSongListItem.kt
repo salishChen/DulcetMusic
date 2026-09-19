@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -61,6 +62,8 @@ fun MpSongListItem(
     showAddButton: Boolean = true,
 ) {
     val context = LocalContext.current
+    // 缩略图按显示尺寸（50dp）采样解码，避免列表滚动时全尺寸解码卡顿
+    val artworkMaxPx = with(LocalDensity.current) { 50.dp.roundToPx() }
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
@@ -75,6 +78,7 @@ fun MpSongListItem(
                     song = song,
                     modifier = Modifier.size(50.dp),
                     cornerRadius = 12.dp,
+                    maxSizePx = artworkMaxPx,
                 )
                 Spacer(Modifier.width(12.dp))
             }
@@ -123,10 +127,11 @@ fun MpSongListItem(
                 if (showAddButton) {
                     IconButton(
                         onClick = {
-                            val added = PlaylistRepository.addSong(song)
+                            // 第十六轮：不再判重，同一首歌可重复加入播放列表
+                            PlaylistRepository.addSong(song)
                             Toast.makeText(
                                 context,
-                                if (added) "已添加到播放列表" else "该歌曲已在播放列表中",
+                                "已添加到播放列表",
                                 Toast.LENGTH_SHORT,
                             ).show()
                         },

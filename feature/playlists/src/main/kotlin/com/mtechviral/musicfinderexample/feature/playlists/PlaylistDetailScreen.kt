@@ -158,8 +158,9 @@ fun PlaylistDetailScreen(playlistId: Long, onBack: () -> Unit = {}) {
             entity = EntityActionTarget.SongTarget(listOf(song)),
             onDismiss = { sheetSong = null },
             onPlay = { list -> scope.launch { PlayerController.playSongs(list, 0) } },
-            // 契约：onPlayNext = "添加到播放队列"
-            onPlayNext = { list -> list.forEach { PlaylistRepository.addSong(it) } },
+            // 契约：onPlayNext = "添加到播放队列"，队列写入已由弹窗内部完成，这里只作刷新通知
+            // （第十六轮 addSong 取消判重后，此处若再 addSong 会重复加入两份）
+            onPlayNext = { },
             // 契约：onAddToPlaylist = "添加到歌单"（由本页弹出歌单选择器）
             onAddToPlaylist = { list -> addToPlaylistSongs = list },
             onToggleLike = {

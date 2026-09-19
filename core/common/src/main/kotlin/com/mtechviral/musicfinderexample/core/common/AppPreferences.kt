@@ -30,6 +30,9 @@ object AppPreferences {
     const val KEY_LAST_PLAYLIST_SONGS = "last_playlist_songs"
     const val KEY_LAST_PLAYLIST_MODE = "last_playlist_mode"
 
+    /** 「缓存我喜欢」：添加歌曲到喜欢时是否自动缓存到本地（原生新增键，旧版本无此键） */
+    const val KEY_AUTO_CACHE_LIKED = "auto_cache_liked"
+
     private var prefs: SharedPreferences? = null
     private var legacyPrefs: SharedPreferences? = null
 

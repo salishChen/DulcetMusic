@@ -66,7 +66,6 @@ import com.mtechviral.musicfinderexample.core.designsystem.component.EntityActio
 import com.mtechviral.musicfinderexample.core.designsystem.component.MpSongListItem
 import com.mtechviral.musicfinderexample.core.designsystem.theme.ytTextSecondary
 import com.mtechviral.musicfinderexample.core.model.Album
-import com.mtechviral.musicfinderexample.core.model.PlayMode
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.player.PlayerController
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
@@ -204,10 +203,8 @@ fun AlbumDetailScreen(albumTitle: String, onBack: () -> Unit = {}) {
                         Spacer(Modifier.width(8.dp))
                         OutlinedButton(
                             onClick = {
-                                scope.launch {
-                                    PlaylistRepository.setPlayMode(PlayMode.RANDOM)
-                                    PlayerController.playSongs(songs.shuffled(), 0)
-                                }
+                                // 随机播放：列表本身随机排序，再按新顺序整列播放
+                                scope.launch { PlayerController.playShuffled(songs, 0) }
                             },
                             enabled = songs.isNotEmpty(),
                         ) {
@@ -272,7 +269,8 @@ fun AlbumDetailScreen(albumTitle: String, onBack: () -> Unit = {}) {
             entity = EntityActionTarget.SongTarget(listOf(song)),
             onDismiss = { pendingSong = null },
             onPlay = { list -> scope.launch { PlayerController.playSongs(list, 0) } },
-            onPlayNext = { list -> list.forEach { PlaylistRepository.addSong(it) } },
+            // 契约：队列写入已在弹窗内部完成，这里只作刷新通知（addSong 第十六轮起不再判重）
+            onPlayNext = { },
             onAddToPlaylist = { list -> pickingSongs = list },
             onToggleLike = {
                 // 喜欢状态已在弹窗内部写入，这里只刷新本页列表
@@ -291,7 +289,8 @@ fun AlbumDetailScreen(albumTitle: String, onBack: () -> Unit = {}) {
             entity = EntityActionTarget.AlbumTarget(albumForActions, songs),
             onDismiss = { showAlbumActions = false },
             onPlay = { list -> scope.launch { PlayerController.playSongs(list, 0) } },
-            onPlayNext = { list -> list.forEach { PlaylistRepository.addSong(it) } },
+            // 契约：队列写入已在弹窗内部完成，这里只作刷新通知（addSong 第十六轮起不再判重）
+            onPlayNext = { },
             onAddToPlaylist = { list -> pickingSongs = list },
             onToggleLike = {
                 scope.launch { songs = DatabaseHelper.querySongsByAlbum(albumTitle) }

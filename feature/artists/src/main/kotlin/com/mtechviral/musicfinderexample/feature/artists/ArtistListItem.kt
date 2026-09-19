@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -101,6 +102,7 @@ internal fun ArtistAvatar(
             coverArtId = coverArtId,
             modifier = modifier.size(size),
             cornerRadius = size / 2,
+            maxSizePx = with(LocalDensity.current) { size.roundToPx() },
         )
     } else {
         MpCircleAvatar(text = artist.name, modifier = modifier, size = size)
@@ -126,6 +128,7 @@ internal fun ArtistAlbumCard(
             coverArtId = album.coverArtId,
             modifier = Modifier.size(120.dp),
             cornerRadius = 12.dp,
+            maxSizePx = with(LocalDensity.current) { 120.dp.roundToPx() },
         )
         Spacer(Modifier.height(6.dp))
         Text(

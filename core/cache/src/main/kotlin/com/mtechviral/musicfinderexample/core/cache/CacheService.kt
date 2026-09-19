@@ -4,12 +4,16 @@ import android.content.Context
 import android.util.Log
 import com.mtechviral.musicfinderexample.core.common.AppPreferences
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
+import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.network.SubsonicService
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -54,8 +58,26 @@ object CacheService {
 
     private var cacheDirRef: File? = null
 
+    /**
+     * 「缓存我喜欢」开关的进程内镜像（默认开启，与历史行为一致）。
+     *
+     * 设置页写入后立即更新，正在播放页 / 弹窗无需重启即可读到最新值。
+     */
+    private val _autoCacheLiked = MutableStateFlow(true)
+    val autoCacheLiked: StateFlow<Boolean> = _autoCacheLiked.asStateFlow()
+
     fun init(context: Context) {
         appContext = context.applicationContext
+        _autoCacheLiked.value = AppPreferences.getBoolean(AppPreferences.KEY_AUTO_CACHE_LIKED, true)
+    }
+
+    /** 是否开启「缓存我喜欢」（添加歌曲到喜欢时自动缓存到本地） */
+    fun isAutoCacheLikedEnabled(): Boolean = _autoCacheLiked.value
+
+    /** 设置「缓存我喜欢」并写入偏好 */
+    fun setAutoCacheLiked(enabled: Boolean) {
+        _autoCacheLiked.value = enabled
+        AppPreferences.putBoolean(AppPreferences.KEY_AUTO_CACHE_LIKED, enabled)
     }
 
     /** 获取缓存目录（不存在则创建） */
@@ -167,12 +189,11 @@ object CacheService {
             // 检查缓存池空间
             evictIfNeeded(song.size ?: 0L)
 
-            // 下载歌曲
+            // 下载歌曲：**流式写入磁盘**，不把整首歌读进内存。
+            // 之前用 `ResponseBody.bytes()`，缓存几十 MB 的远程音频会直接
+            // java.lang.OutOfMemoryError（真机实测 85MB 文件崩溃在 okio readByteArray）。
             val streamUrl = SubsonicService.getStreamUrl(remoteId)
-            val bytes = download(streamUrl) ?: return@withContext null
-
-            // 写入缓存文件
-            cachePath.writeBytes(bytes)
+            if (!downloadToFile(streamUrl, cachePath)) return@withContext null
 
             // 更新数据库
             song.id?.let { DatabaseHelper.updateSongCache(it, cachePath.absolutePath) }
@@ -199,6 +220,32 @@ object CacheService {
             // 回调通知：合并更新后的 Song 对象
             if (onCached != null && (cachedPath != null || artworkPath != null)) {
                 onCached(song.mergeCache(cachedPath, artworkPath))
+            }
+        }
+    }
+
+    /**
+     * 「喜欢」状态变为喜欢后调用：**远程歌曲自动加入缓存池**（音频 + 封面）。
+     *
+     * 受设置页「缓存我喜欢」开关控制（默认开启）：关闭时本方法**不做任何事**。
+     *
+     * - 取消喜欢不会删除已有缓存（用户没说要在取消时删）；
+     * - 本地歌曲本来就在磁盘上，直接跳过；
+     * - 已缓存且封面也齐的歌曲不再重复下载。
+     */
+    fun autoCacheLiked(songId: Long) {
+        if (!isAutoCacheLikedEnabled()) {
+            Log.d(TAG, "「缓存我喜欢」已关闭，跳过自动缓存 songId=$songId")
+            return
+        }
+        scope.launch {
+            val song = DatabaseHelper.querySongById(songId) ?: return@launch
+            if (!song.isLiked || !song.isRemote) return@launch
+            if (song.isCached && !song.cachedArtworkPath.isNullOrEmpty()) return@launch
+            Log.d(TAG, "喜欢歌曲自动缓存: ${song.title}")
+            startCaching(song) { updated ->
+                // 把"已缓存/已缓存封面"合并回曲库快照，列表上的缓存角标立刻生效
+                MusicLibrary.updateSong(updated)
             }
         }
     }
@@ -277,17 +324,45 @@ object CacheService {
     /** 获取所有已缓存歌曲 */
     suspend fun getCachedSongs(): List<Song> = DatabaseHelper.queryCachedSongs()
 
-    private fun download(url: String): ByteArray? = try {
-        httpClient.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-            if (!response.isSuccessful) null else response.body?.bytes()
+    /**
+     * 流式下载到文件（常量内存占用）。
+     *
+     * 先写 `.tmp` 再重命名，避免下载中断留下半个"已缓存"文件被当成缓存命中。
+     */
+    private fun downloadToFile(url: String, target: File): Boolean {
+        val tmp = File(target.parentFile, target.name + ".tmp")
+        return try {
+            httpClient.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+                val body = response.body
+                if (!response.isSuccessful || body == null) {
+                    Log.w(TAG, "下载失败 ${response.code} $url")
+                    false
+                } else {
+                    body.byteStream().use { input ->
+                        tmp.outputStream().use { output ->
+                            input.copyTo(output, DOWNLOAD_BUFFER_SIZE)
+                        }
+                    }
+                    if (tmp.renameTo(target)) {
+                        true
+                    } else {
+                        tmp.delete()
+                        false
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "下载失败 $url: ${e.message}")
+            runCatching { tmp.delete() }
+            false
         }
-    } catch (e: Exception) {
-        Log.w(TAG, "下载失败 $url: ${e.message}")
-        null
     }
 
     /** app_flutter：与 Flutter 端 getApplicationDocumentsDirectory() 对应 */
     private const val DOCUMENTS_DIR_NAME = "app_flutter"
     private const val CACHE_DIR_NAME = "subsonic_cache"
     private const val ARTWORK_DIR_NAME = "artwork"
+
+    /** 下载缓冲（流式落盘，避免整首歌驻留内存） */
+    private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
 }

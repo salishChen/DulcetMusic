@@ -28,6 +28,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,6 +66,10 @@ internal fun AlbumGridCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
+                // 网格封面按卡片宽度采样解码（约半屏宽），避免全尺寸解码
+                maxSizePx = with(LocalDensity.current) {
+                    (LocalConfiguration.current.screenWidthDp.dp / 2).roundToPx()
+                },
             )
             Column(modifier = Modifier.padding(10.dp)) {
                 Text(

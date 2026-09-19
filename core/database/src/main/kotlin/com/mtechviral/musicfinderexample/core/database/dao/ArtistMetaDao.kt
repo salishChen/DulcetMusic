@@ -59,14 +59,6 @@ class ArtistMetaDao(private val musicDatabase: MusicDatabase) {
         )
     }
 
-    /** 切换艺术家喜欢状态 */
-    fun toggleLikeArtist(artistName: String) {
-        db.execSQL(
-            "UPDATE $TABLE_ARTISTS_META SET isLiked = CASE WHEN isLiked = 1 THEN 0 ELSE 1 END WHERE name = ?",
-            arrayOf(artistName),
-        )
-    }
-
     /** 查询单个艺术家元数据 */
     fun queryArtistMeta(name: String): ArtistMeta? =
         db.query(TABLE_ARTISTS_META, null, "name = ?", arrayOf(name), null, null, null, "1")

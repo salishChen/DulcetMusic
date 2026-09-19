@@ -4,7 +4,7 @@
  *  `.flutter_reference/lib/widgets/mp_song_bottom_sheet.dart` 的"操作卡"）
  *
  * 菜单项 / 顺序 / 图标 / 文案 / 可用性判定逐条对照 Dart：
- *   1. 喜欢 / 取消喜欢        —— Dart 第一项（album/artist/song 均有）
+ *   1. 喜欢 / 取消喜欢        —— **仅歌曲目标显示**（需求变更：不再支持喜欢专辑 / 艺术家）
  *   2. 播放 / 播放全部        —— 原生新增项，对应旧版"点击歌曲/播放全部"入口 → onPlay
  *   3. 添加到播放队列        —— Dart 原项（Icons.queue_music）→ onPlayNext（见下方语义说明）
  *   4. 添加到歌单            —— Dart 歌曲菜单原项（Icons.playlist_add）→ onAddToPlaylist
@@ -15,19 +15,23 @@
  *      传 `deleteFromLibrary = false` 时**始终显示**，文案取 `deleteLabel`（歌单详情页"从本歌单移除"）
  *
  * ============================ 回调契约（集成者已冻结/广播） ============================
- * - 喜欢/取消喜欢：**弹窗内部完成数据库切换**，与 Dart 逐行一致——
- *     艺术家目标：`DatabaseHelper.toggleLikeArtist(name)` + 该艺术家每首歌 `toggleLikeSong(id)`；
- *     专辑/歌曲目标：对目标下每首歌 `toggleLikeSong(id)`；
+ * - 喜欢/取消喜欢：**仅 `SongTarget` 显示且仅作用于其中那一首歌**，弹窗内部完成数据库切换——
+ *     `DatabaseHelper.toggleLikeSong(id)`；
  *   随后 `MusicLibrary.reload()`，再回调 `onToggleLike(songs)`。
  *   → 调用方的 `onToggleLike` **只做刷新**（如重查列表），**不得再 toggle**，否则会二次取反。
+ *   专辑 / 艺术家目标**不再有**喜欢项（需求变更：喜好只针对单曲）。
  * - 永久删除 / 从本歌单移除（由 [deleteFromLibrary] 决定）：
- *     `true`（默认）：**弹窗内部** `DatabaseHelper.deleteSong(id)` + `MusicLibrary.reload()`，再回调
+ *     `true`（默认）：**弹窗内部** `LibrarySongDeleter.delete(songs)`
+ *       （= `DatabaseHelper.deleteSong(id)` + **同步移出播放列表**，若删的是正在播放的歌曲
+ *         则由 `PlayerController` 接续播放下一首）+ `MusicLibrary.reload()`，再回调
  *       `onDelete(songs)`；`onDelete` 只作刷新通知（与 Dart 的 deleteSong + reload 一致）。
  *     `false`：弹窗**不写库**，仅回调 `onDelete(songs)`，删除项文案取 [deleteLabel] 且始终显示
  *       （歌单详情页用它实现"从本歌单移除"，由调用方执行 `removeSongFromPlaylist`）。
  * - 添加到播放队列：**弹窗内部** `PlaylistRepository.addSong(song)`（队列追加；仓库无"插入到下一首"
  *   API，故与 Dart 的 `playlistData.addSong` 行为一致），再回调 `onPlayNext(songs)`。
  *   `onPlayNext` 是规范第 8 节冻结的参数名，其真实语义为"添加到播放队列"。
+ *   注（第十六轮）：`addSong` 已**取消判重**，同一首歌可重复入列，因此不再有
+ *   "已在播放列表中"的提示分支。
  * - 播放：仅回调 `onPlay(songs)`，由调用方执行
  *   `PlaylistRepository.setSongs(songs)` + `PlayerController.playSong(...)`。
  * - 添加到歌单：仅回调 `onAddToPlaylist(songs)`，歌单选择器由调用方弹出。
@@ -69,9 +73,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -92,6 +94,7 @@ import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.model.Album
 import com.mtechviral.musicfinderexample.core.model.Artist
 import com.mtechviral.musicfinderexample.core.model.Song
+import com.mtechviral.musicfinderexample.core.player.LibrarySongDeleter
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 import kotlinx.coroutines.launch
 
@@ -112,6 +115,24 @@ sealed interface EntityActionTarget {
 }
 
 /**
+ * 可**单个隐藏**的菜单项。
+ *
+ * 用于让个别入口收敛自己的菜单，而不影响其他页面（需求：播放页 / 播放列表的「更多」弹窗
+ * 不再提供「播放 / 添加到播放队列 / 添加到歌单」，其余页面保持原样）。
+ * 通过 [EntityActionSheet] 的 `hiddenItems` 传入。
+ */
+enum class EntityActionItem {
+    /** 播放 / 播放全部 */
+    PLAY,
+
+    /** 添加到播放队列 */
+    ADD_TO_QUEUE,
+
+    /** 添加到歌单 */
+    ADD_TO_PLAYLIST,
+}
+
+/**
  * 实体操作菜单（底部弹出）。
  *
  * 与 Dart `EntityActionSheet` 一致：点击任一项后先收起弹窗再执行动作。
@@ -122,6 +143,10 @@ sealed interface EntityActionTarget {
  *   `MusicLibrary.reload()`，再回调 `onDelete`；false = 弹窗不做任何库删除，仅回调 `onDelete`
  *   （用于歌单详情页的"从本歌单移除"，此时删除项始终显示且文案取 [deleteLabel]）。
  * @param deleteLabel 删除项文案（默认"永久删除"；歌单详情页传"从本歌单移除"）。
+ * @param hiddenItems 需要**隐藏**的菜单项（默认全不隐藏）。播放页 / 播放列表的「更多」用它
+ *   去掉「播放 / 添加到播放队列 / 添加到歌单」；其他调用方不传即保持完整菜单。
+ * @param showHeaderCloseButton 是否显示标题栏右上角的关闭按钮（默认 true）。
+ *   隐藏后仍可通过点击遮罩 / 返回键 / 点击任一菜单项关闭弹窗。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -135,6 +160,8 @@ fun EntityActionSheet(
     onDelete: (List<Song>) -> Unit = {},
     deleteFromLibrary: Boolean = true,
     deleteLabel: String = "永久删除",
+    hiddenItems: Set<EntityActionItem> = emptySet(),
+    showHeaderCloseButton: Boolean = true,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -152,6 +179,8 @@ fun EntityActionSheet(
             onDelete = onDelete,
             deleteFromLibrary = deleteFromLibrary,
             deleteLabel = deleteLabel,
+            hiddenItems = hiddenItems,
+            showHeaderCloseButton = showHeaderCloseButton,
         )
     }
 }
@@ -167,6 +196,8 @@ private fun EntityActionContent(
     onDelete: (List<Song>) -> Unit,
     deleteFromLibrary: Boolean,
     deleteLabel: String,
+    hiddenItems: Set<EntityActionItem>,
+    showHeaderCloseButton: Boolean,
 ) {
     val context = LocalContext.current
     val appContext = context.applicationContext
@@ -197,27 +228,19 @@ private fun EntityActionContent(
     val headerArtist: String? =
         (entity as? EntityActionTarget.AlbumTarget)?.album?.artist?.takeIf { it.isNotBlank() }
 
-    // ---- 喜欢状态 ----
     // 曲库（MusicLibrary）变化即等价于 Dart 的 songData.notifier 触发，
     // 用曲库中的最新对象覆盖传入快照，保证弹窗内状态实时。
     val library by MusicLibrary.songs.collectAsStateWithLifecycle()
     val liveSongs = remember(songs, library) {
         songs.map { s -> library.firstOrNull { it.path == s.path } ?: s }
     }
-    // 艺术家喜欢状态来自 artists_meta 表（Dart: queryArtistMeta(artist.name)['isLiked'] == 1）
-    var artistLiked by remember(entity) { mutableStateOf(false) }
-    var likeEpoch by remember(entity) { mutableIntStateOf(0) }
-    LaunchedEffect(entity, likeEpoch) {
-        val target = entity
-        if (target is EntityActionTarget.ArtistTarget) {
-            artistLiked = DatabaseHelper.queryArtistMeta(target.artist.name)?.isLiked == true
-        }
-    }
-    val isLiked = when (entity) {
-        is EntityActionTarget.ArtistTarget -> artistLiked
-        // 专辑喜欢 = 其歌曲逐首喜欢（Dart: albumSongs.every((s) => s.isLiked)）
-        else -> liveSongs.isNotEmpty() && liveSongs.all { it.isLiked }
-    }
+    // 需求变更：喜欢只针对**单曲**，因此只有单曲目标（SongTarget(listOf(song))）
+    // 才显示「喜欢 / 取消喜欢」；专辑 / 艺术家目标不再提供该入口。
+    val likeableSong: Song? =
+        (entity as? EntityActionTarget.SongTarget)?.songs?.singleOrNull()
+    val isLiked = likeableSong?.let { target ->
+        library.firstOrNull { it.path == target.path } ?: target
+    }?.isLiked == true
 
     val uncachedRemoteSongs = liveSongs.filter { it.isRemote && !it.isCached }
     val deletable = liveSongs.isNotEmpty() && liveSongs.none { it.isRemote } && liveSongs.all { it.id != null }
@@ -256,77 +279,84 @@ private fun EntityActionContent(
                     color = secondary,
                 )
             }
-            IconButton(onClick = onDismiss) {
-                Icon(Icons.Filled.Close, contentDescription = "关闭", tint = onSurface)
+            if (showHeaderCloseButton) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Filled.Close, contentDescription = "关闭", tint = onSurface)
+                }
             }
         }
         HorizontalDivider()
 
-        // ===================== 1. 喜欢 / 取消喜欢 =====================
-        ActionRow(
-            icon = if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-            iconColor = if (isLiked) LikedRed else primary,
-            title = if (isLiked) "取消喜欢" else "喜欢",
-            subtitle = if (isLiked) "从喜欢列表中移除" else "添加到喜欢列表",
-        ) {
-            val wasLiked = isLiked
-            val target = entity
-            scope.launch {
-                // Dart _toggleLike：艺术家先切 artists_meta，再逐首切换歌曲喜欢
-                if (target is EntityActionTarget.ArtistTarget) {
-                    DatabaseHelper.toggleLikeArtist(target.artist.name)
+        // ========== 1. 喜欢 / 取消喜欢（仅歌曲目标；需求变更：不再支持专辑 / 艺术家） ==========
+        if (likeableSong != null) {
+            ActionRow(
+                icon = if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                iconColor = if (isLiked) LikedRed else primary,
+                title = if (isLiked) "取消喜欢" else "喜欢",
+                subtitle = if (isLiked) "从喜欢列表中移除" else "添加到喜欢列表",
+            ) {
+                val wasLiked = isLiked
+                val songId = likeableSong.id
+                val autoCache = CacheService.isAutoCacheLikedEnabled()
+                scope.launch {
+                    songId?.let { DatabaseHelper.toggleLikeSong(it) }
+                    // 设置「缓存我喜欢」开启时，标记为喜欢后自动缓存（远程歌曲；本地歌曲本就在磁盘上）
+                    if (!wasLiked && songId != null) CacheService.autoCacheLiked(songId)
+                    MusicLibrary.reload()
+                    onToggleLike(listOf(likeableSong))
+                    val message = when {
+                        wasLiked -> "已取消喜欢"
+                        likeableSong.isRemote && autoCache -> "已添加到喜欢，将自动缓存"
+                        else -> "已添加到喜欢"
+                    }
+                    Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
+                    onDismiss()
                 }
-                for (song in liveSongs) {
-                    song.id?.let { DatabaseHelper.toggleLikeSong(it) }
-                }
-                MusicLibrary.reload()
-                likeEpoch++
-                onToggleLike(liveSongs)
-                Toast.makeText(
-                    appContext,
-                    if (wasLiked) "已取消喜欢" else "已添加到喜欢",
-                    Toast.LENGTH_SHORT,
-                ).show()
+            }
+        }
+
+        // ========== 2. 播放 / 播放全部（可被 hiddenItems 隐藏） ==========
+        if (EntityActionItem.PLAY !in hiddenItems) {
+            ActionRow(
+                icon = Icons.Filled.PlayArrow,
+                iconColor = primary,
+                title = if (liveSongs.size > 1) "播放全部" else "播放",
+                subtitle = if (liveSongs.size > 1) "播放 ${liveSongs.size} 首歌曲" else "立即播放这首歌曲",
+            ) {
                 onDismiss()
+                onPlay(liveSongs)
             }
         }
 
-        // ===================== 2. 播放 / 播放全部 =====================
-        ActionRow(
-            icon = Icons.Filled.PlayArrow,
-            iconColor = primary,
-            title = if (liveSongs.size > 1) "播放全部" else "播放",
-            subtitle = if (liveSongs.size > 1) "播放 ${liveSongs.size} 首歌曲" else "立即播放这首歌曲",
-        ) {
-            onDismiss()
-            onPlay(liveSongs)
-        }
-
-        // ===================== 3. 添加到播放队列（Dart 原项） =====================
-        ActionRow(
-            icon = Icons.Filled.QueueMusic,
-            iconColor = primary,
-            title = "添加到播放队列",
-            subtitle = "将 ${liveSongs.size} 首歌曲添加到队列",
-        ) {
-            onDismiss()
-            // Dart _addToQueue：逐首 playlistData.addSong（队列追加）
-            // 注：提示文案由调用方（onPlayNext）负责，此处不再弹 Toast，避免与页面 Snackbar 重复
-            for (song in liveSongs) {
-                PlaylistRepository.addSong(song)
+        // ========== 3. 添加到播放队列（Dart 原项；可被 hiddenItems 隐藏） ==========
+        if (EntityActionItem.ADD_TO_QUEUE !in hiddenItems) {
+            ActionRow(
+                icon = Icons.Filled.QueueMusic,
+                iconColor = primary,
+                title = "添加到播放队列",
+                subtitle = "将 ${liveSongs.size} 首歌曲添加到队列",
+            ) {
+                onDismiss()
+                // Dart _addToQueue：逐首 playlistData.addSong（队列追加）
+                // 注：提示文案由调用方（onPlayNext）负责，此处不再弹 Toast，避免与页面 Snackbar 重复
+                for (song in liveSongs) {
+                    PlaylistRepository.addSong(song)
+                }
+                onPlayNext(liveSongs)
             }
-            onPlayNext(liveSongs)
         }
 
-        // ===================== 4. 添加到歌单 =====================
-        ActionRow(
-            icon = Icons.Filled.PlaylistAdd,
-            iconColor = primary,
-            title = "添加到歌单",
-            subtitle = "添加到自建歌单",
-        ) {
-            onDismiss()
-            onAddToPlaylist(liveSongs)
+        // ========== 4. 添加到歌单（可被 hiddenItems 隐藏） ==========
+        if (EntityActionItem.ADD_TO_PLAYLIST !in hiddenItems) {
+            ActionRow(
+                icon = Icons.Filled.PlaylistAdd,
+                iconColor = primary,
+                title = "添加到歌单",
+                subtitle = "添加到自建歌单",
+            ) {
+                onDismiss()
+                onAddToPlaylist(liveSongs)
+            }
         }
 
         // ===================== 5. 缓存全部（仅远程未缓存歌曲存在时） =====================
@@ -403,9 +433,8 @@ private fun EntityActionContent(
                     onDismiss()
                 } else {
                     scope.launch {
-                        for (song in targets) {
-                            song.id?.let { DatabaseHelper.deleteSong(it) }
-                        }
+                        // 删库 + 同步移出播放列表（若删的是正在播放的歌，会自动接续下一首）
+                        LibrarySongDeleter.delete(targets)
                         MusicLibrary.reload()
                         // 提示文案由调用方（onDelete）负责，避免与页面 Snackbar 重复
                         onDelete(targets)

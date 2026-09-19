@@ -9,6 +9,8 @@
  *   - 主题模式三选：跟随系统 / 浅色 / 深色 → ThemePreference.set(AppThemeMode.XXX)；
  *   - 缓存池大小滑块（500 ~ 51200 MB，Dart divisions = 102）→ CacheService.setCacheSizeMB；
  *   - 展示当前缓存占用（CacheService.getCacheSizeMBActual）；
+ *   - 「缓存我喜欢」开关（原生新增）→ CacheService.setAutoCacheLiked：
+ *     开启后把音乐添加到「喜欢」时会自动缓存到本地；
  *   - 「缓存管理」入口 → onOpenCacheManage()；
  *   - 悬浮窗歌词开关 → LyricsOverlayManager（悬浮窗权限 + Android 13+ 通知权限）；
  *   - 关于（愉乐 1.0.0）。
@@ -38,6 +40,7 @@ import androidx.compose.material.icons.automirrored.filled.ManageSearch
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Storage
@@ -107,6 +110,8 @@ fun SettingsScreen(
 
     val themeMode by ThemePreference.mode.collectAsStateWithLifecycle()
     val overlayVisible by LyricsOverlayManager.isVisible.collectAsStateWithLifecycle()
+    // 「缓存我喜欢」开关（默认开启）：由 CacheService 持有，写入后立即生效
+    val autoCacheLiked by CacheService.autoCacheLiked.collectAsStateWithLifecycle()
     // 顶层组合时读取一次（CompositionLocal.current 不能在非 @Composable 的 lambda 中读取）
     val openSidebar = LocalOpenSidebar.current
 
@@ -223,6 +228,31 @@ fun SettingsScreen(
             )
 
             Spacer(Modifier.height(8.dp))
+
+            // ---- 「缓存我喜欢」开关（开启后添加音乐到喜欢时自动缓存到本地） ----
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(imageVector = Icons.Filled.Download, contentDescription = null)
+                Spacer(Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "缓存我喜欢")
+                    Text(
+                        text = "把音乐添加到喜欢时，自动缓存到本地，离线也能播放",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = autoCacheLiked,
+                    onCheckedChange = { checked -> CacheService.setAutoCacheLiked(checked) },
+                )
+            }
+
+            HorizontalDivider()
 
             // ---- 缓存管理入口 ----
             SettingsTile(

@@ -39,7 +39,6 @@ import com.mtechviral.musicfinderexample.core.designsystem.theme.ytTextSecondary
 import com.mtechviral.musicfinderexample.core.model.Artist
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.player.PlayerController
-import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 import com.mtechviral.musicfinderexample.feature.home.LocalOpenSidebar
 import kotlinx.coroutines.launch
 
@@ -114,7 +113,8 @@ fun ArtistsScreen(onOpenArtist: (String) -> Unit = {}) {
             entity = EntityActionTarget.ArtistTarget(artist, actionSongs),
             onDismiss = { actionArtist = null },
             onPlay = { songs -> scope.launch { PlayerController.playSongs(songs, 0) } },
-            onPlayNext = { songs -> songs.forEach { PlaylistRepository.addSong(it) } },
+            // 队列写入已由弹窗内部完成（契约：onPlayNext 仅作刷新通知）；addSong 第十六轮起不再判重
+            onPlayNext = { },
             onAddToPlaylist = { songs -> pickingSongs = songs },
             onToggleLike = {
                 // 喜欢状态已在弹窗内部写入，这里只刷新列表

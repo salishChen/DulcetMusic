@@ -240,6 +240,12 @@ object DatabaseHelper {
 
     // ======================== 喜欢功能 ========================
 
+    /**
+     * 切换歌曲喜欢状态。
+     *
+     * 需求变更：喜欢**只针对单曲**，不再提供 `toggleLikeArtist`；
+     * 专辑「喜欢」原本也只是"其下每首歌逐首喜欢"的聚合，故一并移除。
+     */
     suspend fun toggleLikeSong(songId: Long) = writeMutex.withLock {
         io {
             songDao.toggleLikeSong(songId)
@@ -252,10 +258,6 @@ object DatabaseHelper {
     /** 喜欢的歌曲数量（进入喜欢页时做轻量一致性检查） */
     suspend fun queryLikedSongCount(): Int = io { songDao.queryLikedSongCount() }
 
-    suspend fun queryLikedAlbums(): List<Album> = io { albumDao.queryLikedAlbums() }
-
-    suspend fun queryLikedArtists(): List<Artist> = io { artistDao.queryLikedArtists() }
-
     // ======================== 艺术家元数据 ========================
 
     suspend fun upsertArtistMeta(name: String, artistId: String?, coverArtId: String?) =
@@ -266,9 +268,6 @@ object DatabaseHelper {
 
     suspend fun updateArtistArtworkCache(artistName: String, artworkPath: String) =
         writeMutex.withLock { io { artistMetaDao.updateArtistArtworkCache(artistName, artworkPath) } }
-
-    suspend fun toggleLikeArtist(artistName: String) =
-        writeMutex.withLock { io { artistMetaDao.toggleLikeArtist(artistName) } }
 
     suspend fun queryArtistMeta(name: String): ArtistMeta? = io { artistMetaDao.queryArtistMeta(name) }
 

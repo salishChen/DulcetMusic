@@ -61,6 +61,15 @@ private val MINI_LINE_HEIGHT = 24.dp
 /** 详细歌词单行高度（Dart: Container(height: 56.0)） */
 private val LYRIC_LINE_HEIGHT = 56.dp
 
+/**
+ * 详细歌词面板的纵向内缩量（第十三轮反馈）。
+ *
+ * 顶部下移 [LYRICS_PANE_TOP_INSET]、底部上移 [LYRICS_PANE_BOTTOM_INSET]，
+ * 面板纵向整体缩小 40 = 10 + 30。
+ */
+private val LYRICS_PANE_TOP_INSET = 10.dp
+private val LYRICS_PANE_BOTTOM_INSET = 30.dp
+
 /** 封面圆角（Dart: BorderRadius.circular(12.0)） */
 private val ARTWORK_CORNER = 12.dp
 
@@ -238,6 +247,9 @@ private fun MiniLyricLine(line: LrcLine?, isActive: Boolean) {
  * 详细歌词面板（Dart `_buildLyricsPage`）：
  * 空歌词显示「暂无歌词」；每行 56 高、点击跳转到该行时间（仅当有任一时间戳）；
  * 当前行 17sp 白色加粗，其余 15sp 白 45%。点击空白处返回封面视图。
+ *
+ * 面板自身的纵向位置由 inset 控制，见 [LYRICS_PANE_TOP_INSET] / [LYRICS_PANE_BOTTOM_INSET]：
+ * 外层留满屏仅作「点击空白返回封面」的手势区，歌词内容纵向内缩。
  */
 @Composable
 private fun NowPlayingLyricsPane(
@@ -249,13 +261,23 @@ private fun NowPlayingLyricsPane(
 ) {
     val hasTimed = lines.any { it.timeMs > 0 }
 
+    // 外层保持满屏，仅用于「点击空白返回封面」的手势判定；
+    // 歌词内容自身纵向内缩（顶部下移 10、底部上移 30，整体缩小 40）。
+    val contentInset = Modifier.padding(
+        top = LYRICS_PANE_TOP_INSET,
+        bottom = LYRICS_PANE_BOTTOM_INSET,
+    )
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(Unit) { detectTapGestures { onBackgroundTap() } },
     ) {
         if (lines.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier.fillMaxSize().then(contentInset),
+                contentAlignment = Alignment.Center,
+            ) {
                 Text(
                     text = "暂无歌词",
                     style = TextStyle(
@@ -267,7 +289,7 @@ private fun NowPlayingLyricsPane(
         } else {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().then(contentInset),
                 contentPadding = PaddingValues(vertical = 40.dp),
             ) {
                 itemsIndexed(

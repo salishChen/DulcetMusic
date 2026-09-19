@@ -12,14 +12,12 @@ import com.mtechviral.musicfinderexample.core.common.AppRoutes
 /**
  * 注册"喜欢"页路由。
  *
- * 屏幕函数保持规范签名 `FavoritesScreen()` 可调用，导航回调由本扩展函数注入
- * （Dart 中喜欢页点击专辑/艺术家会 push 详情页，见 `_buildLikedAlbums` / `_buildLikedArtists`）。
+ * 屏幕函数保持规范签名 `FavoritesScreen()` 可调用。
+ * 需求变更后本页只展示喜欢的歌曲，专辑 / 艺术家 Tab 已移除，
+ * 因此不再需要向屏幕注入 `onOpenAlbum` / `onOpenArtist`（保留 [navController] 参数以符合导航图约定）。
  */
-fun NavGraphBuilder.favoritesGraph(navController: NavController) {
+fun NavGraphBuilder.favoritesGraph(@Suppress("UNUSED_PARAMETER") navController: NavController) {
     composable(route = AppRoutes.FAVORITES) {
-        FavoritesScreen(
-            onOpenAlbum = { albumTitle -> navController.navigate(AppRoutes.albumDetail(albumTitle)) },
-            onOpenArtist = { artistName -> navController.navigate(AppRoutes.artistDetail(artistName)) },
-        )
+        FavoritesScreen()
     }
 }

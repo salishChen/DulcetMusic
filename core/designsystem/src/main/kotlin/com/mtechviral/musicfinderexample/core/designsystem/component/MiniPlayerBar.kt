@@ -149,6 +149,11 @@ fun MiniPlayerBar(
     val dividerColor = MaterialTheme.colorScheme.outlineVariant
     val disabledTint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
     val secondaryText = MaterialTheme.ytTextSecondary
+    // 歌曲名 / 占位标题必须显式取主题的 onSurface：
+    // MaterialTheme.typography.titleMedium 自身不带颜色，而这里位于 MaterialTheme 之下、
+    // 并无 Surface 祖先提供 LocalContentColor，最终会落到 Compose 的默认黑色
+    // ——深色模式下黑字落在深色栏体上等于不可见（Dart 版由 Flutter 主题自动给出文字色）。
+    val titleText = MaterialTheme.colorScheme.onSurface
 
     Box(
         modifier = modifier
@@ -414,6 +419,7 @@ fun MiniPlayerBar(
                                 overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
+                                color = titleText,
                                 modifier = Modifier.weight(1f, fill = false),
                             )
                             // 已缓存的远程歌曲显示缓存标识（对应 Dart `Icons.offline_pin`）
@@ -439,6 +445,7 @@ fun MiniPlayerBar(
                             text = "愉乐",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
+                            color = titleText,
                         )
                         Text(
                             text = "还没有播放歌曲",

@@ -176,10 +176,7 @@ private fun PrimaryPage(
         1 -> AlbumsScreen(onOpenAlbum = onOpenAlbum)
         2 -> ArtistsScreen(onOpenArtist = onOpenArtist)
         3 -> PlaylistsScreen(onOpenPlaylist = onOpenPlaylist)
-        4 -> FavoritesScreen(
-            onOpenAlbum = onOpenAlbum,
-            onOpenArtist = onOpenArtist,
-        )
+        4 -> FavoritesScreen()
         5 -> ScanScreen(onOpenSubsonicConfig = onOpenSubsonicConfig)
         6 -> SubsonicConfigScreen()
         7 -> StatsScreen()

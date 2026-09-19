@@ -13,8 +13,9 @@ import com.mtechviral.musicfinderexample.core.model.Song
 /**
  * 艺术家聚合查询（GROUP BY artist）。
  *
- * 对应原 Flutter 工程 `DatabaseHelper` 中的 `queryArtists` / `querySongsByArtist`
- * / `queryLikedArtists`。
+ * 对应原 Flutter 工程 `DatabaseHelper` 中的 `queryArtists` / `querySongsByArtist`。
+ *
+ * 注：`queryLikedArtists` 已随「喜欢只针对单曲」的需求变更删除。
  */
 class ArtistDao(private val musicDatabase: MusicDatabase) {
 
@@ -27,19 +28,6 @@ class ArtistDao(private val musicDatabase: MusicDatabase) {
                MAX(coverArtId) AS coverArtId
         FROM songs
         WHERE artist IS NOT NULL AND artist != ''
-        GROUP BY artist
-        ORDER BY artist COLLATE NOCASE ASC
-    """.trimIndent())
-
-    fun queryLikedArtists(): List<Artist> = query("""
-        SELECT artist AS name,
-               COUNT(*) AS songCount,
-               COUNT(DISTINCT album) AS albumCount,
-               MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
-               MAX(cachedArtworkPath) AS coverArtworkPath,
-               MAX(coverArtId) AS coverArtId
-        FROM songs
-        WHERE artist IS NOT NULL AND artist != '' AND isLiked = 1
         GROUP BY artist
         ORDER BY artist COLLATE NOCASE ASC
     """.trimIndent())

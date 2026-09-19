@@ -50,30 +50,87 @@ object PlaylistRepository {
 
     private var persistJob: Job? = null
 
-    /** 判断歌曲是否已在播放列表中（以 path 唯一标识） */
+    /** 判断歌曲是否已在播放列表中（以 path 标识；同一首歌可能有多份，此处只回答"有无"） */
     fun contains(song: Song): Boolean = _songs.value.any { it.path == song.path }
 
-    /** 添加歌曲；已存在则返回 false */
+    /**
+     * 追加歌曲到播放列表**末尾**。
+     *
+     * 第十六轮变更：**不再去重** —— 同一首歌可以在播放列表内出现多次
+     * （需求：向播放列表添加歌曲时不检测列表内是否已存在该歌曲）。
+     * 因此本方法不再返回"是否新增"（旧签名用 false 表示"已在列表中"，该语义已不存在）。
+     *
+     * 注意与 Dart 的差异：Dart `PlaylistData.addSong`（`playlist_data.dart:70-75`）
+     * 会先 `contains` 判重、已存在则返回 false 且不入列；此处按要求刻意取消判重。
+     */
     @Synchronized
-    fun addSong(song: Song): Boolean {
-        if (contains(song)) return false
+    fun addSong(song: Song) {
         notify(_songs.value + song)
-        return true
     }
 
-    /** 用给定列表整体替换播放列表（"点击歌曲整列播放"场景） */
+    /**
+     * 用给定列表整体替换播放列表（"点击歌曲整列播放"场景）。
+     *
+     * 刻意**不**在这里按当前模式打乱：本方法也被「播放全部」「点击某首歌」等
+     * 显式选列流程使用，那些场景用户期望按看到的顺序入列；随机化只应发生在
+     * 「进入随机模式」与「点随机播放按钮」这两个明确入口（见 [setPlayMode] /
+     * [playShuffled]）。
+     */
     @Synchronized
     fun setSongs(songs: List<Song>) {
         notify(songs.toList())
     }
 
-    /** 移除指定歌曲 */
+    /**
+     * 「随机播放」入口：把 [songs] 打乱后整体替换播放列表，并切换到随机模式。
+     *
+     * 只发一次通知（一次持久化）。若按「先 [setPlayMode] 再 [setSongs]」两步走，
+     * 第一次 notify 会用**旧列表**重建一次播放队列、紧接着第二次 notify 又用新列表
+     * 重建一次，白白多打断一次正在播放的音频。
+     *
+     * @return 实际存入的顺序（已打乱），调用方据此决定从哪首开始播。
+     */
     @Synchronized
-    fun removeSong(song: Song) {
-        notify(_songs.value.filterNot { it.path == song.path })
+    fun playShuffled(songs: List<Song>): List<Song> {
+        _playMode.value = PlayMode.RANDOM
+        val shuffled = songs.shuffled()
+        notify(shuffled)
+        return shuffled
     }
 
-    /** 按索引移除 */
+    /**
+     * 移除指定歌曲（按 path **移除全部同名单曲**）。
+     *
+     * 注意：同一首歌可能在队列里有多份，本方法会把它们全部移除。
+     * 播放列表页要"只删被点的那一行"时应改用 [removeAt]（按位置精确删除）。
+     */
+    @Synchronized
+    fun removeSong(song: Song) {
+        removeSongs(listOf(song.path))
+    }
+
+    /**
+     * 按 path 批量移出播放列表，返回实际移除的数量。
+     *
+     * 用于「曲库中永久删除歌曲」时同步清理播放列表（需求：删除正在播放的歌曲时，
+     * 播放列表里也要删掉它并接续播放下一首）。整批一次 [notify]，
+     * 避免逐首移除导致队列被反复重建。
+     */
+    @Synchronized
+    fun removeSongs(paths: Collection<String>): Int {
+        if (paths.isEmpty()) return 0
+        val targets = paths.toSet()
+        val list = _songs.value
+        val remaining = list.filterNot { it.path in targets }
+        if (remaining.size == list.size) return 0
+        notify(remaining)
+        return list.size - remaining.size
+    }
+
+    /**
+     * 按**位置**精确移除一项（同一首歌出现多份时只删被点的那一份）。
+     * 播放列表每行的「从播放列表移除」用这个，而不是按 path 全删。
+     */
     @Synchronized
     fun removeAt(index: Int) {
         val list = _songs.value
@@ -82,14 +139,17 @@ object PlaylistRepository {
         }
     }
 
-    /** 更新指定 path 的歌曲对象（异步获取歌词/封面后刷新） */
+    /**
+     * 更新指定 path 的歌曲对象（异步获取歌词/封面/喜欢状态后刷新）。
+     *
+     * 同一首歌可能在列表中出现多份，这里**全部一并更新**，否则第 2 份会残留
+     * 旧的歌词 / 喜欢 / 缓存状态（与界面显示不一致）。
+     */
     @Synchronized
     fun updateSong(updatedSong: Song) {
         val list = _songs.value
-        val idx = list.indexOfFirst { it.path == updatedSong.path }
-        if (idx >= 0) {
-            notify(list.toMutableList().apply { this[idx] = updatedSong })
-        }
+        if (list.none { it.path == updatedSong.path }) return
+        notify(list.map { if (it.path == updatedSong.path) updatedSong else it })
     }
 
     /** 清空播放列表 */
@@ -106,9 +166,18 @@ object PlaylistRepository {
     }
 
     /** 直接设置播放模式 */
+    @Synchronized
     fun setPlayMode(mode: PlayMode) {
+        val previous = _playMode.value
         _playMode.value = mode
-        persist()
+        // 进入随机模式：把当前播放列表本身随机排序（需求：随机排序当前歌曲列表，
+        // 之后顺序播放该列表）。列表顺序即播放顺序，所以这里必须真正改动列表，
+        // 而不是只打开播放器内部的 shuffle（那不会改变列表顺序）。
+        if (mode == PlayMode.RANDOM && previous != PlayMode.RANDOM && _songs.value.size > 1) {
+            notify(_songs.value.shuffled())
+        } else {
+            persist()
+        }
     }
 
     /** 内部通知：推送给监听者并持久化 */
