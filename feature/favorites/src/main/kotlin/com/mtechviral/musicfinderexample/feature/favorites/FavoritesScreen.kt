@@ -67,8 +67,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
+import com.mtechviral.musicfinderexample.core.designsystem.component.MpListMetrics
 import com.mtechviral.musicfinderexample.core.designsystem.component.PrimaryAppBar
 import com.mtechviral.musicfinderexample.core.designsystem.component.SongArtwork
+import com.mtechviral.musicfinderexample.core.designsystem.component.SongRowTextColumn
 import com.mtechviral.musicfinderexample.core.designsystem.theme.ytTextSecondary
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.player.PlayerController
@@ -166,37 +168,35 @@ private fun LikedSongsTab(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { onClickSong(song) }
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(
+                        start = MpListMetrics.RowStartPadding,
+                        end = MpListMetrics.RowEndPadding,
+                        top = MpListMetrics.RowVerticalPadding,
+                        bottom = MpListMetrics.RowVerticalPadding,
+                    ),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 SongArtwork(
                     song = song,
-                    modifier = Modifier.size(50.dp),
-                    cornerRadius = 12.dp,
+                    modifier = Modifier.size(MpListMetrics.ArtworkSize),
+                    cornerRadius = MpListMetrics.ArtworkCorner,
                 )
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = song.title,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = "${song.displayArtist} · ${song.displayAlbum}",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.ytTextSecondary,
-                    )
-                }
-                IconButton(onClick = { onUnlike(song) }) {
-                    Icon(
-                        imageVector = Icons.Filled.Favorite,
-                        contentDescription = "取消喜欢",
-                        tint = LikeRed,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
+                Spacer(modifier = Modifier.width(MpListMetrics.ArtworkTextGap))
+                // 标题 + 音质徽章 +「歌手 - 专辑」+ 缓存灰色图标，行尾接「取消喜欢」
+                SongRowTextColumn(
+                    song = song,
+                    modifier = Modifier.weight(1f),
+                    trailing = {
+                        IconButton(onClick = { onUnlike(song) }) {
+                            Icon(
+                                imageVector = Icons.Filled.Favorite,
+                                contentDescription = "取消喜欢",
+                                tint = LikeRed,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    },
+                )
             }
         }
     }

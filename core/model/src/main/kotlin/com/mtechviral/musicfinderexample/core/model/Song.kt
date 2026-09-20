@@ -1,6 +1,19 @@
 package com.mtechviral.musicfinderexample.core.model
 
 /**
+ * 音质档位（列表行副标题前缀的徽章）。
+ *
+ * - [SQ]：无损（Super Quality）
+ * - [HR]：高解析（Hi-Res）—— 无损且位深 > 16bit 或采样率 > 48kHz
+ *
+ * 有损格式（mp3 / aac / ogg 等）没有徽章，对应 [Song.qualityBadge] 返回 null。
+ */
+enum class AudioQuality(val label: String) {
+    SQ("SQ"),
+    HR("HR"),
+}
+
+/**
  * 歌曲实体：映射数据库 songs 表的全部字段。
  *
  * 对应原 Flutter 工程 `lib/data/models/song.dart`。
@@ -130,6 +143,28 @@ data class Song(
     val isCached: Boolean
         get() = !cachedPath.isNullOrEmpty()
 
+    /**
+     * 音质徽章（第二十三轮：按需求在列表行显示 SQ / HR）。
+     *
+     * 判定规则：
+     * - 非无损格式 -> null（不显示徽章）
+     * - 无损且（位深 > 16bit 或采样率 > 48kHz）-> [AudioQuality.HR]
+     * - 其余无损 -> [AudioQuality.SQ]
+     *
+     * 位深/采样率在部分设备上取不到（null），此时只按格式判定为 SQ，
+     * 不误判成 HR —— 宁可少标也不虚标。
+     */
+    val qualityBadge: AudioQuality?
+        get() {
+            val ext = (format
+                ?: path.substringAfterLast('.', ""))
+                .lowercase()
+                .removePrefix(".")
+            if (ext !in LOSSLESS_EXTENSIONS) return null
+            val highResolution = (bitDepth ?: 0) > 16 || (sampleRate ?: 0) > 48_000
+            return if (highResolution) AudioQuality.HR else AudioQuality.SQ
+        }
+
     /** 获取可播放的路径：已缓存返回本地路径，否则返回 path（远程 URL 交给播放器处理） */
     val playablePath: String
         get() = if (isCached) cachedPath!! else path
@@ -174,6 +209,14 @@ data class Song(
 
         /** 媒体库扫描来源标识 */
         const val SOURCE_MEDIA_LIBRARY = "media_library"
+
+        /**
+         * 无损音频扩展名（用于 [qualityBadge] 判定）。
+         *
+         * m4a/mp4 可能是 ALAC（无损）也可能是 AAC（有损），但元数据里无法区分，
+         * 且 [MediaMetadataRetriever] 不会给出有效位深 —— 因此按有损处理，不标徽章。
+         */
+        private val LOSSLESS_EXTENSIONS = setOf("flac", "wav", "aiff", "aifc", "ape", "alac")
 
         /** 占位曲目的伪 path（不是真实文件，仅用于标识"空队列占位"状态） */
         const val PLACEHOLDER_PATH = "__yule_empty_queue_placeholder__"

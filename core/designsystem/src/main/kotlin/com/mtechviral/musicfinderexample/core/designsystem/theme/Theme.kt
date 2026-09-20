@@ -49,6 +49,76 @@ val MaterialTheme.ytDivider: Color
     @ReadOnlyComposable
     get() = colorScheme.outlineVariant
 
+// ---------------------------------------------------------------------------
+// 列表行样式（第二十三轮）
+// ---------------------------------------------------------------------------
+
+/** 列表行副标题（「歌手 - 专辑」）颜色 */
+val MaterialTheme.ytRowSubtitle: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) RowSubtitleDark else RowSubtitleLight
+
+/** 行尾「加号」圆盘底色 */
+val MaterialTheme.ytPlusDisc: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) PlusDiscDark else PlusDiscLight
+
+/** 行尾「加号」图标颜色 */
+val MaterialTheme.ytPlusIcon: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) PlusIconDark else PlusIconLight
+
+/** 圆形浅底按钮底色（多选条「X」） */
+val MaterialTheme.ytCircleButtonBg: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) CircleButtonBgDark else CircleButtonBgLight
+
+/** 圆形浅底按钮前景色 */
+val MaterialTheme.ytCircleButtonFg: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) CircleButtonFgDark else CircleButtonFgLight
+
+/** 多选行右侧选择框描边色 */
+val MaterialTheme.ytSelectCircle: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) SelectCircleDark else SelectCircleLight
+
+/** 多选操作条强调色（「全选」按钮） */
+val MaterialTheme.ytSelectionAccent: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) SelectionAccentDark else SelectionAccentLight
+
+/** SQ 徽章底色 */
+val MaterialTheme.ytQualitySqBg: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) QualitySqBgDark else QualitySqBgLight
+
+/** SQ 徽章文字色 */
+val MaterialTheme.ytQualitySqFg: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) QualitySqFgDark else QualitySqFgLight
+
+/** HR 徽章底色 */
+val MaterialTheme.ytQualityHrBg: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) QualityHrBgDark else QualityHrBgLight
+
+/** HR 徽章文字色 */
+val MaterialTheme.ytQualityHrFg: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (ytIsDark) QualityHrFgDark else QualityHrFgLight
+
 /** 当前是否为深色模式 */
 val MaterialTheme.ytIsDark: Boolean
     @Composable

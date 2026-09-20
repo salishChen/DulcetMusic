@@ -84,6 +84,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.designsystem.component.ArtworkImage
 import com.mtechviral.musicfinderexample.core.designsystem.component.MpCircleAvatar
+import com.mtechviral.musicfinderexample.core.designsystem.component.MpListMetrics
+import com.mtechviral.musicfinderexample.core.designsystem.component.SongRowTextColumn
 import com.mtechviral.musicfinderexample.core.designsystem.theme.ytTextSecondary
 import com.mtechviral.musicfinderexample.core.model.Album
 import com.mtechviral.musicfinderexample.core.model.Artist
@@ -413,7 +415,12 @@ private fun SongResultRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(
+                start = MpListMetrics.RowStartPadding,
+                end = MpListMetrics.RowEndPadding,
+                top = MpListMetrics.RowVerticalPadding,
+                bottom = MpListMetrics.RowVerticalPadding,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ArtworkImage(
@@ -421,24 +428,15 @@ private fun SongResultRow(
             cachedArtworkPath = song.cachedArtworkPath,
             songId = song.id,
             coverArtId = song.coverArtId,
-            modifier = Modifier.size(50.dp),
-            cornerRadius = 12.dp,
+            modifier = Modifier.size(MpListMetrics.ArtworkSize),
+            cornerRadius = MpListMetrics.ArtworkCorner,
         )
-        Spacer(Modifier.width(16.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            HighlightedText(
-                text = song.title,
-                query = query,
-                fontSize = 16.sp,
-                color = if (isCurrent) primary else onSurface,
-            )
-            HighlightedText(
-                text = "${song.displayArtist} · ${song.displayAlbum}",
-                query = query,
-                fontSize = 12.sp,
-                color = secondary,
-            )
-        }
+        Spacer(Modifier.width(MpListMetrics.ArtworkTextGap))
+        // 与 MpSongListItem 同一套版式：标题 + 音质徽章 +「歌手 - 专辑」+ 缓存灰色图标
+        SongRowTextColumn(
+            song = song,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
