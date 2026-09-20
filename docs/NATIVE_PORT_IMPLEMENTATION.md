@@ -847,6 +847,188 @@ Sidebar(
 （`vision_ground` 实测胶囊位于 x 146–599 / 屏宽 1200，确为左侧而非居中）；
 清空队列后底部播放栏保留并显示「愉乐~愉悦~ / Hi~」。
 
+### 5.24 去掉主页底部与播放栏之间的空白条（第二十五轮反馈）
+
+**现象**：主页（以及所有一级页面）在列表内容与底部迷你播放栏之间，会空出一小块
+与页面底色同色的空白条。
+
+**成因**：`MiniPlayerBar` 为了让栏体背景一直铺到屏幕底边，栏内只用
+`navigationBarsPadding()` 把**可交互内容**留在手势导航条上方；而 `:app` 外壳的导航区
+在"有播放栏"分支下没有对底部 inset 做任何处理，于是导航区会一路占满到屏幕底边，
+内部各页面的 `Scaffold` 又按默认 `contentWindowInsets`
+（`ScaffoldDefaults.contentWindowInsets` = `WindowInsets.systemBarsForVisualComponents`）
+在内容底部补了一段**导航条高度**的内边距 —— 这段内边距正是那条空白。
+
+与之对照，`currentSong == null`（不渲染播放栏）的分支用 `navigationBarsPadding()`
+避让手势条，而 `windowInsetsPadding` 系列修饰符**自带消费语义**，所以该分支下
+`Scaffold` 读到的是已消费的 0，不会重复留白。两条分支的差异即为该缺陷的根因。
+
+**修复**（`app/src/main/kotlin/.../ui/YuleMusicApp.kt`，单文件）：
+
+```kotlin
+.then(
+    if (currentSong == null) {
+        Modifier.navigationBarsPadding()          // 无播放栏：导航区自己避让
+    } else {
+        Modifier.consumeWindowInsets(             // 有播放栏：底部交给播放栏
+            WindowInsets.navigationBars.only(WindowInsetsSides.Bottom),
+        )
+    },
+)
+```
+
+- 只消费**底部**的导航条 inset，不影响左右/顶部（横屏下导航条在侧边时仍正常避让）。
+- `Scaffold` 的默认 `contentWindowInsets` 经
+  `onConsumedWindowInsetsChanged { safeInsets.insets = contentWindowInsets.exclude(it) }`
+  自动扣除已消费部分，因此每个页面无需逐个改 `Scaffold`，15 个页面的 `Scaffold` 全部生效。
+- 播放栏本体不受影响：它仍在自己的 `navigationBarsPadding()` 内绘制不透明底色铺到屏幕底边。
+
+---
+
+### 5.25 歌曲页固定操作条 / 多选批量操作 / 排除列表 / 分级永久删除（第二十六轮反馈）
+
+本轮 4 项需求，跨 `:app`、`core:{common,database,media,player,designsystem}`、
+`feature:{songs,settings,scan}`。
+
+| # | 需求 | 实现 |
+|---|------|------|
+| 1 | 歌曲页顶部操作条**不随列表滚动** | 操作条从 `LazyColumn` 的首项改为外层 `Column` 的固定子项，列表改 `weight(1f)`（见 §5.25.1） |
+| 2 | 多选态底部出现**永久删除 / 添加到歌单 / 播放选中队列**；插入到当前播放曲**之后** | `Scaffold.bottomBar` + `SelectionBottomBar`；新增 `PlaylistRepository.insertAfterCurrent` 与 `PlayerController.playAfterCurrent`（见 §5.25.2） |
+| 3 | 设置内新增**排除列表**，删除在线音乐后自动记录，扫描时跳过；可取消；亦可排除**歌手** | 新增 `ExclusionList`（core:common）+ `ExclusionFilter`（core:media）+ 设置页 `ExclusionListScreen`（见 §5.25.3） |
+| 4 | **永久删除**按类型分流：本地删文件、在线删缓存并加入排除列表 | `LibrarySongDeleter` 重写为分级删除，返回 `Result` 统计；新增 `DatabaseHelper.clearArtworkCache`（见 §5.25.4） |
+
+#### 5.25.1 需求 1：操作条固定在列表顶部
+
+原实现把操作条作为 `LazyColumn` 的 `item(key = "songs_header")`，因此会随列表一起滚走。
+现改为：
+
+```kotlin
+else -> Column(modifier = Modifier.fillMaxSize()) {
+    if (selectionMode) SelectionActionRow(...) else SongsHeader(...)
+    LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) { items(sortedSongs, ...) }
+}
+```
+
+多选条（`SelectionActionRow`）与普通操作条（`SongsHeader`）共用同一位置，
+两者都因此固定；列表只占剩余高度。
+
+#### 5.25.2 需求 2：多选批量操作与「插入到当前播放曲之后」
+
+**底部操作条**：`Scaffold(bottomBar = { if (selectionMode) SelectionBottomBar(...) })`，
+三项等分、图标在上文字在下；未选中任何歌曲时三项整体禁用（灰化且不响应点击），
+避免误触发批量操作。三个动作分别接 `PermanentDeleteDialog` / `AddToPlaylistDialog` /
+`PlayerController.playAfterCurrent`。
+
+**插入语义（本次的实质改动）**：原仓库只有 `addSong`（**追加到队尾**），
+需求要求"插入到当前播放音乐之后"，因此新增：
+
+- `PlaylistRepository.insertAfterCurrent(songs): Int`
+  - 以 `currentPath` 定位当前曲，插入点为 `currentIndex + 1`；
+  - **同步维护 `originalOrder`**（原始顺序快照）——否则随机模式切回顺序播放时会凭空少歌；
+  - 队列为空（无当前曲）时退化为 `setSongs`（等价整列播放）。
+
+- `PlayerController.playAfterCurrent(songs): Boolean`
+  - 记录插入前的 `_currentIndex`，插入后 `playAt(插入前的下标 + 1)`；
+  - 队列原本为空时退化为 `playSongs(songs, 0)`。
+
+**`syncQueue` 新增增量分支**：中途插入原先会落到 `else` 分支做**整队重建**
+（`setMediaItems`），会打断播放。现将 `syncQueue` 扩展出一个"中途插入"判定：
+
+```kotlin
+newIds.size > existingIds.size && currentIndex >= 0 && existingIds.isNotEmpty()
+    && 旧列表是新列表的子序列（greedyKeepIndices 全命中）
+    && 新增项连续且全部位于 currentIndex 之后
+```
+
+命中时走 `p.addMediaItems(插入下标, 新项)` 增量添加 —— 当前曲下标不变、继续播放，
+不再重建队列。判定刻意保守：只要有一项插在当前曲之前、或新增项不连续，
+就退回原来的重建分支，保证语义正确优先于性能。
+
+#### 5.25.3 需求 3：排除列表
+
+新增 `core/common/ExclusionList.kt`：`ExclusionEntry(type, title, artist)` +
+`ExclusionType{SONG, ARTIST}`，持久化到 `AppPreferences`（JSON），
+进程内以 `StateFlow` 通知界面。
+
+- **命中判定**：`isSongExcluded(title, artist)`（歌名与歌手都命中才算，歌手为空时按歌名）
+  与 `isArtistExcluded(artist)`；`isExcluded(...)` 为二者之或。比较口径与
+  `Song.identityKey` 一致（去首尾空白 + 忽略大小写）。
+- **列表为空时短路**（`isEmpty`），扫描主链路零开销。
+- **接入点**（两条导入链路都覆盖）：
+  - 本地扫描：`MetadataScanService.scanPaths` 在 `DatabaseHelper.insertSongs` 前过
+    `ExclusionFilter.filter(...)`（每次 30 首的批次）；
+  - 远程导入：`ScanScreen.runRemoteScan` 的每批 50 首同样过 `ExclusionFilter`。
+- **只跳过"新导入"**，不动已入库歌曲 → 取消排除后重新扫描即可重新导入（需求原文）。
+- **排除歌手**入口：`EntityActionSheet` 新增 `EntityActionItem.EXCLUDE_ARTIST` 菜单项
+  （歌曲目标取其歌手、歌手目标取自身），已排除时文案变为"已排除该歌手"且不重复写入。
+- **管理界面**：设置页新增「排除列表」入口 → `ExclusionListScreen`，按歌曲/歌手分区，
+  逐条「取消排除」，底部「全部清空」（二次确认）。
+- 启动时 `YuleMusicApplication` 调 `ExclusionList.load()`。
+
+#### 5.25.4 需求 4：永久删除按类型分流
+
+`LibrarySongDeleter.delete(songs)` 重写并返回 `Result(deleted, filesDeleted, excluded, failed)`：
+
+| 类型 | 行为 |
+|------|------|
+| 本地音乐 `!isRemote` | **直接删除磁盘文件**（失败只记日志，仍继续删库，避免"删不掉就永远删不掉"） |
+| 在线歌曲 `isRemote` | **先写排除列表**（保证删掉后不会被扫描重新拉回）→ 删音频缓存 + 删封面缓存文件 → 删库 |
+
+- 两者都会 `PlaylistRepository.removeSongs(paths)` 同步移出播放队列
+  （若删的是当前播放项，`syncQueue` 自动接续下一首）。
+- 在线歌曲**不删远端服务器文件**（本应用无权也无法安全删除远端资源），
+  弹窗文案明确说明这一点。
+- 顺带补上封面缓存清理：`CacheService.deleteCache` 只处理音频缓存（`cachedPath`），
+  封面文件（`cachedArtworkPath`）原先会变成孤儿文件一直占缓存池；新增
+  `DatabaseHelper.clearArtworkCache(songId)` / `SongDao.clearArtworkCache` 并在此调用。
+- 删除确认框按选中内容的构成动态生成文案：本地部分红字提示"将删除本地文件，无法恢复"，
+  在线部分说明"从曲库移除并删除本地缓存，歌名与歌手加入排除列表（服务器文件不受影响）"。
+
+#### 5.25.5 新增单元测试
+
+`core/common/src/test/.../ExclusionListTest.kt`：覆盖命中判定的大小写/空白归一、
+同名不同歌手不误杀、歌手条目排除其全部歌曲、空歌手不误判、空列表短路、
+条目 key 去重稳定性、展示文案兜底，以及 `albumArtist` 命中（见 §5.26）。
+
+---
+
+### 5.26 排除歌手时同步清空曲库与播放列表（第二十七轮反馈）
+
+**现象**：把某位歌手加入排除列表后，歌曲列表里他的歌还在，专辑页里他的专辑也还在，
+播放列表里同样留着 —— 原先的"排除"只做到了"以后不再导入"，没有处理**已入库**的数据。
+
+**修复**：新增 `LibrarySongDeleter.excludeArtistAndPurge(artist)`，
+把"排除歌手"从"只写一条记录"升级为一次完整的清理动作：
+
+| 步骤 | 动作 |
+|------|------|
+| 1 | 写入排除列表（歌手条目）——**先写**，保证即使后续删库中途失败也不会再被导入 |
+| 2 | 查出该歌手的全部歌曲（**同时匹配 `artist` 与 `albumArtist`**） |
+| 3 | 本地音乐删磁盘文件；在线歌曲删音频缓存 + 封面缓存（与「永久删除」同一套规则） |
+| 4 | `DatabaseHelper.deleteSongsByIds(ids)` 批量删库（一次 SQL，歌单绑定由外键级联清理） |
+| 5 | `PlaylistRepository.removeSongs(paths)` 移出播放列表（删到当前播放项会自动接续下一首） |
+
+**为什么专辑与艺术家会一起消失**：二者都**不是独立的表**，而是 `songs` 表的聚合视图
+（`AlbumDao.queryAlbums()` 的 `GROUP BY album`、`ArtistDao.queryArtists()` 的
+`GROUP BY artist`）。歌曲行被删除后，聚合结果自然不再包含该歌手及其专辑 —— 因此
+不需要、也不应该去单独维护一份"专辑表/艺术家表"。
+
+**关键取舍：必须同时匹配 `albumArtist`**。合辑里单曲的 `artist` 可能是「群星」，
+而 `albumArtist` 才是被排除的那位歌手；只按 `artist` 匹配会漏掉这类曲目，
+表现为"排除了歌手，却还留着几张他的专辑"。
+
+**同步修正导入判定**：`ExclusionList.isExcluded` 新增 `albumArtist` 重载，
+`ExclusionFilter` 随之改用它 —— 若只把清库这边加上 `albumArtist`、导入那边不加，
+就会出现"清库时删掉了、下次扫描又导进来"的来回跳变。
+
+**界面接线**：
+- `EntityActionSheet` 新增 `onExcludeArtist(artist, removedCount)` 回调
+  （契约与 `onDelete` 一致：弹窗内部已完成清理，回调**只作刷新**）；
+  菜单文案改为"从曲库移除「X」的全部音乐与专辑，以后也不再导入"。
+- 歌曲页 / 专辑页 / 艺术家页 / 艺术家详情页分别接上该回调刷新各自的列表
+  （艺术家详情页是本尊，刷新后歌曲与专辑都会清空）。
+- 排除列表页的说明文案同步更新。
+
 ---
 
 ## 6. 构建与验证
@@ -921,6 +1103,22 @@ echo "sdk.dir=<Android SDK>" > local.properties
 - 第二十二轮追加修订（队列行左侧 padding 15px / 高亮框圆角 15px / 队列整体收窄 5px /
   歌曲页去时长且加号右移 20px / 修复播放栏顶部投影遮挡，见 §5.23 需求 8~10）后
   `./gradlew :app:assembleDebug` → **BUILD SUCCESSFUL**。
+- 第二十五轮反馈修订（去掉主页底部与播放栏之间的空白条，见 §5.24）后
+  `./gradlew :app:compileDebugKotlin` → **BUILD SUCCESSFUL**
+  （`app` 重编，266 个任务中 1 个执行、265 个 up-to-date）。
+- 第二十六轮反馈修订（固定操作条 / 多选批量操作 + 队列中插 / 排除列表 / 分级永久删除，
+  见 §5.25）后 `./gradlew :app:assembleDebug --rerun-tasks`
+  → **BUILD SUCCESSFUL**（全量重编，产出 `app-debug.apk` 23.79 MB）。
+  另外 `:core:designsystem` / `:core:player` / `:feature:settings` 均 `--rerun-tasks` 重编通过。
+
+> 本轮新增的 `ExclusionListTest` **未能在本环境执行**：沙箱内 `junit:junit:4.13.2`
+> 未进 Gradle 缓存且外网不可达（`repo.maven.apache.org` 连接超时），
+> `:core:common:testDebugUnitTest` 因无法解析依赖而失败。该测试已随源码提交，
+> 联网环境执行 `./gradlew :core:common:testDebugUnitTest` 即可验证。
+> 其余改动均以 `assembleDebug` 编译通过为准（无真机 / 模拟器连接，
+> 未做 UI 层面的实机复核）。
+- 第二十七轮反馈修订（排除歌手时同步清空曲库、专辑与播放列表，见 §5.26）后
+  `./gradlew :app:assembleDebug --rerun-tasks` → **BUILD SUCCESSFUL**（全量重编）。
 
 ### 6.1.1 真机复测（小米 14 / 23127PN0CC / Android 16）
 
