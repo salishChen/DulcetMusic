@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit
  *
  * 与原 Flutter 工程 `lib/data/subsonic_service.dart` 逐方法对应：
  * - 内网优先连接策略（内网 5s 超时，失败回退公网 10s），并把结果缓存在 [activeBaseUrl]；
+ *   内网与公网地址均非必填，只填其一则只使用该地址；
  * - token 认证：`t = md5(password + salt)`，每次请求重新生成 16 位随机盐；
  * - API 版本 1.16.1，`f=json`，客户端名 `MusicPlayer`；
  * - 歌词 `getLyrics`、封面 `getCoverArt`、流地址 `stream`、歌单同步等全部保留。
@@ -85,41 +86,51 @@ object SubsonicService {
 
     /**
      * 解析活跃的 Base URL（内网优先，超时回退公网）。
+     *
+     * 内网与公网地址都不要求必填：只填写其中一个时只探测该地址，
+     * 两个都填写时按「内网 5s → 公网 10s」的顺序依次探测。
      */
     private suspend fun resolveBaseUrl(): String {
         activeBaseUrl?.let { return it }
         val cfg = config ?: throw SubsonicException("Subsonic 未配置")
 
-        // 尝试内网
-        try {
-            val url = buildUrl(cfg.intranetUrl, "ping")
-            val body = httpGet(url, intranetProbeClient)
-            if (body != null && JSONObject(body).optJSONObject("subsonic-response")
-                    ?.optString("status") == "ok"
-            ) {
-                activeBaseUrl = cfg.intranetUrl
-                return cfg.intranetUrl
-            }
-        } catch (_: Exception) {
-            // 内网不可达，继续尝试公网
+        val candidates = cfg.resolvableBaseUrls()
+        if (candidates.isEmpty()) {
+            throw SubsonicException("Subsonic 未配置服务器地址（内网或公网地址至少填写一个）")
         }
 
-        // 尝试公网
-        try {
-            val url = buildUrl(cfg.publicUrl, "ping")
-            val body = httpGet(url, publicProbeClient)
-            if (body != null && JSONObject(body).optJSONObject("subsonic-response")
-                    ?.optString("status") == "ok"
-            ) {
-                activeBaseUrl = cfg.publicUrl
-                return cfg.publicUrl
+        for ((baseUrl, probeClient) in candidates) {
+            try {
+                val body = httpGet(buildUrl(baseUrl, "ping"), probeClient)
+                if (body != null && JSONObject(body).optJSONObject("subsonic-response")
+                        ?.optString("status") == "ok"
+                ) {
+                    activeBaseUrl = baseUrl
+                    return baseUrl
+                }
+            } catch (_: Exception) {
+                // 该地址不可达，继续尝试下一个
             }
-        } catch (_: Exception) {
-            // ignore
         }
 
-        throw SubsonicException("无法连接到 Subsonic 服务器（内网和公网均不可达）")
+        throw SubsonicException("无法连接到 Subsonic 服务器（已填写的地址均不可达）")
     }
+
+    /**
+     * 按优先级列出已填写的地址及其探测客户端：内网（5s 超时）在前，公网（10s 超时）在后。
+     * 未填写的地址直接跳过。
+     */
+    private fun SubsonicConfig.resolvableBaseUrls(): List<Pair<String, OkHttpClient>> = listOfNotNull(
+        intranetUrl.trim().takeIf { it.isNotEmpty() }?.let { it to intranetProbeClient },
+        publicUrl.trim().takeIf { it.isNotEmpty() }?.let { it to publicProbeClient },
+    )
+
+    /**
+     * 探测失败时的兜底地址（与探测顺序一致：优先内网，其次公网）；
+     * 均未填写时返回空串。
+     */
+    private fun SubsonicConfig.preferredBaseUrl(): String =
+        intranetUrl.trim().ifEmpty { publicUrl.trim() }
 
     /**
      * 构建 API URL。
@@ -282,7 +293,7 @@ object SubsonicService {
         val contentType = song.optString("contentType").ifEmpty { null }
         val coverArt = song.optString("coverArt").ifEmpty { null }
 
-        val baseUrl = activeBaseUrl ?: config?.publicUrl ?: ""
+        val baseUrl = activeBaseUrl ?: config?.preferredBaseUrl() ?: ""
         val streamUrl = buildUrl(baseUrl, "stream&id=$id")
 
         return Song(
@@ -303,13 +314,13 @@ object SubsonicService {
         )
     }
 
-    /** 获取流媒体 URL（先解析活跃 Base URL，失败回退公网） */
+    /** 获取流媒体 URL（先解析活跃 Base URL，失败回退到优先地址） */
     suspend fun getStreamUrl(songId: String): String {
         val cfg = config ?: throw SubsonicException("Subsonic 未配置")
         val baseUrl = try {
             resolveBaseUrl()
         } catch (_: Exception) {
-            cfg.publicUrl
+            cfg.preferredBaseUrl()
         }
         return buildUrl(baseUrl, "stream&id=$songId")
     }
@@ -393,7 +404,7 @@ object SubsonicService {
                 val detail = getPlaylistDetail(remoteId)
                 for (song in detail.entries) {
                     val songId = song.id
-                    val baseUrl = activeBaseUrl ?: config?.publicUrl ?: ""
+                    val baseUrl = activeBaseUrl ?: config?.preferredBaseUrl() ?: ""
                     val streamUrl = buildUrl(baseUrl, "stream&id=$songId")
 
                     // 检查本地是否已有该远程歌曲

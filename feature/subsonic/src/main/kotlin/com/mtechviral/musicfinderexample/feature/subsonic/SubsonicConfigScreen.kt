@@ -7,7 +7,8 @@
  *   - 「保存配置」调用 saveConfig(config) 后提示「配置已保存」；
  *   - 「删除配置」取 SubsonicService.currentConfig?.id 后调用 DatabaseHelper.deleteSubsonicConfig(id)。
  *
- * 校验规则、提示文案、字段顺序与 Dart 原页面逐条一致。
+ * 提示文案、字段顺序与 Dart 原页面一致；
+ * 差异：内网地址与公网地址不再要求同时填写，两者填其一即可（都填则内网优先）。
  */
 
 package com.mtechviral.musicfinderexample.feature.subsonic
@@ -90,6 +91,9 @@ private val TestFailRed = Color(0xFFF44336)
 /** 地址类字段的格式错误文案（与 Dart 校验器逐字一致） */
 private const val URL_FORMAT_ERROR = "请输入有效的 URL（以 http:// 或 https:// 开头）"
 
+/** 内网、公网地址都没填时的错误文案（两者填其一即可） */
+private const val ADDRESS_REQUIRED_ERROR = "请至少填写内网地址或公网地址"
+
 /** 表单校验结果 */
 private data class FieldErrors(
     val intranet: String? = null,
@@ -101,26 +105,35 @@ private data class FieldErrors(
         get() = intranet != null || public != null || username != null || password != null
 }
 
-/** 与 Dart 三个 TextFormField 的 validator 完全一致的表单校验 */
+/** 表单校验：内网、公网地址填其一即可，只对已填写的地址做格式校验 */
 private fun validateForm(
     intranet: String,
     public: String,
     username: String,
     password: String,
-): FieldErrors = FieldErrors(
-    intranet = when {
-        intranet.trim().isEmpty() -> "请输入内网地址"
-        !intranet.startsWith("http://") && !intranet.startsWith("https://") -> URL_FORMAT_ERROR
-        else -> null
-    },
-    public = when {
-        public.trim().isEmpty() -> "请输入公网地址"
-        !public.startsWith("http://") && !public.startsWith("https://") -> URL_FORMAT_ERROR
-        else -> null
-    },
-    username = if (username.trim().isEmpty()) "请输入用户名" else null,
-    password = if (password.isEmpty()) "请输入密码" else null,
-)
+): FieldErrors {
+    val intranetValue = intranet.trim()
+    val publicValue = public.trim()
+    val intranetFormatError = intranetValue
+        .takeIf { it.isNotEmpty() && !hasUrlScheme(it) }
+        ?.let { URL_FORMAT_ERROR }
+    val publicFormatError = publicValue
+        .takeIf { it.isNotEmpty() && !hasUrlScheme(it) }
+        ?.let { URL_FORMAT_ERROR }
+    val noAddress = intranetValue.isEmpty() && publicValue.isEmpty()
+
+    return FieldErrors(
+        // 两个地址都没填时，把提示挂在第一个地址框上
+        intranet = intranetFormatError ?: ADDRESS_REQUIRED_ERROR.takeIf { noAddress },
+        public = publicFormatError,
+        username = if (username.trim().isEmpty()) "请输入用户名" else null,
+        password = if (password.isEmpty()) "请输入密码" else null,
+    )
+}
+
+/** 地址是否带 http:// 或 https:// 前缀 */
+private fun hasUrlScheme(value: String): Boolean =
+    value.startsWith("http://") || value.startsWith("https://")
 
 /**
  * 远程配置页。
@@ -220,7 +233,7 @@ fun SubsonicConfigScreen() {
                 ConfigTextField(
                     value = intranetUrl,
                     onValueChange = { intranetUrl = it },
-                    label = "内网地址 *",
+                    label = "内网地址",
                     hint = "例如：http://192.168.1.100:4040",
                     leadingIcon = Icons.Filled.Home,
                     isError = errorIntranet != null,
@@ -232,7 +245,7 @@ fun SubsonicConfigScreen() {
                 ConfigTextField(
                     value = publicUrl,
                     onValueChange = { publicUrl = it },
-                    label = "公网地址 *",
+                    label = "公网地址",
                     hint = "例如：https://music.example.com",
                     leadingIcon = Icons.Filled.Public,
                     isError = errorPublic != null,
@@ -240,7 +253,7 @@ fun SubsonicConfigScreen() {
                 FieldErrorText(errorPublic)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "优先使用内网连接，内网不可达时自动切换公网",
+                    text = "内网地址和公网地址填其一即可；两者都填时优先使用内网连接，内网不可达时自动切换公网",
                     fontSize = 12.sp,
                     color = MaterialTheme.ytTextSecondary.copy(alpha = 0.6f),
                 )
@@ -469,7 +482,7 @@ fun SubsonicConfigScreen() {
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "1. 填写 Subsonic 服务器的内网和公网地址\n" +
+                        text = "1. 填写 Subsonic 服务器的内网地址或公网地址（填其一即可）\n" +
                             "2. 输入用户名和密码\n" +
                             "3. 点击“测试连接”验证配置\n" +
                             "4. 保存后可在“扫描音乐”页面扫描远程音乐\n" +
