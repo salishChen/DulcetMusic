@@ -14,7 +14,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "YuleMusic"
+rootProject.name = "YuYueMusic"
 
 // ---------------------------------------------------------------------------
 // app：宿主壳层（Activity / 全局导航 / 常驻迷你播放栏）
