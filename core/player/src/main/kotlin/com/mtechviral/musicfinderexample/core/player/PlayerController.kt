@@ -328,6 +328,36 @@ object PlayerController {
         return playAt(startIndex.coerceIn(0, shuffled.size - 1))
     }
 
+    /**
+     * 「播放选中队列」（第二十六轮需求 2）：把 [songs] 插入到**当前播放歌曲之后**并立即播放第一首。
+     *
+     * 与 [playSongs] 的区别：不替换整个播放列表，而是在当前曲之后插入，
+     * 保留原有队列与之后要播的内容（需求：不是插入到列表底部，而是插入到当前播放音乐之后）。
+     *
+     * 队列为空（或没有当前曲）时退化为"以 [songs] 建列表并从头播放"，
+     * 否则会把歌插到队尾却不播放，与"播放选中队列"的字面预期不符。
+     *
+     * 插入后第一首的位置 = 原当前曲下标 + 1，因此用 [playAt] 按下标定位播放，
+     * 天然正确处理"同一首歌有多份"的情况。
+     */
+    suspend fun playAfterCurrent(songs: List<Song>): Boolean {
+        if (songs.isEmpty()) return false
+
+        val queueWasEmpty = PlaylistRepository.current.isEmpty()
+        if (queueWasEmpty) {
+            // 没有当前播放曲可插入其后：等价于整列播放
+            return playSongs(songs, 0)
+        }
+
+        val currentIndexBefore = _currentIndex.value
+        val inserted = PlaylistRepository.insertAfterCurrent(songs)
+        if (inserted <= 0) return false
+
+        // 插入位置紧随当前曲；同步队列（syncQueue）走"中途插入"增量分支，
+        // 当前曲不受影响、继续播放，这里再把播放指针移到新插入的第一首。
+        return playAt(currentIndexBefore + 1)
+    }
+
     /** 恢复播放（暂停态）或重播当前歌曲；无当前歌曲则空操作 */
     suspend fun resumeOrPlay() {
         val song = _currentSong.value ?: return
@@ -499,6 +529,30 @@ object PlayerController {
             newIds.size == existingIds.size &&
             existingIds.sorted() == newIds.sorted()
 
+        // 中途插入（第二十六轮需求 2）：队列变长、旧列表是新列表的子序列（无删除/重排），
+        // 且**所有新增项都排在当前播放项之后**（因此当前项下标不变、播放不受影响）。
+        // 新增项还必须是连续的一段，才能用一次 `addMediaItems(index, items)` 增量添加。
+        val insertIndices: List<Int>? = if (
+            newIds.size > existingIds.size && currentIndex >= 0 && existingIds.isNotEmpty()
+        ) {
+            val keep = greedyKeepIndices(existingIds, newIds)
+            if (keep == null || keep.size != existingIds.size) {
+                null
+            } else {
+                val inserted = newIds.indices.filter { it !in keep.toHashSet() }
+                when {
+                    inserted.isEmpty() -> null
+                    // 插入全在当前项之后 → 当前项下标保持 currentIndex 不变
+                    inserted.first() <= currentIndex -> null
+                    // 必须是连续的一段，否则一次 addMediaItems 无法表达
+                    inserted != (inserted.first()..inserted.last()).toList() -> null
+                    else -> inserted
+                }
+            }
+        } else {
+            null
+        }
+
         when {
             existingIds.isEmpty() -> {
                 p.setMediaItems(songs.map { buildMediaItem(it) })
@@ -510,6 +564,15 @@ object PlayerController {
             newIds.size > existingIds.size &&
                 existingIds == newIds.subList(0, existingIds.size) -> {
                 p.addMediaItems(songs.drop(existingIds.size).map { buildMediaItem(it) })
+            }
+
+            // 中途插入（第二十六轮需求 2「播放选中队列」）：在**当前播放曲之后**插入若干首。
+            // 判定：旧列表是新的子序列，且插入位置都在当前播放项之后 ——
+            // 这样当前项下标不变，可以走 `addMediaItems(index, ...)` 增量添加，
+            // 避免落入下面的 else 分支整队重建（重建会打断播放并丢失精确进度）。
+            insertIndices != null -> {
+                val newItems = insertIndices.map { songs[it] }
+                p.addMediaItems(insertIndices.first(), newItems.map { buildMediaItem(it) })
             }
 
             // 纯移除：按位置精确删除即可。当前项之前若有项被删，其下标会前移，需一并同步

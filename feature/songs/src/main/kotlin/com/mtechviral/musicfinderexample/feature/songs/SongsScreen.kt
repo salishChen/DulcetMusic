@@ -20,6 +20,11 @@
  *  - "随机播放"：规范第 9 节《播放列表行为约定》。
  *    （第十八轮：按需求去掉顶部的「播放全部」按钮；
  *     第十九轮：按需求去掉顶部的「随机播放」按钮，该条只剩「共 N 首」。
+ *     第二十三轮：按设计截图重做列表行 / 操作条 / 多选条（尺寸见 `MpListMetrics`）。
+ *     第二十六轮：需求 1 把操作条固定到列表顶部；需求 2 多选态在底部新增
+ *     「永久删除 / 添加到歌单 / 播放选中队列」三个功能，其中「播放选中队列」把选中的
+ *     音乐插入到**当前播放音乐之后**（`PlayerController.playAfterCurrent`）；
+ *     需求 4 的「永久删除」区分本地文件与在线歌曲（见 `LibrarySongDeleter`）。
  *     整列播放仍可通过点击任意歌曲触达；随机播放可由播放页底部的播放模式按钮进入随机模式，
  *     届时列表本身会被重排。）
  *
@@ -29,6 +34,7 @@
 package com.mtechviral.musicfinderexample.feature.songs
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -36,9 +42,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -46,33 +55,36 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.ManageSearch
+import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
-import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -82,8 +94,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -93,10 +103,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -106,11 +119,18 @@ import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.designsystem.component.EntityActionSheet
 import com.mtechviral.musicfinderexample.core.designsystem.component.EntityActionTarget
+import com.mtechviral.musicfinderexample.core.designsystem.component.MpListMetrics
 import com.mtechviral.musicfinderexample.core.designsystem.component.MpSongListItem
 import com.mtechviral.musicfinderexample.core.designsystem.component.PrimaryAppBar
+import com.mtechviral.musicfinderexample.core.designsystem.component.QualityBadge
 import com.mtechviral.musicfinderexample.core.designsystem.component.SongArtwork
 import com.mtechviral.musicfinderexample.core.designsystem.theme.BrandCyan
 import com.mtechviral.musicfinderexample.core.designsystem.theme.BrandPurple
+import com.mtechviral.musicfinderexample.core.designsystem.theme.ytCircleButtonBg
+import com.mtechviral.musicfinderexample.core.designsystem.theme.ytCircleButtonFg
+import com.mtechviral.musicfinderexample.core.designsystem.theme.ytRowSubtitle
+import com.mtechviral.musicfinderexample.core.designsystem.theme.ytSelectCircle
+import com.mtechviral.musicfinderexample.core.designsystem.theme.ytSelectionAccent
 import com.mtechviral.musicfinderexample.core.designsystem.theme.ytTextSecondary
 import com.mtechviral.musicfinderexample.core.model.Playlist
 import com.mtechviral.musicfinderexample.core.model.Song
@@ -125,6 +145,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 /** 删除操作红（Dart 批量删除对话框使用 `Colors.red`） */
 private val DeleteRed = Color(0xFFF44336)
 
+/** 多选底部操作条高度（第二十六轮需求 2；图标 24dp + 文字 12sp + 内边距） */
+private val SelectionBottomBarHeight = 64.dp
+
 /** 排序方式（对应 Dart `SongSortType`） */
 private enum class SongSortType { TITLE, ARTIST, ALBUM, DATE_ADDED, PLAY_COUNT, DURATION }
 
@@ -136,7 +159,7 @@ private enum class SortDirection { ASCENDING, DESCENDING }
  *
  * @param onOpenNowPlaying 打开播放页（等价 Dart 播放页滑出）
  * @param onOpenSearch 打开搜索页（对应 Dart showSearch，路由 AppRoutes.SEARCH）
- * @param onOpenScan 空状态"去扫描"跳转扫描页（对应 Dart `selectPage(5)`，路由 AppRoutes.SCAN）
+ * @param onOpenScan 空状态"去扫描"跳转扫描页（对应 Dart `selectPage(5)`，路由 AppRoutes.SCAN）。
  */
 @Composable
 fun SongsScreen(
@@ -159,10 +182,13 @@ fun SongsScreen(
     var actionTarget by remember { mutableStateOf<EntityActionTarget?>(null) }
     var addToPlaylistSongs by remember { mutableStateOf<List<Song>?>(null) }
 
+    // ---- 第二十六轮需求 4：多选「永久删除」的目标（非 null 时弹确认框）----
+    // 本地音乐需先确认再删文件；在线歌曲直接删除（弹窗内说明其缓存与排除行为）。
+    var permanentDeleteTargets by remember { mutableStateOf<List<Song>?>(null) }
+
     // ---- 多选模式（对应 Dart _selectionMode / _selectedPaths） ----
     var selectionMode by remember { mutableStateOf(false) }
     var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var showDeleteConfirm by remember { mutableStateOf(false) }
     // 长按进入多选后，行自身的 clickable 可能仍会在抬手时触发一次 onClick，用该标记吞掉它
     var suppressClickPath by remember { mutableStateOf<String?>(null) }
 
@@ -213,143 +239,53 @@ fun SongsScreen(
         selectedPaths = setOf(song.path)
     }
 
-    /** 选中的歌曲（按当前排序顺序；排序/删除后自动与列表求交） */
-    val selectedSongs: List<Song> = sortedSongs.filter { selectedPaths.contains(it.path) }
+    /**
+     * 选中的歌曲（按当前排序顺序）。
+     *
+     * 第二十六轮需求 2：底部操作条的三个动作都以「当前选中的歌曲集合」为输入，
+     * 且在动作发生后（如退出多选）仍要能拿到**当时**的集合，因此这里读出快照。
+     */
+    val selectedSongsSnapshot: List<Song> =
+        sortedSongs.filter { selectedPaths.contains(it.path) }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            if (selectionMode) {
-                // ---- 多选顶栏（对应 Dart `_buildSelectionAppBar`）----
-                SelectionAppBar(
-                    selectedCount = selectedPaths.size,
-                    allSelected = sortedSongs.isNotEmpty() && selectedPaths.size == sortedSongs.size,
-                    onClose = exitSelectionMode,
-                    onToggleSelectAll = {
-                        // Dart：已全选则清空，否则全选
-                        selectedPaths = if (sortedSongs.isNotEmpty() &&
-                            selectedPaths.size == sortedSongs.size
-                        ) {
-                            emptySet()
-                        } else {
-                            sortedSongs.map { it.path }.toSet()
-                        }
-                    },
-                    onAddToQueue = {
-                        // Dart `_addToQueue`：逐首 PlaylistRepository.addSong
-                        // 第十六轮：addSong 不再判重（允许重复入列），因此选中即全部加入
-                        selectedSongs.forEach { song -> PlaylistRepository.addSong(song) }
-                        scope.launch {
-                            snackbarHostState.showSnackbar("已添加 ${selectedSongs.size} 首歌曲到播放队列")
-                        }
-                        exitSelectionMode()
-                    },
-                    onDeleteSelected = { showDeleteConfirm = true },
-                )
-            } else {
-                PrimaryAppBar(
-                    title = "歌曲",
-                    onMenuClick = openSidebar,
+            // 顶栏在多选态下保持原样（第二十三轮：多选条移到标题下方，见列表首项）
+            PrimaryAppBar(
+                title = "歌曲",
+                onMenuClick = openSidebar,
+            ) {
+                // 搜索入口（Dart：showSearch(delegate: MusicSearchDelegate())）
+                IconButton(
+                    modifier = Modifier.size(MpListMetrics.IconButtonSize),
+                    onClick = onOpenSearch,
                 ) {
-                    // 搜索入口（Dart：showSearch(delegate: MusicSearchDelegate())）
-                    IconButton(onClick = onOpenSearch) {
-                        Icon(Icons.Filled.Search, contentDescription = "搜索")
-                    }
-                    // 排序入口（Dart：PopupMenuButton<SongSortType>）
-                    Box {
-                        IconButton(onClick = { sortMenuExpanded = true }) {
-                            Icon(Icons.Filled.Sort, contentDescription = "排序")
-                        }
-                        DropdownMenu(
-                            expanded = sortMenuExpanded,
-                            onDismissRequest = { sortMenuExpanded = false },
-                        ) {
-                            SortMenuItem(
-                                label = "按标题",
-                                icon = Icons.Filled.TextFields,
-                                selected = sortType == SongSortType.TITLE,
-                                ascending = sortDirection == SortDirection.ASCENDING,
-                                onClick = {
-                                    val next = toggleSort(sortType, sortDirection, SongSortType.TITLE)
-                                    sortType = next.first
-                                    sortDirection = next.second
-                                    sortMenuExpanded = false
-                                },
-                            )
-                            SortMenuItem(
-                                label = "按艺术家",
-                                icon = Icons.Filled.Person,
-                                selected = sortType == SongSortType.ARTIST,
-                                ascending = sortDirection == SortDirection.ASCENDING,
-                                onClick = {
-                                    val next = toggleSort(sortType, sortDirection, SongSortType.ARTIST)
-                                    sortType = next.first
-                                    sortDirection = next.second
-                                    sortMenuExpanded = false
-                                },
-                            )
-                            SortMenuItem(
-                                label = "按专辑",
-                                icon = Icons.Filled.Album,
-                                selected = sortType == SongSortType.ALBUM,
-                                ascending = sortDirection == SortDirection.ASCENDING,
-                                onClick = {
-                                    val next = toggleSort(sortType, sortDirection, SongSortType.ALBUM)
-                                    sortType = next.first
-                                    sortDirection = next.second
-                                    sortMenuExpanded = false
-                                },
-                            )
-                            SortMenuItem(
-                                label = "按添加时间",
-                                icon = Icons.Filled.AccessTime,
-                                selected = sortType == SongSortType.DATE_ADDED,
-                                ascending = sortDirection == SortDirection.ASCENDING,
-                                onClick = {
-                                    val next = toggleSort(sortType, sortDirection, SongSortType.DATE_ADDED)
-                                    sortType = next.first
-                                    sortDirection = next.second
-                                    sortMenuExpanded = false
-                                },
-                            )
-                            SortMenuItem(
-                                label = "按播放次数",
-                                icon = Icons.Filled.PlayCircle,
-                                selected = sortType == SongSortType.PLAY_COUNT,
-                                ascending = sortDirection == SortDirection.ASCENDING,
-                                onClick = {
-                                    val next = toggleSort(sortType, sortDirection, SongSortType.PLAY_COUNT)
-                                    sortType = next.first
-                                    sortDirection = next.second
-                                    sortMenuExpanded = false
-                                },
-                            )
-                            SortMenuItem(
-                                label = "按时长",
-                                icon = Icons.Filled.Timer,
-                                selected = sortType == SongSortType.DURATION,
-                                ascending = sortDirection == SortDirection.ASCENDING,
-                                onClick = {
-                                    val next = toggleSort(sortType, sortDirection, SongSortType.DURATION)
-                                    sortType = next.first
-                                    sortDirection = next.second
-                                    sortMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-                    // 进入多选（Dart 普通顶栏的 checklist 按钮；空库时无入口）
-                    if (sortedSongs.isNotEmpty()) {
-                        IconButton(
-                            onClick = {
-                                selectionMode = true
-                                selectedPaths = emptySet()
-                            },
-                        ) {
-                            Icon(Icons.Filled.Checklist, contentDescription = "多选")
-                        }
-                    }
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = "搜索",
+                        modifier = Modifier.size(MpListMetrics.IconSize),
+                    )
                 }
+            }
+        },
+        // 第二十六轮需求 2：多选态在**底部**常驻三个批量操作（永久删除 / 添加到歌单 / 播放选中队列）。
+        // 放在 Scaffold 的 bottomBar 上，随多选模式出现与消失。
+        bottomBar = {
+            if (selectionMode) {
+                SelectionBottomBar(
+                    enabled = selectedPaths.isNotEmpty(),
+                    onPermanentDelete = { permanentDeleteTargets = selectedSongsSnapshot },
+                    onAddToPlaylist = { addToPlaylistSongs = selectedSongsSnapshot },
+                    onPlaySelected = {
+                        val songs = selectedSongsSnapshot
+                        if (songs.isNotEmpty()) {
+                            // 需求 2：插入到当前播放列表的**当前播放音乐之后**（不是队尾）
+                            scope.launch { PlayerController.playAfterCurrent(songs) }
+                            exitSelectionMode()
+                        }
+                    },
+                )
             }
         },
     ) { innerPadding ->
@@ -361,13 +297,57 @@ fun SongsScreen(
             when {
                 loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                 library.isEmpty() -> EmptyLibraryView(onOpenScan = onOpenScan)
-                else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    // 多选态隐藏顶部信息条（对应 Dart 多选列表本身没有该操作条）
-                    if (!selectionMode) {
-                        item(key = "songs_header") {
-                            SongsHeader(count = sortedSongs.size)
-                        }
+                else -> Column(modifier = Modifier.fillMaxSize()) {
+                    // 第二十六轮需求 1：操作条**固定在列表顶部**，不再作为 LazyColumn 的首项，
+                    // 因此列表上下滑动时它保持不动（原先在 LazyColumn 内会随内容一起滚走）。
+                    // 普通态 = 操作条；多选态 = 多选操作条（截图版式）。
+                    if (selectionMode) {
+                        SelectionActionRow(
+                            selectedCount = selectedPaths.size,
+                            allSelected = sortedSongs.isNotEmpty() &&
+                                selectedPaths.size == sortedSongs.size,
+                            onToggleSelectAll = {
+                                // Dart：已全选则清空，否则全选
+                                selectedPaths = if (sortedSongs.isNotEmpty() &&
+                                    selectedPaths.size == sortedSongs.size
+                                ) {
+                                    emptySet()
+                                } else {
+                                    sortedSongs.map { it.path }.toSet()
+                                }
+                            },
+                            onClose = exitSelectionMode,
+                        )
+                    } else {
+                        SongsHeader(
+                            count = sortedSongs.size,
+                            sortType = sortType,
+                            sortDirection = sortDirection,
+                            sortMenuExpanded = sortMenuExpanded,
+                            onShuffle = {
+                                // 「随机播放」：整列随机重排后从头播放
+                                scope.launch { PlayerController.playShuffled(sortedSongs, 0) }
+                                onOpenNowPlaying()
+                            },
+                            onSortMenuExpandChange = { sortMenuExpanded = it },
+                            onSelectSort = { clicked ->
+                                val next = toggleSort(sortType, sortDirection, clicked)
+                                sortType = next.first
+                                sortDirection = next.second
+                                sortMenuExpanded = false
+                            },
+                            onEnterSelection = {
+                                selectionMode = true
+                                selectedPaths = emptySet()
+                            },
+                        )
                     }
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                    ) {
                     items(sortedSongs, key = { it.path }) { song ->
                         if (selectionMode) {
                             // 多选行（对应 Dart `_buildSelectableSongItem`）：点击 = 切换选中
@@ -401,6 +381,7 @@ fun SongsScreen(
                             )
                         }
                     }
+                    }
                 }
             }
         }
@@ -432,6 +413,17 @@ fun SongsScreen(
                     actionTarget = null
                     scope.launch { MusicLibrary.reload() }
                 },
+                onExcludeArtist = { artist, removedCount ->
+                    // 第二十七轮需求：排除歌手（含删库）已由弹窗完成，此处只刷新本页。
+                    // 歌曲列表直接由 MusicLibrary 驱动，reload 后该歌手的歌立即消失。
+                    actionTarget = null
+                    scope.launch {
+                        MusicLibrary.reload()
+                        if (removedCount == 0) {
+                            snackbarHostState.showSnackbar("已排除「$artist」，曲库中没有其音乐")
+                        }
+                    }
+                },
             )
         }
 
@@ -443,88 +435,270 @@ fun SongsScreen(
             )
         }
 
-        // 批量删除二次确认（对应 Dart `_deleteSelected` 的 AlertDialog）
-        if (showDeleteConfirm) {
-            AlertDialog(
-                onDismissRequest = { showDeleteConfirm = false },
-                title = { Text("确认删除") },
-                text = { Text("确定要删除选中的 ${selectedPaths.size} 首歌曲吗？") },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            showDeleteConfirm = false
-                            scope.launch {
-                                val targets = selectedSongs
-                                // 删库 + 同步移出播放列表（若删的是正在播放的歌，会自动接续下一首）
-                                LibrarySongDeleter.delete(targets)
-                                // Dart：删除后 queryAllSongs + songData.updateSongs(refreshed)
-                                MusicLibrary.updateSongs(DatabaseHelper.queryAllSongs())
-                                snackbarHostState.showSnackbar("已删除 ${targets.size} 首歌曲")
-                            }
-                            exitSelectionMode()
-                        },
-                    ) {
-                        Text("删除", color = DeleteRed)
+        // 第二十六轮需求 4：永久删除确认框。
+        // 本地音乐 → 确认后删除本地文件；在线歌曲 → 删库 + 删缓存 + 加入排除列表。
+        permanentDeleteTargets?.let { targets ->
+            PermanentDeleteDialog(
+                songs = targets,
+                onDismiss = { permanentDeleteTargets = null },
+                onConfirm = {
+                    permanentDeleteTargets = null
+                    scope.launch {
+                        val result = LibrarySongDeleter.delete(targets)
+                        MusicLibrary.reload()
+                        exitSelectionMode()
+                        snackbarHostState.showSnackbar(permanentDeleteMessage(result))
                     }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showDeleteConfirm = false }) { Text("取消") }
                 },
             )
         }
     }
 }
 
+/** 永久删除结果提示文案（区分本地文件 / 在线歌曲的行为差异） */
+private fun permanentDeleteMessage(result: LibrarySongDeleter.Result): String = when {
+    result.deleted == 0 -> "没有可删除的歌曲"
+    result.excluded > 0 -> buildString {
+        append("已删除 ${result.deleted} 首在线歌曲")
+        if (result.filesDeleted > 0) append("、${result.filesDeleted} 个本地文件")
+        append("，已加入排除列表")
+    }
+    result.filesDeleted > 0 -> "已删除 ${result.filesDeleted} 个本地文件"
+    else -> "已删除 ${result.deleted} 首歌曲"
+}
+
 /**
- * 多选顶栏（对应 Dart `_buildSelectionAppBar`）：
- * 左侧"关闭"、标题"已选择 N 首"、右侧 全选/取消全选 + 添加到播放队列 + 删除选中。
+ * 永久删除确认框（第二十六轮需求 4）。
+ *
+ * 需求要求"若是本地音乐，就弹出确认弹框，确认后直接删除本地音乐文件"。
+ * 在线歌曲同样走这个弹框（删除不可撤销），但文案明确说明：
+ * 只从本机曲库移除并删除缓存，同时加入排除列表，不会删除服务器上的文件。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SelectionAppBar(
-    selectedCount: Int,
-    allSelected: Boolean,
-    onClose: () -> Unit,
-    onToggleSelectAll: () -> Unit,
-    onAddToQueue: () -> Unit,
-    onDeleteSelected: () -> Unit,
+private fun PermanentDeleteDialog(
+    songs: List<Song>,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
 ) {
-    TopAppBar(
-        title = { Text(text = "已选择 $selectedCount 首") },
-        navigationIcon = {
-            IconButton(onClick = onClose) {
-                Icon(Icons.Filled.Close, contentDescription = "关闭")
-            }
-        },
-        actions = {
-            // 全选/取消全选（Dart：Icons.select_all，tooltip '全选'）
-            IconButton(onClick = onToggleSelectAll) {
-                Icon(
-                    imageVector = Icons.Filled.SelectAll,
-                    contentDescription = if (allSelected) "取消全选" else "全选",
+    val localCount = songs.count { !it.isRemote }
+    val remoteCount = songs.size - localCount
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("确认永久删除") },
+        text = {
+            Column {
+                Text(
+                    text = if (songs.size > 1) {
+                        "确定要永久删除选中的 ${songs.size} 首歌曲吗？"
+                    } else {
+                        "确定要永久删除「${songs.first().title}」吗？"
+                    },
                 )
-            }
-            // 添加到播放队列（Dart：Icons.playlist_add）
-            IconButton(onClick = onAddToQueue) {
-                Icon(Icons.Filled.PlaylistAdd, contentDescription = "添加到播放队列")
-            }
-            // 删除选中（Dart：Icons.delete）
-            IconButton(onClick = onDeleteSelected) {
-                Icon(Icons.Filled.Delete, contentDescription = "删除选中")
+                Spacer(Modifier.height(8.dp))
+                if (localCount > 0) {
+                    Text(
+                        text = "· $localCount 首本地音乐：将**删除本地文件**，无法恢复",
+                        fontSize = 13.sp,
+                        color = DeleteRed,
+                    )
+                }
+                if (remoteCount > 0) {
+                    Text(
+                        text = "· $remoteCount 首在线歌曲：从曲库移除并删除本地缓存，" +
+                            "歌曲名与歌手会加入排除列表（服务器文件不受影响）",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.ytTextSecondary,
+                    )
+                }
             }
         },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = MaterialTheme.colorScheme.background,
-            titleContentColor = MaterialTheme.colorScheme.onSurface,
-            navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
-            actionIconContentColor = MaterialTheme.colorScheme.onSurface,
-        ),
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("永久删除", color = DeleteRed)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
     )
 }
 
 /**
- * 多选行（对应 Dart `_buildSelectableSongItem`）：
- * 左侧 Checkbox + 40dp 封面（圆角 8），歌名 + "艺术家 · 专辑"，点击整行切换选中。
+ * 多选底部操作条（第二十六轮需求 2，按截图）。
+ *
+ * 截图版式：底部一条操作条，三个**等分**功能，图标在上、文字在下：
+ * - 左：永久删除（红色垃圾桶 + 红叉，DeleteRed）
+ * - 中：添加到歌单（圆形加号）
+ * - 右：播放选中队列（带加号的列表图标）
+ *
+ * 与「多选操作条」([SelectionActionRow]) 的分工：那条在顶部负责全选/计数/退出，
+ * 这条在底部负责三个实际动作。未选中任何歌曲时三项均禁用（灰化、不响应点击），
+ * 避免"点了没反应"或误触发批量操作。
+ */
+@Composable
+private fun SelectionBottomBar(
+    enabled: Boolean,
+    onPermanentDelete: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+    onPlaySelected: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .height(SelectionBottomBarHeight),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SelectionBottomAction(
+            icon = Icons.Filled.DeleteForever,
+            label = "永久删除",
+            tint = if (enabled) DeleteRed else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            enabled = enabled,
+            onClick = onPermanentDelete,
+        )
+        SelectionBottomAction(
+            icon = Icons.Filled.AddCircle,
+            label = "添加到歌单",
+            tint = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            enabled = enabled,
+            onClick = onAddToPlaylist,
+        )
+        SelectionBottomAction(
+            icon = Icons.Filled.PlaylistAdd,
+            label = "播放选中队列",
+            tint = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            enabled = enabled,
+            onClick = onPlaySelected,
+        )
+    }
+}
+
+/** 底部操作条里的单个功能（上下排布的图标 + 文字，等分宽度） */
+@Composable
+private fun RowScope.SelectionBottomAction(
+    icon: ImageVector,
+    label: String,
+    tint: Color,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(24.dp),
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = label,
+            color = tint,
+            fontSize = 12.sp,
+        )
+    }
+}
+
+/**
+ * 多选操作条（第二十三轮：按设计截图重做）。
+ *
+ * 截图中它**不是顶栏**，而是标题下方的一条 44dp 操作条，且原顶栏保持原样：
+ * - 左侧「全选」（深青强调色，对应 Icons.SelectAll）
+ * - 中间「已选中 N 项」（居中）
+ * - 右侧圆形浅底「X」= 退出多选
+ *
+ * 与改前的差异：删除 / 加入播放队列两个按钮在该条上不再出现（截图只有三个元素），
+ * 长按列表行仍可进入多选并选中该行。
+ */
+@Composable
+private fun SelectionActionRow(
+    selectedCount: Int,
+    allSelected: Boolean,
+    onToggleSelectAll: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(MpListMetrics.ControlRowHeight)
+            .padding(horizontal = MpListMetrics.EdgePadding),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 左：全选 / 取消全选
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClick = onToggleSelectAll)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.SelectAll,
+                contentDescription = null,
+                tint = MaterialTheme.ytSelectionAccent,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = if (allSelected) "取消全选" else "全选",
+                color = MaterialTheme.ytSelectionAccent,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+
+        // 中：已选中 N 项（居中占满中间空间）
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "已选中 $selectedCount 项",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        // 右：圆形浅底 X（退出多选）
+        Box(
+            modifier = Modifier
+                .size(MpListMetrics.IconButtonSize)
+                .clip(CircleShape)
+                .clickable(onClick = onClose),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(MpListMetrics.CloseCircleSize)
+                    .background(MaterialTheme.ytCircleButtonBg, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "退出多选",
+                    tint = MaterialTheme.ytCircleButtonFg,
+                    modifier = Modifier.size(MpListMetrics.CloseIconSize),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 多选行（第二十三轮：按设计截图重做）。
+ *
+ * 版式与截图一致：封面 50dp，圆角 4 + 标题 + 副标题（「歌手 - 专辑」，可带音质徽章），
+ * 行尾是**圆形选择框**（不再有加号/更多按钮）。点击整行即切换选中。
  */
 @Composable
 private fun SelectableSongRow(
@@ -536,37 +710,95 @@ private fun SelectableSongRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onToggle)
-            .padding(start = 8.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
+            .padding(
+                start = MpListMetrics.RowStartPadding,
+                end = MpListMetrics.RowEndPadding,
+                top = MpListMetrics.RowVerticalPadding,
+                bottom = MpListMetrics.RowVerticalPadding,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = isSelected, onCheckedChange = { onToggle() })
         SongArtwork(
             song = song,
-            modifier = Modifier.size(40.dp),
-            cornerRadius = 8.dp,
-            maxSizePx = with(LocalDensity.current) { 40.dp.roundToPx() },
+            modifier = Modifier.size(MpListMetrics.ArtworkSize),
+            cornerRadius = MpListMetrics.ArtworkCorner,
+            maxSizePx = with(LocalDensity.current) { MpListMetrics.ArtworkSize.roundToPx() },
         )
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(Modifier.width(MpListMetrics.ArtworkTextGap))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = song.title,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                text = "${song.displayArtist} · ${song.displayAlbum}",
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                fontSize = 12.sp,
-                color = MaterialTheme.ytTextSecondary,
+            Spacer(Modifier.size(MpListMetrics.TitleSubtitleGap))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                song.qualityBadge?.let { quality ->
+                    QualityBadge(quality = quality)
+                    Spacer(Modifier.width(5.dp))
+                }
+                Text(
+                    // 截图格式为「歌手 - 专辑」（与播放列表页保持一致）
+                    text = "${song.displayArtist} - ${song.displayAlbum}",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.ytRowSubtitle,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (song.isRemote && song.isCached) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.Filled.OfflinePin,
+                        contentDescription = "已缓存",
+                        tint = MaterialTheme.ytTextSecondary,
+                        modifier = Modifier.size(MpListMetrics.CachedIconSize),
+                    )
+                }
+            }
+        }
+        // 行尾圆形选择框（截图：空心圆，选中时填充 + 勾选）
+        Box(
+            modifier = Modifier.size(MpListMetrics.IconButtonSize),
+            contentAlignment = Alignment.Center,
+        ) {
+            SelectionCircle(selected = isSelected)
+        }
+    }
+}
+
+/** 多选圆形勾选框（截图为空心圆；选中态用主题色填充 + 白勾） */
+@Composable
+private fun SelectionCircle(selected: Boolean) {
+    val size = MpListMetrics.SelectCircleSize
+    if (selected) {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .background(MaterialTheme.colorScheme.primary, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = "已选中",
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(14.dp),
             )
         }
+    } else {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .border(1.5.dp, MaterialTheme.ytSelectCircle, CircleShape),
+        )
     }
 }
 
 /**
  * 长按手势包装：在 [PointerEventPass.Initial]（父级先于子级）阶段监听且不消费事件，
- * 因此不会影响 `MpSongListItem` 内部 clickable 的点击与滚动；
+ * 因此不会影响 `MpSongListItem` 内部 clickable 的点击与滚动。
  * 指针移动超过 touchSlop 视为列表滑动，不触发长按。
  */
 private fun Modifier.onRowLongPress(key: Any?, onLongPress: () -> Unit): Modifier =
@@ -628,23 +860,137 @@ private fun SortMenuItem(
 }
 
 /**
- * 列表顶部信息条：曲目数（规范第 9 节）。
+ * 列表顶部操作条（第二十三轮：按设计截图重做）。
  *
- * 第十八轮调整：按需求去掉「播放全部」按钮。
- * 第十九轮调整：按需求再去掉「随机播放」按钮 —— 该条只剩曲目数文本，
- * 因此不再需要回调参数、右侧留白与按钮。整列/随机播放仍可分别通过
- * 「点击任意歌曲」与播放页底部的播放模式按钮（切到随机模式会重排列表）触达。
+ * 截图版式（高 44dp）：
+ * - 左：随机播放图标（shuffle）+ 「642」曲目数
+ * - 右：排序图标（点击弹出排序菜单）+ 多选图标（点击进入多选模式）
+ *
+ * 与改前的差异：曲目数文案由「共 N 首」改为裸数字 `N`；排序与多选入口从顶栏移到本行。
+ * 排序菜单内容不变（6 种排序 + 升降序），仍然挂在排序按钮上。
  */
 @Composable
-private fun SongsHeader(count: Int) {
-    Text(
-        text = "共 $count 首",
-        fontSize = 13.sp,
-        color = MaterialTheme.ytTextSecondary,
+private fun SongsHeader(
+    count: Int,
+    sortType: SongSortType,
+    sortDirection: SortDirection,
+    sortMenuExpanded: Boolean,
+    onShuffle: () -> Unit,
+    onSortMenuExpandChange: (Boolean) -> Unit,
+    onSelectSort: (SongSortType) -> Unit,
+    onEnterSelection: () -> Unit,
+) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
-    )
+            .height(MpListMetrics.ControlRowHeight)
+            .padding(horizontal = MpListMetrics.EdgePadding),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 左：随机播放 + 曲目数
+        Box(
+            modifier = Modifier
+                .size(MpListMetrics.IconButtonSize)
+                .clip(CircleShape)
+                .clickable(onClick = onShuffle),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Shuffle,
+                contentDescription = "随机播放",
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+        Spacer(Modifier.width(MpListMetrics.LeadingGap))
+        Text(
+            text = "$count",
+            fontSize = 15.sp,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+
+        Spacer(Modifier.weight(1f))
+
+        // 右：排序（点开排序菜单，对应 Dart PopupMenuButton<SongSortType>）
+        Box {
+            Box(
+                modifier = Modifier
+                    .size(MpListMetrics.IconButtonSize)
+                    .clip(CircleShape)
+                    .clickable { onSortMenuExpandChange(true) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Sort,
+                    contentDescription = "排序",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            DropdownMenu(
+                expanded = sortMenuExpanded,
+                onDismissRequest = { onSortMenuExpandChange(false) },
+            ) {
+                SortMenuItem(
+                    label = "按标题",
+                    icon = Icons.Filled.TextFields,
+                    selected = sortType == SongSortType.TITLE,
+                    ascending = sortDirection == SortDirection.ASCENDING,
+                    onClick = { onSelectSort(SongSortType.TITLE) },
+                )
+                SortMenuItem(
+                    label = "按艺术家",
+                    icon = Icons.Filled.Person,
+                    selected = sortType == SongSortType.ARTIST,
+                    ascending = sortDirection == SortDirection.ASCENDING,
+                    onClick = { onSelectSort(SongSortType.ARTIST) },
+                )
+                SortMenuItem(
+                    label = "按专辑",
+                    icon = Icons.Filled.Album,
+                    selected = sortType == SongSortType.ALBUM,
+                    ascending = sortDirection == SortDirection.ASCENDING,
+                    onClick = { onSelectSort(SongSortType.ALBUM) },
+                )
+                SortMenuItem(
+                    label = "按添加时间",
+                    icon = Icons.Filled.AccessTime,
+                    selected = sortType == SongSortType.DATE_ADDED,
+                    ascending = sortDirection == SortDirection.ASCENDING,
+                    onClick = { onSelectSort(SongSortType.DATE_ADDED) },
+                )
+                SortMenuItem(
+                    label = "按播放次数",
+                    icon = Icons.Filled.PlayCircle,
+                    selected = sortType == SongSortType.PLAY_COUNT,
+                    ascending = sortDirection == SortDirection.ASCENDING,
+                    onClick = { onSelectSort(SongSortType.PLAY_COUNT) },
+                )
+                SortMenuItem(
+                    label = "按时长",
+                    icon = Icons.Filled.Timer,
+                    selected = sortType == SongSortType.DURATION,
+                    ascending = sortDirection == SortDirection.ASCENDING,
+                    onClick = { onSelectSort(SongSortType.DURATION) },
+                )
+            }
+        }
+        // 右：多选模式
+        Box(
+            modifier = Modifier
+                .size(MpListMetrics.IconButtonSize)
+                .clip(CircleShape)
+                .clickable(onClick = onEnterSelection),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Checklist,
+                contentDescription = "多选",
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+    }
 }
 
 /** 空状态：引导用户去扫描音乐（文案与 Dart `_emptyView` 完全一致） */
@@ -688,7 +1034,7 @@ private fun EmptyLibraryView(onOpenScan: () -> Unit) {
     }
 }
 
-/** 排序：与 Dart `_sortSongs` 一一对应（字符串忽略大小写，缺省值取空/0） */
+/** 排序：与 Dart `_sortSongs` 一一对应（字符串忽略大小写，缺省值取 '0'） */
 private fun sortSongs(
     songs: List<Song>,
     type: SongSortType,

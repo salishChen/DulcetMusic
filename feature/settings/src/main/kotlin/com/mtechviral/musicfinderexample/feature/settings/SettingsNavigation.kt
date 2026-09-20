@@ -26,9 +26,14 @@ fun NavGraphBuilder.settingsGraph(navController: NavController) {
             onOpenLyricsOverlaySettings = {
                 navController.navigate(AppRoutes.LYRICS_OVERLAY_SETTINGS)
             },
+            onOpenExclusionList = { navController.navigate(AppRoutes.EXCLUSION_LIST) },
         )
     }
     composable(AppRoutes.LYRICS_OVERLAY_SETTINGS) {
         LyricsOverlaySettingsScreen(onBack = { navController.popBackStack() })
+    }
+    // 排除列表（第二十六轮需求 3）
+    composable(AppRoutes.EXCLUSION_LIST) {
+        ExclusionListScreen(onBack = { navController.popBackStack() })
     }
 }

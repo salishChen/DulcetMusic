@@ -89,6 +89,7 @@ import com.mtechviral.musicfinderexample.core.designsystem.theme.BrandCyan
 import com.mtechviral.musicfinderexample.core.designsystem.theme.BrandPurple
 import com.mtechviral.musicfinderexample.core.designsystem.theme.ytTextSecondary
 import com.mtechviral.musicfinderexample.core.media.ArtworkCache
+import com.mtechviral.musicfinderexample.core.media.ExclusionFilter
 import com.mtechviral.musicfinderexample.core.media.MetadataScanService
 import com.mtechviral.musicfinderexample.core.media.ScanProgress
 import com.mtechviral.musicfinderexample.core.media.ScanResult
@@ -228,7 +229,12 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
                     val end = (i + REMOTE_BATCH_SIZE).coerceAtMost(songs.size)
                     val batch = songs.subList(i, end)
                     try {
-                        added += DatabaseHelper.insertSongs(batch, Song.SOURCE_TYPE_SUBSONIC)
+                        // 第二十六轮需求 3：入库前剔除排除列表中的音乐
+                        // （被排除的单曲，或被整位排除的歌手的全部歌曲）。
+                        added += DatabaseHelper.insertSongs(
+                            ExclusionFilter.filter(batch),
+                            Song.SOURCE_TYPE_SUBSONIC,
+                        )
                     } catch (e: Exception) {
                         failedCount += batch.size
                         Log.w(TAG, "远程扫描批次失败: ${e.message}")

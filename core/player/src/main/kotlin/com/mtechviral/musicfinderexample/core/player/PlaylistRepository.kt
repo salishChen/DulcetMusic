@@ -113,6 +113,44 @@ object PlaylistRepository {
     }
 
     /**
+     * 把 [songs] 插入到**当前播放歌曲之后**（第二十六轮需求 2）。
+     *
+     * 与 [addSong]（追加到队尾）的区别：这是需求明确要求的"插入到当前播放音乐之后"，
+     * 因此队列为空/没有当前曲时退化为追加到队尾。
+     *
+     * 同一首歌可以重复入列（第十六轮），因此插入不去重。
+     * [originalOrder] 同步在同一位置插入，保持与 [_songs] 是同一多重集
+     * —— 否则切回顺序播放模式会凭空少掉这几首。
+     *
+     * @return 实际插入的歌曲数
+     */
+    @Synchronized
+    fun insertAfterCurrent(songs: List<Song>): Int {
+        if (songs.isEmpty()) return 0
+        val list = _songs.value
+        if (list.isEmpty()) {
+            // 队列为空：没有"当前播放曲"可插入其后，按入列处理
+            setSongs(songs)
+            return songs.size
+        }
+
+        // 当前曲可能有多份，取第一份之后插入（与 playSong 的定位口径一致）
+        val cur = currentPath
+        val currentIndex = if (cur == null) -1 else list.indexOfFirst { it.path == cur }
+        val insertAt = if (currentIndex >= 0) currentIndex + 1 else list.size
+
+        val next = list.toMutableList().apply { addAll(insertAt, songs) }
+
+        // 原始顺序快照同步插入（随机模式下它与 _songs 顺序不同，各自按当前曲定位）
+        val origCurrentIndex = if (cur == null) -1 else originalOrder.indexOfFirst { it.path == cur }
+        val origInsertAt = if (origCurrentIndex >= 0) origCurrentIndex + 1 else originalOrder.size
+        originalOrder = originalOrder.toMutableList().apply { addAll(origInsertAt, songs) }
+
+        notify(next)
+        return songs.size
+    }
+
+    /**
      * 用给定列表整体替换播放列表（"点击歌曲整列播放"场景）。
      *
      * 第二十二轮需求 4：入列时**记住这份原始顺序**；若当前已是随机模式，

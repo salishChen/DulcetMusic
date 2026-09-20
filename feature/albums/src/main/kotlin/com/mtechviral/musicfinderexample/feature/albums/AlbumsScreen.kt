@@ -139,6 +139,14 @@ fun AlbumsScreen(onOpenAlbum: (String) -> Unit = {}) {
                 // 删除已由弹窗完成，这里只刷新曲库（library 变化会触发上面重查）
                 scope.launch { MusicLibrary.reload() }
             },
+            onExcludeArtist = { _, _ ->
+                // 第二十七轮需求：排除歌手（含删库）已由弹窗完成，这里刷新本页。
+                // 该歌手的专辑是一个聚合视图，其歌曲行被删除后会自动从本页消失。
+                scope.launch {
+                    albums = DatabaseHelper.queryAlbums()
+                    MusicLibrary.reload()
+                }
+            },
         )
     }
 

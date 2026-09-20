@@ -36,6 +36,10 @@
  *   `PlaylistRepository.setSongs(songs)` + `PlayerController.playSong(...)`。
  * - 添加到歌单：仅回调 `onAddToPlaylist(songs)`，歌单选择器由调用方弹出。
  * - 缓存：**弹窗内部** `CacheService.startCaching(song)`（与 Dart `_cacheAll` 一致，后台缓存）。
+ * - 排除该歌手（第二十七轮需求）：**弹窗内部** `LibrarySongDeleter.excludeArtistAndPurge(artist)` ——
+ *   写排除列表 + 删除该歌手的本地文件/在线缓存 + 批量删库 + 移出播放列表；
+ *   其专辑与艺术家条目因 `songs` 表聚合而自动消失。随后 `MusicLibrary.reload()`，
+ *   再回调 `onExcludeArtist(artist, removedCount)`；该回调**只作刷新**，不得再次排除。
  * ===================================================================================
  */
 package com.mtechviral.musicfinderexample.core.designsystem.component
@@ -53,6 +57,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudSync
@@ -89,6 +94,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mtechviral.musicfinderexample.core.cache.CacheService
+import com.mtechviral.musicfinderexample.core.common.ExclusionList
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.model.Album
@@ -130,6 +136,9 @@ enum class EntityActionItem {
 
     /** 添加到歌单 */
     ADD_TO_PLAYLIST,
+
+    /** 排除该歌手（第二十六轮需求 3；仅歌手目标显示，可被隐藏） */
+    EXCLUDE_ARTIST,
 }
 
 /**
@@ -158,6 +167,13 @@ fun EntityActionSheet(
     onAddToPlaylist: (List<Song>) -> Unit = {},
     onToggleLike: (List<Song>) -> Unit = {},
     onDelete: (List<Song>) -> Unit = {},
+    /**
+     * 「排除该歌手」完成后的刷新通知（第二十七轮需求）。
+     *
+     * 与 `onDelete` 同一契约：删除/排除**已在弹窗内部完成**，这里只做刷新，
+     * 不得再次执行排除。`removedCount` 为本次从曲库移除的歌曲数（0 表示本来就没有）。
+     */
+    onExcludeArtist: (artist: String, removedCount: Int) -> Unit = { _, _ -> },
     deleteFromLibrary: Boolean = true,
     deleteLabel: String = "永久删除",
     hiddenItems: Set<EntityActionItem> = emptySet(),
@@ -177,6 +193,7 @@ fun EntityActionSheet(
             onAddToPlaylist = onAddToPlaylist,
             onToggleLike = onToggleLike,
             onDelete = onDelete,
+            onExcludeArtist = onExcludeArtist,
             deleteFromLibrary = deleteFromLibrary,
             deleteLabel = deleteLabel,
             hiddenItems = hiddenItems,
@@ -194,6 +211,7 @@ private fun EntityActionContent(
     onAddToPlaylist: (List<Song>) -> Unit,
     onToggleLike: (List<Song>) -> Unit,
     onDelete: (List<Song>) -> Unit,
+    onExcludeArtist: (artist: String, removedCount: Int) -> Unit,
     deleteFromLibrary: Boolean,
     deleteLabel: String,
     hiddenItems: Set<EntityActionItem>,
@@ -388,7 +406,7 @@ private fun EntityActionContent(
             }
         }
 
-        // ===================== 6. 默认缓存本艺术家音乐（仅艺术家） =====================
+        // ========== 6. 默认缓存本艺术家音乐（仅艺术家） ==========
         if (entity is EntityActionTarget.ArtistTarget) {
             ActionRow(
                 icon = Icons.Filled.CloudSync,
@@ -403,6 +421,55 @@ private fun EntityActionContent(
                     Toast.LENGTH_SHORT,
                 ).show()
                 onDismiss()
+            }
+        }
+
+        // ========== 6.5 排除该歌手（第二十六轮需求 3） ==========
+        // 可作用于**歌曲目标**（拿这首歌的歌手）与**歌手目标**；排除后拉取音乐时跳过其全部歌曲。
+        val excludeArtistName: String? = when (entity) {
+            is EntityActionTarget.ArtistTarget -> entity.artist.name
+            is EntityActionTarget.SongTarget -> entity.songs.firstOrNull()?.artist
+            else -> null
+        }
+        if (EntityActionItem.EXCLUDE_ARTIST !in hiddenItems &&
+            !excludeArtistName.isNullOrBlank()
+        ) {
+            val artistName = excludeArtistName
+            val alreadyExcluded = ExclusionList.isArtistExcluded(artistName)
+            ActionRow(
+                icon = Icons.Filled.Block,
+                iconColor = DangerRed,
+                titleColor = DangerRed,
+                title = if (alreadyExcluded) "已排除该歌手" else "排除该歌手",
+                subtitle = if (alreadyExcluded) {
+                    "该歌手的音乐已从曲库移除，拉取时也不再导入"
+                } else {
+                    // 第二十七轮需求：排除歌手要**同时清掉曲库内已有的音乐**
+                    // （歌曲列表、其专辑、播放列表内的该歌手音乐），不只是"以后不再导入"。
+                    "从曲库移除「$artistName」的全部音乐与专辑，以后也不再导入"
+                },
+            ) {
+                if (alreadyExcluded) {
+                    onDismiss()
+                } else {
+                    scope.launch {
+                        // 内部完成：写排除列表 + 删本地文件/缓存 + 批量删库 + 移出播放列表。
+                        // 专辑与艺术家列表由 songs 表聚合而来，删行后自动消失。
+                        val result = LibrarySongDeleter.excludeArtistAndPurge(artistName)
+                        MusicLibrary.reload()
+                        Toast.makeText(
+                            appContext,
+                            when {
+                                result.deleted > 0 -> "已排除歌手「$artistName」并移除 ${result.deleted} 首音乐"
+                                else -> "已排除歌手「$artistName」"
+                            },
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        // 通知调用方刷新（与 onDelete 同一契约：只做刷新，不得再删）
+                        onExcludeArtist(artistName, result.deleted)
+                        onDismiss()
+                    }
+                }
             }
         }
 

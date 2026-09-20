@@ -315,6 +315,15 @@ fun ArtistDetailScreen(
                 // 删除已由弹窗完成，这里只刷新曲库（library 变化会触发上面重查）
                 scope.launch { MusicLibrary.reload() }
             },
+            onExcludeArtist = { _, _ ->
+                // 第二十七轮需求：排除歌手（含删库）已由弹窗完成。
+                // 本页正是该歌手的详情页 —— 刷新后歌曲与专辑都会清空。
+                scope.launch {
+                    MusicLibrary.reload()
+                    songs = DatabaseHelper.querySongsByArtist(artistName)
+                    albums = DatabaseHelper.queryAlbumsByArtist(artistName)
+                }
+            },
         )
     }
 

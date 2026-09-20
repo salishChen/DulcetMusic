@@ -103,7 +103,10 @@ class MetadataScanService(
                 parsed to failCount
             }
             failed += songs.second
-            added += DatabaseHelper.insertSongs(songs.first, source)
+            // 第二十六轮需求 3：扫描入库前先剔除排除列表中的音乐
+            // （被排除的单曲，或歌手被整位排除的歌曲），其余照常入库。
+            val accepted = ExclusionFilter.filter(songs.first)
+            added += DatabaseHelper.insertSongs(accepted, source)
 
             processed += chunk.size
             onProgress?.invoke(processed, total, failed)

@@ -37,6 +37,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ManageSearch
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DarkMode
@@ -73,6 +74,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mtechviral.musicfinderexample.core.cache.CacheService
 import com.mtechviral.musicfinderexample.core.common.AppThemeMode
+import com.mtechviral.musicfinderexample.core.common.ExclusionList
 import com.mtechviral.musicfinderexample.core.common.Formatters
 import com.mtechviral.musicfinderexample.core.common.ThemePreference
 import com.mtechviral.musicfinderexample.core.designsystem.component.PrimaryAppBar
@@ -104,6 +106,7 @@ private const val APP_VERSION = "1.0.0"
 fun SettingsScreen(
     onOpenCacheManage: () -> Unit,
     onOpenLyricsOverlaySettings: () -> Unit = {},
+    onOpenExclusionList: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -112,6 +115,13 @@ fun SettingsScreen(
     val overlayVisible by LyricsOverlayManager.isVisible.collectAsStateWithLifecycle()
     // 「缓存我喜欢」开关（默认开启）：由 CacheService 持有，写入后立即生效
     val autoCacheLiked by CacheService.autoCacheLiked.collectAsStateWithLifecycle()
+    // 排除列表（第二十六轮需求 3）：删除在线音乐后自动累积，扫描时跳过
+    val exclusions by ExclusionList.entries.collectAsStateWithLifecycle()
+    val exclusionSubtitle = if (exclusions.isEmpty()) {
+        "删除在线音乐后自动加入，扫描时跳过"
+    } else {
+        "已排除 ${exclusions.size} 项（歌曲 / 歌手），扫描时跳过"
+    }
     // 顶层组合时读取一次（CompositionLocal.current 不能在非 @Composable 的 lambda 中读取）
     val openSidebar = LocalOpenSidebar.current
 
@@ -319,6 +329,17 @@ fun SettingsScreen(
                 subtitle = "字号 / 粗细 / 颜色 / 行数 / 位置锁定",
                 showChevron = true,
                 onClick = onOpenLyricsOverlaySettings,
+            )
+
+            HorizontalDivider()
+
+            // ---- 排除列表入口（第二十六轮需求 3） ----
+            SettingsTile(
+                leading = Icons.Filled.Block,
+                title = "排除列表",
+                subtitle = exclusionSubtitle,
+                showChevron = true,
+                onClick = onOpenExclusionList,
             )
 
             HorizontalDivider()

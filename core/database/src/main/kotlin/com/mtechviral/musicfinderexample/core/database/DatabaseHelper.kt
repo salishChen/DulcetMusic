@@ -151,6 +151,30 @@ object DatabaseHelper {
     suspend fun querySongsByArtist(artist: String): List<Song> =
         io { artistDao.querySongsByArtist(artist) }
 
+    /**
+     * 某位歌手（含 albumArtist 匹配）的全部歌曲（第二十七轮需求）。
+     *
+     * 与 [querySongsByArtist] 的区别：额外匹配 `albumArtist`，
+     * 因此合辑里 `artist` 为「群星」但 `albumArtist` 是该歌手的歌曲也会被查到。
+     */
+    suspend fun querySongsByArtistIncludingAlbumArtist(artist: String): List<Song> =
+        io { songDao.querySongsByArtistOrAlbumArtist(artist) }
+
+    /**
+     * 按 id 批量删除歌曲（一次 SQL，级联清理歌单绑定），返回实际删除行数。
+     *
+     * 第二十七轮需求：把歌手加入排除列表时用它清掉该歌手的全部歌曲 ——
+     * 专辑与艺术家列表都是从 songs 表聚合出来的（`GROUP BY album` / `GROUP BY artist`），
+     * 因此删掉歌曲行之后，该歌手的专辑与他自己都会自动从对应页面消失，无需额外清理。
+     */
+    suspend fun deleteSongsByIds(ids: Collection<Long>): Int = writeMutex.withLock {
+        io {
+            val deleted = songDao.deleteSongsByIds(ids)
+            invalidateCache()
+            deleted
+        }
+    }
+
     // ======================== 歌单 ========================
 
     suspend fun queryPlaylists(): List<Playlist> = io { playlistDao.queryPlaylists() }
@@ -209,6 +233,14 @@ object DatabaseHelper {
     suspend fun updateArtworkCache(songId: Long, artworkPath: String) = writeMutex.withLock {
         io {
             songDao.updateArtworkCache(songId, artworkPath)
+            invalidateCache()
+        }
+    }
+
+    /** 清除封面缓存记录（第二十六轮需求 4：永久删除在线歌曲时一并清理） */
+    suspend fun clearArtworkCache(songId: Long) = writeMutex.withLock {
+        io {
+            songDao.clearArtworkCache(songId)
             invalidateCache()
         }
     }

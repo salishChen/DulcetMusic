@@ -124,6 +124,16 @@ fun ArtistsScreen(onOpenArtist: (String) -> Unit = {}) {
                 // 删除已由弹窗完成，这里只刷新曲库（library 变化会触发上面重查）
                 scope.launch { MusicLibrary.reload() }
             },
+            onExcludeArtist = { artist, removedCount ->
+                // 第二十七轮需求：排除歌手已由弹窗完成（含删库），这里刷新本页。
+                // 直接重查一次，避免依赖 library 变化（删 0 首时其值不变，不会触发重查）。
+                scope.launch {
+                    artists = DatabaseHelper.queryArtists()
+                    if (removedCount == 0) {
+                        snackbarHostState.showSnackbar("已排除「$artist」，曲库中没有其音乐")
+                    }
+                }
+            },
         )
     }
 

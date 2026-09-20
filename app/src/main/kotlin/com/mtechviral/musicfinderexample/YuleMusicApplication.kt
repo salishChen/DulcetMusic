@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import com.mtechviral.musicfinderexample.core.cache.CacheService
 import com.mtechviral.musicfinderexample.core.common.AppPreferences
+import com.mtechviral.musicfinderexample.core.common.ExclusionList
 import com.mtechviral.musicfinderexample.core.common.ThemePreference
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
@@ -34,9 +35,10 @@ class YuleMusicApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // 1. 偏好设置 / 主题（默认浅色）
+        // 1. 偏好设置 / 主题（默认浅色）+ 排除列表
         AppPreferences.init(this)
         ThemePreference.load()
+        ExclusionList.load()
 
         // 2. 数据库 / 缓存池
         DatabaseHelper.init(this)

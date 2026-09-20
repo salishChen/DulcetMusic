@@ -5,6 +5,7 @@ import android.database.sqlite.SQLiteDatabase
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ARTIST
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ALBUM
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ALBUM_ARTIST
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_CACHED_ARTWORK_PATH
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_CACHED_PATH
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_CACHE_TIMESTAMP
@@ -19,6 +20,7 @@ import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.C
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE_TYPE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_TITLE
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_TRACK_NUMBER
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.TABLE_SONGS
 import com.mtechviral.musicfinderexample.core.database.SongMapper
 import com.mtechviral.musicfinderexample.core.database.mapAll
@@ -139,6 +141,31 @@ class SongDao(private val musicDatabase: MusicDatabase) {
         db.delete(TABLE_SONGS, "$COL_ID = ?", arrayOf(id.toString()))
     }
 
+    /**
+     * 查询某位歌手（含 albumArtist 匹配）的全部歌曲。
+     *
+     * 第二十七轮需求：把歌手加入排除列表时，需要清掉"该歌手已有的音乐"。
+     * 除了 `artist`，还要匹配 `albumArtist` —— 合辑里单曲的 `artist` 可能是
+     * 「群星」，但 `albumArtist` 仍是该歌手；只按 artist 匹配会漏掉这类歌曲，
+     * 表现为"排除了歌手却还留着几张他的专辑"。
+     */
+    fun querySongsByArtistOrAlbumArtist(artist: String): List<Song> =
+        db.query(
+            TABLE_SONGS, null,
+            "($COL_ARTIST = ? OR $COL_ALBUM_ARTIST = ?)",
+            arrayOf(artist, artist),
+            null, null,
+            "$COL_ALBUM COLLATE NOCASE ASC, $COL_TRACK_NUMBER ASC",
+        ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
+
+    /** 按 id 批量删除（一次 SQL，级联清理歌单绑定），返回实际删除行数 */
+    fun deleteSongsByIds(ids: Collection<Long>): Int {
+        if (ids.isEmpty()) return 0
+        val placeholders = ids.joinToString(",") { "?" }
+        val args = ids.map { it.toString() }.toTypedArray()
+        return db.delete(TABLE_SONGS, "$COL_ID IN ($placeholders)", args)
+    }
+
     /** 清空歌曲表 */
     fun clearSongs() {
         db.delete(TABLE_SONGS, null, null)
@@ -193,6 +220,21 @@ class SongDao(private val musicDatabase: MusicDatabase) {
         db.update(
             TABLE_SONGS,
             ContentValues().apply { put(COL_CACHED_ARTWORK_PATH, artworkPath) },
+            "$COL_ID = ?",
+            arrayOf(songId.toString()),
+        )
+    }
+
+    /**
+     * 清除歌曲的封面缓存记录（第二十六轮需求 4）。
+     *
+     * 永久删除在线歌曲时要连同封面缓存一起清掉，否则数据库里会残留一个
+     * 指向已删除文件的路径，下次启动的"补缓存封面"会去读一个不存在的文件。
+     */
+    fun clearArtworkCache(songId: Long) {
+        db.update(
+            TABLE_SONGS,
+            ContentValues().apply { putNull(COL_CACHED_ARTWORK_PATH) },
             "$COL_ID = ?",
             arrayOf(songId.toString()),
         )
