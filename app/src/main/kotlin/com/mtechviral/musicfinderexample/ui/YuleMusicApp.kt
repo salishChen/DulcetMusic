@@ -3,8 +3,13 @@ package com.mtechviral.musicfinderexample.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -57,6 +62,8 @@ import com.mtechviral.musicfinderexample.feature.subsonic.subsonicGraph
  * - 顶部只避让状态栏；
  * - 底部不再整体避让手势导航条，而是由常驻播放栏把背景一直铺到屏幕底边
  *   （内容仍留在导航条上方），避免出现「播放栏浮在小黑条上方、下方露一条底色」；
+ *   同时导航区把底部导航条 inset 标记为已消费，防止内部页面的 `Scaffold`
+ *   再补一段内边距，在列表末尾与播放栏之间留下空白（见下方 `consumeWindowInsets`）；
  * - 当前无歌曲（播放栏不渲染）时，导航内容自行避让手势条。
  */
 @Composable
@@ -84,7 +91,21 @@ fun YuleMusicApp() {
                         // 需求 5：清空队列后播放栏改为显示占位内容（仍然存在），
                         // 因此这里的判定同步改为"currentSong == null"才算真正无播放栏。
                         .then(
-                            if (currentSong == null) Modifier.navigationBarsPadding() else Modifier,
+                            if (currentSong == null) {
+                                // 无播放栏：导航区自己避让手势导航条。
+                                Modifier.navigationBarsPadding()
+                            } else {
+                                // 有播放栏：底部导航条区域由播放栏自己接管 ——
+                                // `MiniPlayerBar` 把背景一直铺到屏幕底边，并用内部的
+                                // `navigationBarsPadding()` 把可交互内容留在导航条上方。
+                                // 因此导航区把底部的导航条 inset 标记为「已消费」：
+                                // 否则导航区会占满到屏幕底边，而内部每个页面的 `Scaffold`
+                                // 默认 `contentWindowInsets` 又会按底部导航条高度再补一段
+                                // 内边距，表现为「列表最后一行与播放栏之间空出一小块」。
+                                Modifier.consumeWindowInsets(
+                                    WindowInsets.navigationBars.only(WindowInsetsSides.Bottom),
+                                )
+                            },
                         ),
                 ) {
                     NavHost(
@@ -114,6 +135,9 @@ fun YuleMusicApp() {
                                     },
                                     onOpenLyricsOverlaySettings = {
                                         navController.navigate(AppRoutes.LYRICS_OVERLAY_SETTINGS)
+                                    },
+                                    onOpenExclusionList = {
+                                        navController.navigate(AppRoutes.EXCLUSION_LIST)
                                     },
                                 )
                             }
@@ -163,6 +187,7 @@ private fun PrimaryPage(
     onOpenSubsonicConfig: () -> Unit,
     onOpenCacheManage: () -> Unit,
     onOpenLyricsOverlaySettings: () -> Unit,
+    onOpenExclusionList: () -> Unit,
 ) {
     // CompositionLocal.current 是 @Composable 读取，必须在 composable 函数体内取一次再传给非 @Composable 回调
     val selectPage = LocalSelectPage.current
@@ -185,6 +210,7 @@ private fun PrimaryPage(
         8 -> SettingsScreen(
             onOpenCacheManage = onOpenCacheManage,
             onOpenLyricsOverlaySettings = onOpenLyricsOverlaySettings,
+            onOpenExclusionList = onOpenExclusionList,
         )
     }
 }
