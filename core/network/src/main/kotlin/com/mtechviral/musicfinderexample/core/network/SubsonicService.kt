@@ -36,6 +36,15 @@ object SubsonicService {
     private var config: SubsonicConfig? = null
     private var activeBaseUrl: String? = null
 
+    /**
+     * EasyTier 组网的本地转发地址（如 `http://127.0.0.1:18080`，由 core:easytier 注入）。
+     *
+     * 启用后地址探测顺序变为：**EasyTier → 内网 → 公网**（优化文档 doc/EasyTier集成方案.md）；
+     * 未启用时为 null，现有内网/公网直连行为不变。
+     */
+    @Volatile
+    var easyTierBaseUrl: String? = null
+
     private val secureRandom = SecureRandom()
 
     /** 普通 API 请求：30s 超时（与 Dart 端一致） */
@@ -136,20 +145,23 @@ object SubsonicService {
     }
 
     /**
-     * 按优先级列出已填写的地址及其探测客户端：内网（5s 超时）在前，公网（10s 超时）在后。
-     * 未填写的地址直接跳过。
+     * 按优先级列出候选地址及其探测客户端：
+     * EasyTier 本地转发（5s）在最前，内网（5s 超时）次之，公网（10s 超时）最后。
+     * 未填写/未启用的地址直接跳过。
      */
     private fun SubsonicConfig.resolvableBaseUrls(): List<Pair<String, OkHttpClient>> = listOfNotNull(
+        easyTierBaseUrl?.trim()?.takeIf { it.isNotEmpty() }?.let { it to intranetProbeClient },
         intranetUrl.trim().takeIf { it.isNotEmpty() }?.let { it to intranetProbeClient },
         publicUrl.trim().takeIf { it.isNotEmpty() }?.let { it to publicProbeClient },
     )
 
     /**
-     * 探测失败时的兜底地址（与探测顺序一致：优先内网，其次公网）；
+     * 探测失败时的兜底地址（与探测顺序一致：优先 EasyTier，其次内网，最后公网）；
      * 均未填写时返回空串。
      */
     private fun SubsonicConfig.preferredBaseUrl(): String =
-        intranetUrl.trim().ifEmpty { publicUrl.trim() }
+        easyTierBaseUrl?.trim()?.takeIf { it.isNotEmpty() }
+            ?: intranetUrl.trim().ifEmpty { publicUrl.trim() }
 
     /**
      * 构建 API URL。

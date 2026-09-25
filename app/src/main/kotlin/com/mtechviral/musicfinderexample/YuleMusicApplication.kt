@@ -66,6 +66,19 @@ class YuleMusicApplication : Application() {
                 Log.w(TAG, "加载 Subsonic 配置失败: ${e.message}")
             }
 
+            // EasyTier 组网（doc/EasyTier集成方案.md）：已启用则随应用启动，
+            // 使远程扫描/播放无需先进配置页；探测顺序自动为 EasyTier → 内网 → 公网
+            try {
+                val etConfig = com.mtechviral.musicfinderexample.core.easytier
+                    .EasyTierConfigStore.load(this@YuleMusicApplication)
+                if (etConfig.enabled) {
+                    com.mtechviral.musicfinderexample.core.easytier
+                        .EasyTierEngine.start(this@YuleMusicApplication, etConfig)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "启动 EasyTier 组网失败: ${e.message}")
+            }
+
             // 恢复上次关闭前的播放列表（从偏好回查入库歌曲）
             try {
                 PlaylistRepository.restoreFromPrefs()

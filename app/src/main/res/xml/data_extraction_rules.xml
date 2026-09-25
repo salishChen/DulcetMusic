@@ -9,10 +9,13 @@
         <exclude domain="database" path="music_player.db" />
         <exclude domain="database" path="music_player.db-wal" />
         <exclude domain="database" path="music_player.db-shm" />
+        <!-- EasyTier 组网凭据（network_secret）不进备份 -->
+        <exclude domain="sharedpref" path="easytier_prefs.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="database" path="music_player.db" />
         <exclude domain="database" path="music_player.db-wal" />
         <exclude domain="database" path="music_player.db-shm" />
+        <exclude domain="sharedpref" path="easytier_prefs.xml" />
     </device-transfer>
 </data-extraction-rules>

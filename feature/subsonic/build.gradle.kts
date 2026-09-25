@@ -1,4 +1,4 @@
-﻿plugins {
+plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
@@ -35,6 +35,7 @@ dependencies {
     implementation(project(":core:cache"))
     implementation(project(":core:player"))
     implementation(project(":core:designsystem"))
+    implementation(project(":core:easytier"))
     implementation(project(":feature:home"))
 
     implementation(platform(libs.androidx.compose.bom))

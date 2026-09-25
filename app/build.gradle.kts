@@ -33,8 +33,8 @@ android {
         applicationId = "com.mtechviral.musicfinderexample"
         minSdk = 24
         targetSdk = 36
-        versionCode = 2
-        versionName = "2.0.0"
+        versionCode = 3
+        versionName = "2.1.0"
     }
 
     signingConfigs {
@@ -89,6 +89,7 @@ dependencies {
     implementation(project(":core:cache"))
     implementation(project(":core:player"))
     implementation(project(":core:designsystem"))
+    implementation(project(":core:easytier"))
 
     implementation(project(":feature:home"))
     implementation(project(":feature:songs"))

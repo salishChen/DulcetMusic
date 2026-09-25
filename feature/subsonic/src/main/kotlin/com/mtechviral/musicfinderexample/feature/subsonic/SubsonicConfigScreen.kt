@@ -459,6 +459,11 @@ fun SubsonicConfigScreen() {
 
                 Spacer(Modifier.height(24.dp))
 
+                // EasyTier 组网（可选，doc/EasyTier集成方案.md）
+                EasyTierSection(onMessage = { pendingMessage = it })
+
+                Spacer(Modifier.height(24.dp))
+
                 // 使用说明
                 Column(
                     modifier = Modifier
@@ -544,7 +549,7 @@ fun SubsonicConfigScreen() {
 
 /** 统一的输入框（对应 Dart 的 TextFormField + OutlineInputBorder(12)） */
 @Composable
-private fun ConfigTextField(
+internal fun ConfigTextField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,

@@ -1,3 +1,26 @@
+## [2.1.0] - EasyTier 去中心化组网集成
+
+按 `doc/EasyTier集成方案.md` 落地「无 TUN 端口转发」集成（方案 B，一期）：
+
+* **内置 EasyTier 组网引擎**（`core:easytier`）：随包分发 `easytier-core` v2.6.4
+  （arm64-v8a，`jniLibs/libeasytier.so`，`tools/build_easytier.ps1` 一键交叉编译），
+  以 `--no-tun` 模式在 App 内托管运行 —— **免 ROOT、无需 VpnService 授权**。
+* **端口转发接入**：把虚拟网内 Subsonic 的端口转发到本地回环
+  （`tcp://127.0.0.1:18080/<服务器虚拟IP>:4533`），应用侧「内网地址」自动优先走
+  `http://127.0.0.1:18080`，主表单的内网/公网地址作为回退（探测顺序
+  EasyTier → 内网 → 公网）；现有 OkHttp/播放/缓存链路零改动。
+* **远程配置页新增「EasyTier 组网」卡片**：网络名 / 网络密码 / 对端中继 /
+  服务器虚拟 IP / 端口映射 / 本地端口、启用开关、连接状态、保存并连接 / 断开；
+  已启用时随应用启动自动拉起（`YuleMusicApplication`）。
+* **安全**（与优化建议 01 同口径）：`network_secret` 经 Android Keystore AES-GCM
+  加密存储（`easytier_prefs`），备份规则排除该偏好文件；引擎日志关闭控制台输出、
+  日志尾部读取经 `UrlSanitizer` 脱敏；端口转发只绑 127.0.0.1。
+* **健壮性**：进程启动失败/引擎未打包时给出明确状态提示，现有内网/公网直连
+  完全不受影响；新增 `EasyTierConfigTest` 覆盖启动参数生成（5 用例）。
+* **构建脚本** `tools/build_easytier.ps1`：自动处理 protoc 下载、libclang 探测、
+  kcp-sys 头文件路径（Windows 盘符与冒号切分的坑，目录联接绕开）、
+  API 24 链接级别（getifaddrs）、EasyTier rust-toolchain 目标安装。
+
 ## [2.0.0] - 原生 Android 重写
 
 以 Kotlin + Jetpack Compose + Media3 完整重写，不再依赖 Flutter 框架（见 `android` 分支）。
