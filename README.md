@@ -4,8 +4,8 @@
 （Kotlin + Jetpack Compose + Media3），不再依赖 Flutter 框架。
 
 - 原 Flutter 实现：`master` 分支（原样保留，未改动）
-- 移植契约（冻结 API / 模块划分 / 路由 / 组件签名）：[`docs/NATIVE_PORT_SPEC.md`](docs/NATIVE_PORT_SPEC.md)
-- 移植实现说明（对照表 / 关键设计 / 与旧版的差异）：[`docs/NATIVE_PORT_IMPLEMENTATION.md`](docs/NATIVE_PORT_IMPLEMENTATION.md)
+- 软件功能详情（当前实现的行为说明）：[`doc/软件功能详情.md`](doc/软件功能详情.md)
+- 优化建议（代码审查与改进计划）：[`doc/优化建议.md`](doc/优化建议.md)
 
 ---
 
