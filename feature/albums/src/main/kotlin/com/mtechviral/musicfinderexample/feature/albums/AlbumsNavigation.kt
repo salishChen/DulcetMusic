@@ -24,19 +24,27 @@ import com.mtechviral.musicfinderexample.core.common.AppRoutes
 fun NavGraphBuilder.albumsGraph(navController: NavController) {
     composable(route = AppRoutes.ALBUMS) {
         AlbumsScreen(
-            onOpenAlbum = { title -> navController.navigate(AppRoutes.albumDetail(title)) },
+            onOpenAlbum = { album ->
+                navController.navigate(AppRoutes.albumDetail(album.title, album.artist))
+            },
         )
     }
 
     composable(
         route = AppRoutes.ALBUM_DETAIL,
-        arguments = listOf(navArgument(AppRoutes.ARG_TITLE) { type = NavType.StringType }),
+        arguments = listOf(
+            navArgument(AppRoutes.ARG_TITLE) { type = NavType.StringType },
+            navArgument(AppRoutes.ARG_ARTIST) { type = NavType.StringType },
+        ),
     ) { backStackEntry ->
         // AppRoutes.albumDetail 跳转时已做 Uri.encode，Navigation 读取路径参数时会自动解码，
         // 此处不要再解码一次（否则标题中含 "%xx" 时会被二次解码）
         val albumTitle = backStackEntry.arguments?.getString(AppRoutes.ARG_TITLE).orEmpty()
+        val artistArg = backStackEntry.arguments?.getString(AppRoutes.ARG_ARTIST).orEmpty()
         AlbumDetailScreen(
             albumTitle = albumTitle,
+            // 优化建议 10：复合键（专辑名 + 专辑艺术家）定位专辑；占位符还原为 null
+            albumArtist = artistArg.takeIf { it.isNotEmpty() && it != AppRoutes.UNKNOWN_ARTIST },
             onBack = { navController.popBackStack() },
         )
     }

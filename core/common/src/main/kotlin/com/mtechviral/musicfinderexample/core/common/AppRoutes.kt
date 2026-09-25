@@ -30,16 +30,29 @@ object AppRoutes {
 
     /** 排除列表页（第二十六轮需求 3） */
     const val EXCLUSION_LIST = "exclusion_list"
-    const val ALBUM_DETAIL = "album_detail/{title}"
+
+    /**
+     * 专辑详情（优化建议 10）：专辑按「专辑名 + 专辑艺术家」复合键区分，
+     * 不同艺术家的同名专辑各开各的详情页。
+     */
+    const val ALBUM_DETAIL = "album_detail/{title}/{artist}"
     const val ARTIST_DETAIL = "artist_detail/{name}"
     const val PLAYLIST_DETAIL = "playlist_detail/{id}"
 
     const val ARG_TITLE = "title"
+    const val ARG_ARTIST = "artist"
     const val ARG_NAME = "name"
     const val ARG_ID = "id"
 
-    /** 跳转专辑详情（专辑名可能包含 `/`、`?` 等字符，需编码） */
-    fun albumDetail(title: String): String = "album_detail/${Uri.encode(title)}"
+    /** 专辑艺术家为空（未知）时的路由占位符（路径段不能为空） */
+    const val UNKNOWN_ARTIST = "__unknown__"
+
+    /**
+     * 跳转专辑详情（专辑名/艺术家可能包含 `/`、`?` 等字符，需编码；
+     * 艺术家为空时用 [UNKNOWN_ARTIST] 占位）。
+     */
+    fun albumDetail(title: String, artist: String?): String =
+        "album_detail/${Uri.encode(title)}/${Uri.encode(artist?.takeIf { it.isNotEmpty() } ?: UNKNOWN_ARTIST)}"
 
     /** 跳转艺术家详情 */
     fun artistDetail(name: String): String = "artist_detail/${Uri.encode(name)}"

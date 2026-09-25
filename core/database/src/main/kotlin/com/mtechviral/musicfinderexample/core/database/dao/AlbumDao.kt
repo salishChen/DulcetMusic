@@ -2,6 +2,8 @@ package com.mtechviral.musicfinderexample.core.database.dao
 
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ALBUM
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ALBUM_ARTIST
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ARTIST
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.TABLE_SONGS
 import com.mtechviral.musicfinderexample.core.database.intOrNull
 import com.mtechviral.musicfinderexample.core.database.longOrNull
@@ -11,9 +13,12 @@ import com.mtechviral.musicfinderexample.core.model.Album
 import com.mtechviral.musicfinderexample.core.model.Song
 
 /**
- * 专辑聚合查询（GROUP BY album，在 SQL 层聚合，不单独入库）。
+ * 专辑聚合查询（GROUP BY 专辑名 + 专辑艺术家，在 SQL 层聚合，不单独入库）。
  *
  * 对应原 Flutter 工程 `DatabaseHelper` 中的 `queryAlbums` / `queryAlbumsByArtist`。
+ *
+ * 优化建议 10：按「专辑名 + 专辑艺术家（albumArtist 兜底 artist）」复合键分组，
+ * 不同艺术家的同名专辑不再混为一张。
  *
  * 注：`queryLikedAlbums` 已随「喜欢只针对单曲」的需求变更删除。
  */
@@ -25,7 +30,7 @@ class AlbumDao(private val musicDatabase: MusicDatabase) {
      */
     fun queryAlbums(): List<Album> = query("""
         SELECT album AS title,
-               COALESCE(MAX(albumArtist), MAX(artist)) AS artist,
+               COALESCE(albumArtist, artist) AS artist,
                MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
                MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
                MAX(cachedArtworkPath) AS coverArtworkPath,
@@ -33,33 +38,46 @@ class AlbumDao(private val musicDatabase: MusicDatabase) {
                COUNT(*) AS songCount
         FROM songs
         WHERE album IS NOT NULL AND album != ''
-        GROUP BY album
-        ORDER BY album COLLATE NOCASE ASC
+        GROUP BY album, COALESCE(albumArtist, artist)
+        ORDER BY album COLLATE NOCASE ASC, artist COLLATE NOCASE ASC
     """.trimIndent())
 
-    /** 指定艺术家的专辑列表 */
+    /** 指定艺术家的专辑列表（含其担任专辑艺术家的合辑） */
     fun queryAlbumsByArtist(artist: String): List<Album> = query("""
         SELECT album AS title,
-               COALESCE(MAX(albumArtist), MAX(artist)) AS artist,
+               COALESCE(albumArtist, artist) AS artist,
                MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
                MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
                MAX(cachedArtworkPath) AS coverArtworkPath,
                MAX(coverArtId) AS coverArtId,
                COUNT(*) AS songCount
         FROM songs
-        WHERE artist = ? AND album IS NOT NULL AND album != ''
-        GROUP BY album
-        ORDER BY album COLLATE NOCASE ASC
-    """.trimIndent(), arrayOf(artist))
+        WHERE (artist = ? OR albumArtist = ?) AND album IS NOT NULL AND album != ''
+        GROUP BY album, COALESCE(albumArtist, artist)
+        ORDER BY album COLLATE NOCASE ASC, artist COLLATE NOCASE ASC
+    """.trimIndent(), arrayOf(artist, artist))
 
-    /** 专辑内全部歌曲（按音轨号排序） */
-    fun querySongsByAlbum(album: String): List<Song> =
-        musicDatabase.readableDatabase.query(
-            TABLE_SONGS, null, "$COL_ALBUM = ?", arrayOf(album), null, null,
+    /**
+     * 专辑内全部歌曲（按音轨号排序）。
+     *
+     * 优化建议 10：按「专辑名 + 专辑艺术家」复合键过滤；
+     * [artist] 为 null 表示专辑艺术家未知（与聚合分组口径一致）。
+     */
+    fun querySongsByAlbum(album: String, artist: String?): List<Song> {
+        val artistKey = "COALESCE($COL_ALBUM_ARTIST, $COL_ARTIST)"
+        val where = if (artist == null) {
+            "$COL_ALBUM = ? AND ($artistKey IS NULL OR $artistKey = '')"
+        } else {
+            "$COL_ALBUM = ? AND $artistKey = ?"
+        }
+        val args = if (artist == null) arrayOf(album) else arrayOf(album, artist)
+        return musicDatabase.readableDatabase.query(
+            TABLE_SONGS, null, where, args, null, null,
             "trackNumber ASC, title COLLATE NOCASE ASC",
         ).use { c ->
             c.mapAll { com.mtechviral.musicfinderexample.core.database.SongMapper.fromCursor(it) }
         }
+    }
 
     private fun query(sql: String, args: Array<String>? = null): List<Album> =
         musicDatabase.readableDatabase.rawQuery(sql, args).use { c ->

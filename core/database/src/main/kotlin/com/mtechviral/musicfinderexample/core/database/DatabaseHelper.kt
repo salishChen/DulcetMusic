@@ -132,8 +132,13 @@ object DatabaseHelper {
         }
     }
 
-    suspend fun querySongsByAlbum(album: String): List<Song> =
-        io { albumDao.querySongsByAlbum(album) }
+    /**
+     * 专辑内歌曲（优化建议 10：按「专辑名 + 专辑艺术家」复合键过滤）。
+     *
+     * @param artist 专辑艺术家（albumArtist 兜底 artist）；null 表示未知艺术家分组
+     */
+    suspend fun querySongsByAlbum(album: String, artist: String?): List<Song> =
+        io { albumDao.querySongsByAlbum(album, artist) }
 
     suspend fun queryAlbumsByArtist(artist: String): List<Album> =
         io { albumDao.queryAlbumsByArtist(artist) }

@@ -119,7 +119,9 @@ fun YuleMusicApp() {
                                     index = index,
                                     onOpenSearch = { navController.navigate(AppRoutes.SEARCH) },
                                     onOpenAlbum = {
-                                        navController.navigate(AppRoutes.albumDetail(it))
+                                        navController.navigate(
+                                            AppRoutes.albumDetail(it.title, it.artist),
+                                        )
                                     },
                                     onOpenArtist = {
                                         navController.navigate(AppRoutes.artistDetail(it))
@@ -181,7 +183,7 @@ fun YuleMusicApp() {
 private fun PrimaryPage(
     index: Int,
     onOpenSearch: () -> Unit,
-    onOpenAlbum: (String) -> Unit,
+    onOpenAlbum: (com.mtechviral.musicfinderexample.core.model.Album) -> Unit,
     onOpenArtist: (String) -> Unit,
     onOpenPlaylist: (Long) -> Unit,
     onOpenSubsonicConfig: () -> Unit,

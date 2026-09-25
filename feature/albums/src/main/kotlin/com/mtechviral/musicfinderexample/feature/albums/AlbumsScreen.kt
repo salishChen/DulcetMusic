@@ -53,7 +53,7 @@ import kotlinx.coroutines.launch
  * @param onOpenAlbum 点击专辑卡片时跳转专辑详情（默认空实现：不跳转，不崩溃）
  */
 @Composable
-fun AlbumsScreen(onOpenAlbum: (String) -> Unit = {}) {
+fun AlbumsScreen(onOpenAlbum: (Album) -> Unit = {}) {
     val openSidebar = LocalOpenSidebar.current
 
     // 监听曲库变化：扫描完成后自动刷新（等价 Dart 的 songData.notifier.addListener）
@@ -102,13 +102,17 @@ fun AlbumsScreen(onOpenAlbum: (String) -> Unit = {}) {
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    items(albums, key = { it.title }) { album ->
+                    // 优化建议 10：同名专辑按「专辑名 + 专辑艺术家」区分，key 用复合键
+                    items(albums, key = { "${it.title}|${it.artist}" }) { album ->
                         AlbumGridCard(
                             album = album,
-                            onClick = { onOpenAlbum(album.title) },
+                            onClick = { onOpenAlbum(album) },
                             onMoreClick = {
                                 scope.launch {
-                                    actionSongs = DatabaseHelper.querySongsByAlbum(album.title)
+                                    actionSongs = DatabaseHelper.querySongsByAlbum(
+                                        album.title,
+                                        album.artist,
+                                    )
                                     actionAlbum = album
                                 }
                             },

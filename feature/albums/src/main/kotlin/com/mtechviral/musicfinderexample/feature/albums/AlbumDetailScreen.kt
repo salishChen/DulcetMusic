@@ -74,11 +74,17 @@ import kotlinx.coroutines.launch
 /**
  * 专辑详情页（Dart `AlbumDetailPage`）
  *
+ * @param albumArtist 专辑艺术家（优化建议 10：与专辑名组成复合键，
+ *   区分不同艺术家的同名专辑）；null 表示未知艺术家
  * @param onBack 顶栏返回按钮（默认空实现：不返回，不崩溃）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AlbumDetailScreen(albumTitle: String, onBack: () -> Unit = {}) {
+fun AlbumDetailScreen(
+    albumTitle: String,
+    albumArtist: String? = null,
+    onBack: () -> Unit = {},
+) {
     // 监听曲库变化：缓存/扫描完成后自动刷新
     val library by MusicLibrary.songs.collectAsStateWithLifecycle()
     val currentSong by PlayerController.currentSong.collectAsStateWithLifecycle()
@@ -95,9 +101,11 @@ fun AlbumDetailScreen(albumTitle: String, onBack: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(albumTitle, library) {
-        songs = DatabaseHelper.querySongsByAlbum(albumTitle)
-        album = DatabaseHelper.queryAlbums().firstOrNull { it.title == albumTitle }
+    LaunchedEffect(albumTitle, albumArtist, library) {
+        songs = DatabaseHelper.querySongsByAlbum(albumTitle, albumArtist)
+        album = DatabaseHelper.queryAlbums().firstOrNull {
+            it.title == albumTitle && (it.artist?.takeIf { a -> a.isNotEmpty() }) == albumArtist
+        }
         loading = false
     }
 
@@ -110,7 +118,7 @@ fun AlbumDetailScreen(albumTitle: String, onBack: () -> Unit = {}) {
     val artistText = album?.artist?.takeIf { it.isNotBlank() } ?: coverSong?.displayArtist ?: ""
     val albumForActions = album ?: Album(
         title = albumTitle,
-        artist = coverSong?.artist,
+        artist = albumArtist ?: coverSong?.artist,
         coverSongId = coverSong?.id,
         coverSongPath = coverSong?.path,
         coverArtworkPath = coverSong?.cachedArtworkPath,
@@ -274,7 +282,9 @@ fun AlbumDetailScreen(albumTitle: String, onBack: () -> Unit = {}) {
             onAddToPlaylist = { list -> pickingSongs = list },
             onToggleLike = {
                 // 喜欢状态已在弹窗内部写入，这里只刷新本页列表
-                scope.launch { songs = DatabaseHelper.querySongsByAlbum(albumTitle) }
+                scope.launch {
+                    songs = DatabaseHelper.querySongsByAlbum(albumTitle, albumArtist)
+                }
             },
             onDelete = {
                 // 删除已由弹窗完成，这里只刷新曲库（library 变化会触发上面重查）
@@ -293,7 +303,9 @@ fun AlbumDetailScreen(albumTitle: String, onBack: () -> Unit = {}) {
             onPlayNext = { },
             onAddToPlaylist = { list -> pickingSongs = list },
             onToggleLike = {
-                scope.launch { songs = DatabaseHelper.querySongsByAlbum(albumTitle) }
+                scope.launch {
+                    songs = DatabaseHelper.querySongsByAlbum(albumTitle, albumArtist)
+                }
             },
             onDelete = {
                 scope.launch { MusicLibrary.reload() }

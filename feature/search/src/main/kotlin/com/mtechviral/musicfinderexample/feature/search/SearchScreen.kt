@@ -294,7 +294,7 @@ private fun SongsTab(
 private fun AlbumsTab(
     albums: List<Album>,
     query: String,
-    onAlbumClick: (String) -> Unit,
+    onAlbumClick: (Album) -> Unit,
 ) {
     if (albums.isEmpty()) {
         CenterMessage("未找到专辑")
@@ -309,11 +309,12 @@ private fun AlbumsTab(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(items = albums, key = { it.title }) { album ->
+        // 优化建议 10：同名专辑按「专辑名 + 专辑艺术家」区分，key 用复合键
+        items(items = albums, key = { "${it.title}|${it.artist}" }) { album ->
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onAlbumClick(album.title) },
+                    .clickable { onAlbumClick(album) },
             ) {
                 ArtworkImage(
                     path = album.coverSongPath,
@@ -554,20 +555,23 @@ internal object SearchEngine {
         .sortedBy { it.title.lowercase() }
         .take(SONG_LIMIT)
 
-    /** 专辑：GROUP BY album（排除空专辑名），封面取含封面歌曲；按专辑名升序；上限 50 */
+    /**
+     * 专辑：GROUP BY 专辑名 + 专辑艺术家（优化建议 10：不同艺术家的同名专辑不合并）；
+     * 封面取含封面歌曲；按专辑名升序；上限 50。
+     */
     private fun searchAlbums(all: List<Song>, q: String): List<Album> = all
         .filter { song ->
             val album = song.album
             album != null && album.isNotEmpty() && album.lowercase().contains(q)
         }
-        .groupBy { it.album.orEmpty() }
-        .map { (title, songs) ->
+        .groupBy { "${it.album.orEmpty()}|${it.albumArtist ?: it.artist.orEmpty()}" }
+        .map { (_, songs) ->
+            val first = songs.first()
             val withArtwork = songs.filter { it.hasArtwork }
             Album(
-                title = title,
-                // Dart: COALESCE(MAX(albumArtist), MAX(artist))
-                artist = songs.mapNotNull { it.albumArtist }.maxOrNull()
-                    ?: songs.mapNotNull { it.artist }.maxOrNull(),
+                title = first.album.orEmpty(),
+                // 与数据库聚合口径一致：COALESCE(albumArtist, artist)
+                artist = (first.albumArtist ?: first.artist)?.takeIf { it.isNotEmpty() },
                 coverSongId = withArtwork.mapNotNull { it.id }.maxOrNull(),
                 coverSongPath = withArtwork.mapNotNull { it.path }.maxOrNull(),
                 coverArtworkPath = songs.mapNotNull { it.cachedArtworkPath }.maxOrNull(),

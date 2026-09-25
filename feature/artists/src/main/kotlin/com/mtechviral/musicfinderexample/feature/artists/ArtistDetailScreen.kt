@@ -81,14 +81,15 @@ import kotlinx.coroutines.launch
 /**
  * 艺术家详情页（Dart `ArtistDetailPage`）
  *
- * @param onOpenAlbum 点击专辑卡片时跳转专辑详情（默认空实现：不跳转，不崩溃）
+ * @param onOpenAlbum 点击专辑卡片时跳转专辑详情（携带 Album 复合键，优化建议 10；
+ *   默认空实现：不跳转，不崩溃）
  * @param onBack 顶栏返回按钮（默认空实现：不返回，不崩溃）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ArtistDetailScreen(
     artistName: String,
-    onOpenAlbum: (String) -> Unit = {},
+    onOpenAlbum: (Album) -> Unit = {},
     onBack: () -> Unit = {},
 ) {
     // 监听曲库变化：扫描/缓存完成后自动刷新
@@ -269,7 +270,7 @@ fun ArtistDetailScreen(
                                 items(albums, key = { it.title }) { album ->
                                     ArtistAlbumCard(
                                         album = album,
-                                        onClick = { onOpenAlbum(album.title) },
+                                        onClick = { onOpenAlbum(album) },
                                     )
                                 }
                             }

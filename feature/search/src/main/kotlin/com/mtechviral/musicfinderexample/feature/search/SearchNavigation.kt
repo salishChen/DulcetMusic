@@ -12,6 +12,7 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import com.mtechviral.musicfinderexample.core.common.AppRoutes
+import com.mtechviral.musicfinderexample.core.model.Album
 
 /**
  * 搜索页跳转能力：搜索结果里点击专辑 / 艺术家时跳转到对应详情页
@@ -19,8 +20,9 @@ import com.mtechviral.musicfinderexample.core.common.AppRoutes
  */
 class SearchNavigator internal constructor(private val navController: NavController?) {
 
-    fun openAlbum(title: String) {
-        navController?.navigate(AppRoutes.albumDetail(title))
+    /** 优化建议 10：专辑详情按「专辑名 + 专辑艺术家」复合键跳转 */
+    fun openAlbum(album: Album) {
+        navController?.navigate(AppRoutes.albumDetail(album.title, album.artist))
     }
 
     fun openArtist(name: String) {
