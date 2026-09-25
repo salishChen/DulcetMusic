@@ -86,9 +86,11 @@ object EasyTierEngine {
 
         val binary = binaryFile(context)
         if (!binary.exists()) {
-            // 引擎未打包：不影响现有内网/公网直连，仅提示构建方式
+            // 引擎不可执行：可能是打包时未包含 libeasytier.so，
+            // 或 APK 未解压原生库（需 jniLibs.useLegacyPackaging = true）
             _state.value = State.Error(
-                "EasyTier 引擎未打包：请运行 tools/build_easytier.ps1 后重新打包",
+                "EasyTier 引擎不可用：请确认 APK 已打包 libeasytier.so " +
+                    "且以传统打包（useLegacyPackaging=true）安装",
             )
             return false
         }

@@ -77,6 +77,12 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // EasyTier 引擎以 libeasytier.so 随包分发，运行时从 nativeLibraryDir 直接 exec
+        // （子进程方式，Android 10+ 只允许执行该目录中的只读文件）。
+        // 必须使用传统打包（解压安装）：默认的 useLegacyPackaging=false
+        // 只把 .so 留在 APK 内按需映射，nativeLibraryDir 里没有实体文件，
+        // 会报「EasyTier 引擎未打包」。
+        jniLibs.useLegacyPackaging = true
     }
 }
 
