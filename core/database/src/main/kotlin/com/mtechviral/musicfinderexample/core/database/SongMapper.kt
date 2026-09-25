@@ -83,6 +83,39 @@ object SongMapper {
     )
 
     /**
+     * 「扫描元数据」列集合（优化建议 03）：重扫合并已有歌曲时使用。
+     *
+     * 与 [toContentValues] 的区别：不写主键、不写用户状态
+     * （喜欢 / 播放次数 / 最后播放 / 音频与封面缓存），歌词仅在新值非空时覆盖，
+     * 也不改首次入库时间（dateAdded）—— 从而保留用户数据与歌单绑定。
+     */
+    fun metadataContentValues(song: Song, source: String?): ContentValues =
+        ContentValues().apply {
+            put(COL_TITLE, song.title)
+            put(COL_PATH, song.path)
+            put(COL_ARTIST, song.artist)
+            put(COL_ALBUM, song.album)
+            put(COL_ALBUM_ARTIST, song.albumArtist)
+            put(COL_TRACK_NUMBER, song.trackNumber)
+            put(COL_DURATION, song.duration)
+            put(COL_BITRATE, song.bitrate)
+            put(COL_SAMPLE_RATE, song.sampleRate)
+            put(COL_BIT_DEPTH, song.bitDepth)
+            put(COL_SIZE, song.size)
+            put(COL_FORMAT, song.format)
+            put(COL_CODEC, song.codec)
+            put(COL_DATE_MODIFIED, song.dateModified)
+            put(COL_HAS_ARTWORK, if (song.hasArtwork) 1 else 0)
+            put(COL_SOURCE, source)
+            put(COL_SOURCE_TYPE, song.sourceType)
+            put(COL_REMOTE_ID, song.remoteId)
+            put(COL_REMOTE_STREAM_URL, song.remoteStreamUrl)
+            put(COL_COVER_ART_ID, song.coverArtId)
+            // 歌词：仅当新扫描结果非空时覆盖，保留已获取的歌词
+            if (song.lyrics != null) put(COL_LYRICS, song.lyrics)
+        }
+
+    /**
      * @param includeId 是否写入主键（新增时为 true，按 id 更新时须为 false，
      *                  对应 Dart 端 `updateMap..remove('id')`）
      */

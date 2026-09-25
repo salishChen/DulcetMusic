@@ -69,73 +69,45 @@ class SongDao(private val musicDatabase: MusicDatabase) {
             .use { c -> if (c.moveToFirst()) SongMapper.fromCursor(c) else null }
 
     /**
-     * 事务批量插入/更新歌曲，返回实际新增/覆盖的数量。
+     * 事务批量插入/更新歌曲，返回实际新增/更新的数量。
      *
-     * 去重规则（以 [source] 标识音乐来源）：
-     * - 已存在「同一首歌」（标题|艺术家|专辑相同）且**来源相同** -> 跳过，不重复添加；
-     * - 已存在「同一首歌」但**来源不同** -> 用后扫描到的覆盖旧记录（更新元数据、路径与来源）；
-     * - 不存在 -> 新增。
+     * 匹配与合并规则（优化建议 03：「扫描元数据」与「用户状态」分开处理）：
+     * - 匹配优先级：
+     *   1) 远程歌曲按 (remoteId + 来源) 严格匹配；旧库中来源为 `subsonic` 的行
+     *      在身份键一致时兼容匹配（升级后迁移为按服务器区分的来源标识）；
+     *   2) 本地歌曲按 path 匹配（同路径改标签重扫 → 更新原行元数据）；
+     *   3) 兜底按身份键（标题|艺术家|专辑）匹配（文件移动/改名、跨来源同曲）。
+     * - 命中已有行时**只更新扫描元数据**（标题/路径/时长/码率/来源等），
+     *   保留主键与用户状态（喜欢、播放次数、最后播放、歌词、音频与封面缓存），
+     *   歌单绑定（playlist_songs 外键）因此不会丢失；新扫描到的歌词非空时才覆盖歌词。
+     * - 未命中时插入新行；**不再对 songs 表使用 REPLACE**
+     *   （path 为 UNIQUE，REPLACE 会删除旧行并级联解除歌单绑定）。
      */
     fun insertSongs(songs: List<Song>, source: String?): Int {
         if (songs.isEmpty()) return 0
 
-        // 预读现有歌曲的身份信息，按 identityKey 建立索引
-        val byIdentity = HashMap<String, ExistingEntry>()
-        db.query(
-            TABLE_SONGS,
-            arrayOf(COL_ID, COL_TITLE, COL_ARTIST, COL_ALBUM, COL_PATH, COL_SOURCE),
-            null, null, null, null, null,
-        ).use { c ->
-            val idIdx = c.getColumnIndexOrThrow(COL_ID)
-            val tIdx = c.getColumnIndexOrThrow(COL_TITLE)
-            val arIdx = c.getColumnIndexOrThrow(COL_ARTIST)
-            val alIdx = c.getColumnIndexOrThrow(COL_ALBUM)
-            val sIdx = c.getColumnIndexOrThrow(COL_SOURCE)
-            while (c.moveToNext()) {
-                val key = SongMapper.identityKeyOf(
-                    if (c.isNull(tIdx)) null else c.getString(tIdx),
-                    if (c.isNull(arIdx)) null else c.getString(arIdx),
-                    if (c.isNull(alIdx)) null else c.getString(alIdx),
-                )
-                byIdentity[key] = ExistingEntry(
-                    id = if (c.isNull(idIdx)) null else c.getLong(idIdx),
-                    source = if (c.isNull(sIdx)) null else c.getString(sIdx),
-                )
-            }
-        }
-
+        val index = matchIndex()
         var affected = 0
         db.beginTransaction()
         try {
             for (song in songs) {
-                val key = song.identityKey
-                val existing = byIdentity[key]
-                if (existing == null) {
-                    // 全新歌曲：插入（path 冲突时以路径替换，容错重复路径）
-                    db.insertWithOnConflict(
-                        TABLE_SONGS, null, valuesOf(song, source), SQLiteDatabase.CONFLICT_REPLACE,
+                val hit = index.findMatch(song, source)
+                if (hit != null) {
+                    // 同一首歌：更新元数据，保留用户状态与主键
+                    db.update(
+                        TABLE_SONGS,
+                        SongMapper.metadataContentValues(song, source),
+                        "$COL_ID = ?",
+                        arrayOf(hit.id.toString()),
                     )
+                    index.onUpdated(hit, song, source)
                     affected++
-                    byIdentity[key] = ExistingEntry(id = null, source = source)
-                } else if (existing.source == source) {
-                    // 同一来源的相同音乐：跳过
-                    continue
                 } else {
-                    // 不同来源的同一首歌：后来者覆盖旧记录
-                    if (existing.id != null) {
-                        db.update(
-                            TABLE_SONGS,
-                            valuesOf(song, source, includeId = false),
-                            "$COL_ID = ?",
-                            arrayOf(existing.id.toString()),
-                        )
-                    } else {
-                        db.insertWithOnConflict(
-                            TABLE_SONGS, null, valuesOf(song, source), SQLiteDatabase.CONFLICT_REPLACE,
-                        )
+                    val rowId = db.insert(TABLE_SONGS, null, valuesOf(song, source))
+                    if (rowId != -1L) {
+                        index.onInserted(rowId, song, source)
+                        affected++
                     }
-                    affected++
-                    byIdentity[key] = ExistingEntry(id = null, source = source)
                 }
             }
             db.setTransactionSuccessful()
@@ -145,12 +117,133 @@ class SongDao(private val musicDatabase: MusicDatabase) {
         return affected
     }
 
+    // ======================== 扫描匹配索引 ========================
+
+    @Volatile
+    private var cachedMatchIndex: MatchIndex? = null
+
+    /** 取扫描匹配索引（扫描周期内复用，避免每批全表重读；优化建议 10） */
+    @Synchronized
+    private fun matchIndex(): MatchIndex =
+        cachedMatchIndex ?: loadMatchIndex().also { cachedMatchIndex = it }
+
+    /** 删除/清空歌曲后使匹配索引失效 */
+    @Synchronized
+    private fun invalidateMatchIndex() {
+        cachedMatchIndex = null
+    }
+
+    private fun loadMatchIndex(): MatchIndex {
+        val index = MatchIndex()
+        db.query(
+            TABLE_SONGS,
+            arrayOf(COL_ID, COL_PATH, COL_REMOTE_ID, COL_SOURCE, COL_TITLE, COL_ARTIST, COL_ALBUM),
+            null, null, null, null, null,
+        ).use { c ->
+            val idIdx = c.getColumnIndexOrThrow(COL_ID)
+            val pIdx = c.getColumnIndexOrThrow(COL_PATH)
+            val rIdx = c.getColumnIndexOrThrow(COL_REMOTE_ID)
+            val sIdx = c.getColumnIndexOrThrow(COL_SOURCE)
+            val tIdx = c.getColumnIndexOrThrow(COL_TITLE)
+            val arIdx = c.getColumnIndexOrThrow(COL_ARTIST)
+            val alIdx = c.getColumnIndexOrThrow(COL_ALBUM)
+            while (c.moveToNext()) {
+                index.add(
+                    MatchIndex.Entry(
+                        id = c.getLong(idIdx),
+                        path = if (c.isNull(pIdx)) "" else c.getString(pIdx),
+                        remoteId = if (c.isNull(rIdx)) null else c.getString(rIdx),
+                        source = if (c.isNull(sIdx)) null else c.getString(sIdx),
+                        identityKey = SongMapper.identityKeyOf(
+                            if (c.isNull(tIdx)) null else c.getString(tIdx),
+                            if (c.isNull(arIdx)) null else c.getString(arIdx),
+                            if (c.isNull(alIdx)) null else c.getString(alIdx),
+                        ),
+                    ),
+                )
+            }
+        }
+        return index
+    }
+
+    /** 现有歌曲的匹配索引：按 path / (remoteId+来源) / 身份键 三类键定位同一首歌。 */
+    private class MatchIndex {
+        class Entry(
+            val id: Long,
+            var path: String,
+            var remoteId: String?,
+            var source: String?,
+            var identityKey: String,
+        )
+
+        private val byPath = HashMap<String, Entry>()
+        private val byRemote = HashMap<String, Entry>()
+        private val byIdentity = HashMap<String, Entry>()
+
+        fun add(entry: Entry) {
+            if (entry.path.isNotEmpty()) byPath[entry.path] = entry
+            if (!entry.remoteId.isNullOrEmpty()) byRemote[remoteKey(entry.remoteId, entry.source)] = entry
+            byIdentity[entry.identityKey] = entry
+        }
+
+        private fun remove(entry: Entry) {
+            if (byPath[entry.path] === entry) byPath.remove(entry.path)
+            if (!entry.remoteId.isNullOrEmpty()) {
+                val key = remoteKey(entry.remoteId, entry.source)
+                if (byRemote[key] === entry) byRemote.remove(key)
+            }
+            if (byIdentity[entry.identityKey] === entry) byIdentity.remove(entry.identityKey)
+        }
+
+        fun findMatch(song: Song, source: String?): Entry? {
+            val identity = song.identityKey
+            val remoteId = song.remoteId
+            if (!remoteId.isNullOrEmpty()) {
+                // 1) 同一服务器的同一首远程歌（remoteId + 来源）
+                byRemote[remoteKey(remoteId, source)]?.let { return it }
+                // 1b) 旧库兼容：来源为旧标识 'subsonic' 的行，且身份键一致才合并
+                byRemote[remoteKey(remoteId, Song.SOURCE_TYPE_SUBSONIC)]
+                    ?.takeIf { it.source == Song.SOURCE_TYPE_SUBSONIC && it.identityKey == identity }
+                    ?.let { return it }
+            }
+            // 2) 同一文件（本地路径）
+            if (song.path.isNotEmpty()) byPath[song.path]?.let { return it }
+            // 3) 身份键兜底（文件移动/改名、跨来源同曲）
+            return byIdentity[identity]
+        }
+
+        fun onInserted(id: Long, song: Song, source: String?) {
+            add(
+                Entry(
+                    id = id,
+                    path = song.path,
+                    remoteId = song.remoteId,
+                    source = source,
+                    identityKey = song.identityKey,
+                ),
+            )
+        }
+
+        fun onUpdated(entry: Entry, song: Song, source: String?) {
+            remove(entry)
+            entry.path = song.path
+            entry.remoteId = song.remoteId
+            entry.source = source
+            entry.identityKey = song.identityKey
+            add(entry)
+        }
+
+        private fun remoteKey(remoteId: String?, source: String?): String =
+            "$remoteId|$source"
+    }
+
     private fun valuesOf(song: Song, source: String?, includeId: Boolean = true): ContentValues =
         SongMapper.toContentValues(song, includeId).apply { put(COL_SOURCE, source) }
 
     /** 删除歌曲（级联清理歌单绑定） */
     fun deleteSong(id: Long) {
         db.delete(TABLE_SONGS, "$COL_ID = ?", arrayOf(id.toString()))
+        invalidateMatchIndex()
     }
 
     /**
@@ -175,12 +268,15 @@ class SongDao(private val musicDatabase: MusicDatabase) {
         if (ids.isEmpty()) return 0
         val placeholders = ids.joinToString(",") { "?" }
         val args = ids.map { it.toString() }.toTypedArray()
-        return db.delete(TABLE_SONGS, "$COL_ID IN ($placeholders)", args)
+        val deleted = db.delete(TABLE_SONGS, "$COL_ID IN ($placeholders)", args)
+        invalidateMatchIndex()
+        return deleted
     }
 
     /** 清空歌曲表 */
     fun clearSongs() {
         db.delete(TABLE_SONGS, null, null)
+        invalidateMatchIndex()
     }
 
     // ======================== 远程歌曲缓存 ========================
@@ -354,6 +450,4 @@ class SongDao(private val musicDatabase: MusicDatabase) {
     fun queryLikedSongCount(): Int =
         db.rawQuery("SELECT COUNT(*) AS c FROM $TABLE_SONGS WHERE $COL_IS_LIKED = 1", null)
             .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
-
-    private data class ExistingEntry(val id: Long?, val source: String?)
 }

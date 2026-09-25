@@ -86,6 +86,19 @@ object SubsonicService {
     private fun requireConfig(): SubsonicConfig =
         config ?: throw SubsonicException("Subsonic 未配置")
 
+    /**
+     * 远程导入使用的来源标识（优化建议 03）：`subsonic@用户名@服务器地址`。
+     *
+     * 同一服务器重复扫描命中同一来源；换服务器后来源不同，
+     * 不会把新服务器的同 remoteId 歌曲与旧服务器的记录误合并。
+     * 旧库中来源为 `subsonic` 的行由合并逻辑兼容迁移。
+     */
+    fun importSourceTag(): String {
+        val cfg = config ?: return Song.SOURCE_TYPE_SUBSONIC
+        val host = cfg.intranetUrl.trim().ifEmpty { cfg.publicUrl.trim() }
+        return "${Song.SOURCE_TYPE_SUBSONIC}@${cfg.username.trim()}@$host"
+    }
+
     // ===================== URL 构建 =====================
 
     /**
@@ -523,7 +536,7 @@ object SubsonicService {
                             remoteStreamUrl = streamUrl,
                             dateAdded = System.currentTimeMillis(),
                         )
-                        val affected = DatabaseHelper.insertSongs(listOf(newSong), "subsonic")
+                        val affected = DatabaseHelper.insertSongs(listOf(newSong), importSourceTag())
                         if (affected == 0) continue
                         // 重新查询获取 id
                         localSongId = DatabaseHelper.querySongByRemoteId(songId)?.id ?: continue

@@ -7,10 +7,11 @@ import android.database.sqlite.SQLiteOpenHelper
 /**
  * SQLite 建库/迁移定义。
  *
- * 数据库文件名、表结构与版本号与原 Flutter 工程 `lib/data/database_helper.dart`
- * 完全一致（`music_player.db`，version = 6），因此旧版本的曲库可以被直接复用。
+ * 数据库文件名、表结构与原 Flutter 工程 `lib/data/database_helper.dart`
+ * 保持兼容（`music_player.db`），因此旧版本的曲库可以被直接复用；
+ * 原生版在版本 7 增加了 remoteId 查询索引（优化建议 10）。
  *
- * 四张表：
+ * 五张表：
  * - songs：歌曲表（扫描入库的全部元数据）
  * - playlists：歌单表（歌单名）
  * - playlist_songs：歌单-歌曲绑定子表（含歌单内排序）
@@ -88,6 +89,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         )
         db.execSQL("CREATE INDEX idx_songs_album ON songs(album)")
         db.execSQL("CREATE INDEX idx_songs_artist ON songs(artist)")
+        db.execSQL("CREATE INDEX idx_songs_remote_id ON songs(remoteId)")
         createArtistsMeta(db)
         createSubsonicConfig(db)
     }
@@ -119,6 +121,10 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
             db.execSQL("ALTER TABLE songs ADD COLUMN isLiked INTEGER DEFAULT 0")
             db.execSQL("ALTER TABLE songs ADD COLUMN lastPlayed INTEGER")
             createArtistsMeta(db)
+        }
+        if (oldVersion < 7) {
+            // 优化建议 10：远程 ID 查询索引（重复扫描/远程歌单同步按 remoteId 查重）
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_songs_remote_id ON songs(remoteId)")
         }
     }
 
@@ -155,7 +161,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         const val DB_NAME = "music_player.db"
-        const val DB_VERSION = 6
+        const val DB_VERSION = 7
 
         // ---- songs 表列名 ----
         const val TABLE_SONGS = "songs"

@@ -233,7 +233,8 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
                         // （被排除的单曲，或被整位排除的歌手的全部歌曲）。
                         added += DatabaseHelper.insertSongs(
                             ExclusionFilter.filter(batch),
-                            Song.SOURCE_TYPE_SUBSONIC,
+                            // 按服务器区分来源（优化建议 03）：换服务器不与旧记录误合并
+                            SubsonicService.importSourceTag(),
                         )
                     } catch (e: Exception) {
                         failedCount += batch.size
