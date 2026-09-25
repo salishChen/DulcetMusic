@@ -1,5 +1,7 @@
 package com.mtechviral.musicfinderexample.core.network
 
+import com.mtechviral.musicfinderexample.core.common.RemoteLocator
+import com.mtechviral.musicfinderexample.core.common.UrlSanitizer
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.model.SubsonicConfig
@@ -399,12 +401,15 @@ object SubsonicService {
         val contentType = song.optString("contentType").ifEmpty { null }
         val coverArt = song.optString("coverArt").ifEmpty { null }
 
-        val baseUrl = activeBaseUrl ?: config?.preferredBaseUrl() ?: ""
-        val streamUrl = buildUrl(baseUrl, "stream&id=$id")
+        // 优化建议 01：path 只存稳定定位符，不持久化带认证参数的流地址；
+        // 播放/下载时由 getStreamUrl / buildStreamUrlSync 临时生成
+        val identityKey = "${title.trim().lowercase()}|${artistName.trim().lowercase()}|" +
+            albumName.trim().lowercase()
+        val locator = RemoteLocator.subsonic(id, importSourceTag(), identityKey)
 
         return Song(
             title = title,
-            path = streamUrl,
+            path = locator,
             artist = artistName,
             album = albumName,
             trackNumber = track,
@@ -414,7 +419,7 @@ object SubsonicService {
             codec = contentType,
             sourceType = Song.SOURCE_TYPE_SUBSONIC,
             remoteId = id,
-            remoteStreamUrl = streamUrl,
+            remoteStreamUrl = null,
             coverArtId = coverArt ?: albumCoverArtFallback,
             dateAdded = System.currentTimeMillis(),
         )
@@ -429,6 +434,20 @@ object SubsonicService {
             cfg.preferredBaseUrl()
         }
         return buildUrl(baseUrl, "stream&id=$songId")
+    }
+
+    /**
+     * 同步构建流地址（**不发起网络探测**）：队列同步等不能挂起的场景使用。
+     *
+     * 未探测到活跃地址时回退优先地址（与 [getStreamUrl] 的兜底一致）。
+     * 返回的 URL 带认证参数、**只存在于内存/播放器中，不落数据库**
+     * （优化建议 01：库里只保存 [RemoteLocator] 稳定定位符）。
+     */
+    fun buildStreamUrlSync(remoteId: String): String? {
+        val cfg = config ?: return null
+        val baseUrl = activeBaseUrl ?: cfg.preferredBaseUrl()
+        if (baseUrl.isEmpty()) return null
+        return buildUrl(baseUrl, "stream&id=$remoteId", cfg)
     }
 
     // ===================== 歌单 =====================
@@ -510,8 +529,11 @@ object SubsonicService {
                 val detail = getPlaylistDetail(remoteId)
                 for (song in detail.entries) {
                     val songId = song.id
-                    val baseUrl = activeBaseUrl ?: config?.preferredBaseUrl() ?: ""
-                    val streamUrl = buildUrl(baseUrl, "stream&id=$songId")
+                    // 优化建议 01：path 存稳定定位符，不持久化认证 URL
+                    val identityKey = "${song.title.trim().lowercase()}|" +
+                        "${(song.artist ?: "").trim().lowercase()}|" +
+                        (song.album ?: "").trim().lowercase()
+                    val locator = RemoteLocator.subsonic(songId, importSourceTag(), identityKey)
 
                     // 检查本地是否已有该远程歌曲
                     val existingSong = DatabaseHelper.querySongByRemoteId(songId)
@@ -523,7 +545,7 @@ object SubsonicService {
                         // 插入新歌曲记录
                         val newSong = Song(
                             title = song.title,
-                            path = streamUrl,
+                            path = locator,
                             artist = song.artist,
                             album = song.album,
                             trackNumber = song.track,
@@ -533,7 +555,7 @@ object SubsonicService {
                             codec = song.contentType,
                             sourceType = Song.SOURCE_TYPE_SUBSONIC,
                             remoteId = songId,
-                            remoteStreamUrl = streamUrl,
+                            remoteStreamUrl = null,
                             dateAdded = System.currentTimeMillis(),
                         )
                         val affected = DatabaseHelper.insertSongs(listOf(newSong), importSourceTag())
@@ -606,6 +628,5 @@ object SubsonicService {
      * 日志/错误信息脱敏：把 URL 查询串中的认证参数（u / s / t）替换为 `***`，
      * 防止用户名、盐值与认证 token 进入日志或异常消息（优化建议 01）。
      */
-    private fun redactSensitive(text: String): String =
-        text.replace(Regex("([?&])(u|s|t)=[^&\\s'\"]*"), "$1$2=***")
+    private fun redactSensitive(text: String): String = UrlSanitizer.redact(text)
 }

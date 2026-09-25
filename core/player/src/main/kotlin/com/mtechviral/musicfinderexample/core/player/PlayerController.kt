@@ -737,7 +737,7 @@ object PlayerController {
         uriOverride: String? = null,
         artworkUriOverride: android.net.Uri? = null,
     ): MediaItem {
-        val uri = uriOverride ?: song.playablePath
+        val uri = uriOverride ?: resolveUriSync(song)
         // 封面地址使用确定性文件路径：即便文件此刻尚未写好，后续（预缓存）补齐后
         // 通知栏再次刷新即可拿到封面；不依赖播放中替换媒体项（那会打断播放）。
         val artworkUri = artworkUriOverride ?: artworkFile(song)?.toUri()
@@ -1115,9 +1115,23 @@ object PlayerController {
             return try {
                 SubsonicService.getStreamUrl(remoteId)
             } catch (e: Exception) {
-                Log.w(TAG, "解析远程地址失败，回退原始地址: ${e.message}")
-                song.path
+                Log.w(TAG, "解析远程地址失败，回退同步解析: ${e.message}")
+                resolveUriSync(song)
             }
+        }
+        return song.path
+    }
+
+    /**
+     * 同步解析播放地址（[buildMediaItem] 不能挂起）：已缓存走本地文件；
+     * 远程歌曲用当前配置**临时**生成流地址（不落库，优化建议 01）。
+     */
+    private fun resolveUriSync(song: Song): String {
+        val cached = song.cachedPath
+        if (song.isCached && cached != null) return cached
+        val remoteId = song.remoteId
+        if (song.isRemote && !remoteId.isNullOrEmpty()) {
+            SubsonicService.buildStreamUrlSync(remoteId)?.let { return it }
         }
         return song.path
     }

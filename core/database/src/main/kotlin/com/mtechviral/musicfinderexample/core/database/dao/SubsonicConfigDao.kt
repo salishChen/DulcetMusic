@@ -1,6 +1,7 @@
 package com.mtechviral.musicfinderexample.core.database.dao
 
 import android.content.ContentValues
+import com.mtechviral.musicfinderexample.core.database.CredentialCipher
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ID
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.TABLE_SUBSONIC_CONFIG
@@ -19,31 +20,76 @@ class SubsonicConfigDao(private val musicDatabase: MusicDatabase) {
 
     private val db get() = musicDatabase.writableDatabase
 
-    /** 查询当前活跃的 Subsonic 配置 */
-    fun querySubsonicConfig(): SubsonicConfig? =
-        db.query(
+    /**
+     * 查询当前活跃的 Subsonic 配置。
+     *
+     * 密码以 Keystore 加密形式保存（优化建议 01）：
+     * 读出时解密；旧版明文密码读到后立即加密回写（自迁移）。
+     * 解密失败（如备份恢复后密钥丢失）按空密码返回，由用户重新输入。
+     */
+    fun querySubsonicConfig(): SubsonicConfig? {
+        val row = db.query(
             TABLE_SUBSONIC_CONFIG, null, "isActive = ?", arrayOf("1"), null, null, null, "1",
         ).use { c ->
             if (!c.moveToFirst()) return null
-            SubsonicConfig(
+            Row(
                 id = c.longOrNull(COL_ID),
                 intranetUrl = c.stringOrNull("intranetUrl") ?: "",
                 publicUrl = c.stringOrNull("publicUrl") ?: "",
                 username = c.stringOrNull("username") ?: "",
-                password = c.stringOrNull("password") ?: "",
+                rawPassword = c.stringOrNull("password") ?: "",
                 serverName = c.stringOrNull("serverName"),
                 isActive = (c.intOrNull("isActive") ?: 1) == 1,
             )
         }
+        val password = CredentialCipher.decrypt(row.rawPassword) ?: ""
+        // 升级迁移：旧版明文密码 -> 立即加密回写
+        if (row.rawPassword.isNotEmpty() &&
+            !CredentialCipher.isEncrypted(row.rawPassword) &&
+            row.id != null
+        ) {
+            CredentialCipher.encrypt(row.rawPassword)?.let { encrypted ->
+                db.update(
+                    TABLE_SUBSONIC_CONFIG,
+                    ContentValues().apply { put("password", encrypted) },
+                    "$COL_ID = ?",
+                    arrayOf(row.id.toString()),
+                )
+            }
+        }
+        return SubsonicConfig(
+            id = row.id,
+            intranetUrl = row.intranetUrl,
+            publicUrl = row.publicUrl,
+            username = row.username,
+            password = password,
+            serverName = row.serverName,
+            isActive = row.isActive,
+        )
+    }
 
-    /** 保存配置（存在则更新，不存在则插入） */
+    private data class Row(
+        val id: Long?,
+        val intranetUrl: String,
+        val publicUrl: String,
+        val username: String,
+        val rawPassword: String,
+        val serverName: String?,
+        val isActive: Boolean,
+    )
+
+    /**
+     * 保存配置（存在则更新，不存在则插入）。
+     * 密码写入前用 Keystore 加密，数据库与备份中不出现明文（优化建议 01）。
+     */
     fun saveSubsonicConfig(config: SubsonicConfig) {
         val existing = querySubsonicConfig()
+        val storedPassword = CredentialCipher.encrypt(config.password) ?: config.password
         val values = ContentValues().apply {
             put("intranetUrl", config.intranetUrl)
             put("publicUrl", config.publicUrl)
             put("username", config.username)
-            put("password", config.password)
+            put("password", storedPassword)
             put("serverName", config.serverName)
             put("isActive", if (config.isActive) 1 else 0)
         }

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    备份/迁移排除规则（优化建议 01）：账号数据不进入备份。
+    Subsonic 配置（含加密密码）存于 music_player.db，
+    云备份与设备间迁移均不携带该文件。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" path="music_player.db" />
+        <exclude domain="database" path="music_player.db-wal" />
+        <exclude domain="database" path="music_player.db-shm" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="music_player.db" />
+        <exclude domain="database" path="music_player.db-wal" />
+        <exclude domain="database" path="music_player.db-shm" />
+    </device-transfer>
+</data-extraction-rules>

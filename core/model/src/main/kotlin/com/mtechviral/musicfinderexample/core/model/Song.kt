@@ -26,7 +26,12 @@ data class Song(
     /** 歌名（无标签时回退为文件名） */
     val title: String,
 
-    /** 文件绝对路径（唯一）；远程歌曲为流媒体 URL */
+    /**
+     * 文件绝对路径（唯一）。
+     *
+     * 远程歌曲为稳定定位符（`subsonic://<remoteId>@<来源哈希>`，**不含认证参数**，
+     * 优化建议 01）：播放/下载时由网络层临时生成带认证的流地址。
+     */
     val path: String,
 
     val artist: String? = null,
@@ -80,7 +85,8 @@ data class Song(
     /** Subsonic 远程歌曲 ID */
     val remoteId: String? = null,
 
-    /** 远程流媒体 URL（未缓存时用于流式播放） */
+    /** 已废弃（优化建议 01）：不再持久化带认证参数的流地址，恒为 null；
+     *  保留字段仅为兼容旧库读取。播放地址由网络层临时生成 */
     val remoteStreamUrl: String? = null,
 
     /** 本地缓存文件路径（已缓存时非 null） */

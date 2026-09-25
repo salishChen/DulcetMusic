@@ -15,9 +15,14 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- usesCleartextTraffic：仅放行用户显式填写的 http:// 自建 Subsonic 服务器
+         （键入 URL 即为选择）；公网连接建议使用 https://。
+         账号数据（密码）已 Keystore 加密且不随备份离开设备（见 res/xml/*rules*.xml） -->
     <application
         android:name=".YuleMusicApplication"
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"

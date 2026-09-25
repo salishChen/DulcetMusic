@@ -3,6 +3,7 @@ package com.mtechviral.musicfinderexample.core.cache
 import android.content.Context
 import android.util.Log
 import com.mtechviral.musicfinderexample.core.common.AppPreferences
+import com.mtechviral.musicfinderexample.core.common.UrlSanitizer
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.model.Song
@@ -408,7 +409,8 @@ object CacheService {
             httpClient.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
                 val body = response.body
                 if (!response.isSuccessful || body == null) {
-                    Log.w(TAG, "下载失败 ${response.code} $url")
+                    // 日志脱敏：流地址含认证参数（u/s/t），不得进入日志（优化建议 01）
+                    Log.w(TAG, "下载失败 ${response.code} ${UrlSanitizer.redact(url)}")
                     false
                 } else {
                     body.byteStream().use { input ->
@@ -425,7 +427,7 @@ object CacheService {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "下载失败 $url: ${e.message}")
+            Log.w(TAG, "下载失败 ${UrlSanitizer.redact(url)}: ${e.message}")
             runCatching { tmp.delete() }
             false
         }

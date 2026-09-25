@@ -3,13 +3,15 @@ package com.mtechviral.musicfinderexample.core.database
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.mtechviral.musicfinderexample.core.common.RemoteLocator
 
 /**
  * SQLite 建库/迁移定义。
  *
  * 数据库文件名、表结构与原 Flutter 工程 `lib/data/database_helper.dart`
  * 保持兼容（`music_player.db`），因此旧版本的曲库可以被直接复用；
- * 原生版在版本 7 增加了 remoteId 查询索引（优化建议 10）。
+ * 原生版版本 7 增加 remoteId 查询索引（优化建议 10），版本 8 清除
+ * 远程歌曲中持久化的认证流地址（优化建议 01）。
  *
  * 五张表：
  * - songs：歌曲表（扫描入库的全部元数据）
@@ -126,6 +128,50 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
             // 优化建议 10：远程 ID 查询索引（重复扫描/远程歌单同步按 remoteId 查重）
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_songs_remote_id ON songs(remoteId)")
         }
+        if (oldVersion < 8) {
+            // 优化建议 01：清除已持久化的认证流地址（含 u/s/t 认证参数）——
+            // 远程歌曲 path 改为稳定定位符，remoteStreamUrl 清空，播放时临时生成
+            scrubRemoteAuthUrls(db)
+        }
+    }
+
+    /**
+     * 把远程歌曲的 `path`（旧版存的是带认证参数的流地址）改写为稳定定位符，
+     * 并清空 `remoteStreamUrl`。定位符冲突时以行 id 后缀保证唯一。
+     */
+    private fun scrubRemoteAuthUrls(db: SQLiteDatabase) {
+        val used = HashSet<String>()
+        val updates = ArrayList<Pair<Long, String>>()
+        db.rawQuery(
+            "SELECT id, remoteId, source, title, artist, album FROM songs " +
+                "WHERE sourceType = 'subsonic'",
+            null,
+        ).use { c ->
+            while (c.moveToNext()) {
+                val id = c.getLong(0)
+                val remoteId = c.getString(1)
+                val source = c.getString(2)
+                val identityKey = buildString {
+                    append((c.getString(3) ?: "").trim().lowercase())
+                    append('|')
+                    append((c.getString(4) ?: "").trim().lowercase())
+                    append('|')
+                    append((c.getString(5) ?: "").trim().lowercase())
+                }
+                var locator = RemoteLocator.subsonic(remoteId, source, identityKey)
+                if (!used.add(locator)) {
+                    locator = "$locator#$id"
+                    used.add(locator)
+                }
+                updates.add(id to locator)
+            }
+        }
+        for ((id, locator) in updates) {
+            db.execSQL(
+                "UPDATE songs SET path = ?, remoteStreamUrl = NULL WHERE id = ?",
+                arrayOf(locator, id),
+            )
+        }
     }
 
     private fun createArtistsMeta(db: SQLiteDatabase) {
@@ -161,7 +207,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         const val DB_NAME = "music_player.db"
-        const val DB_VERSION = 7
+        const val DB_VERSION = 8
 
         // ---- songs 表列名 ----
         const val TABLE_SONGS = "songs"
