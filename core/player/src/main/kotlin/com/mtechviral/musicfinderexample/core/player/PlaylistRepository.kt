@@ -59,6 +59,15 @@ object PlaylistRepository {
     var currentPath: String? = null
 
     /**
+     * 当前播放曲的**队列下标**（由 `PlayerController` 每次切歌时同步）。
+     *
+     * 优化建议 09：同一首歌可在队列出现多份，path 无法区分是哪一份，
+     * 涉及「当前条目」的定位（插入位置、持久化恢复）一律以本下标为准。
+     */
+    @Volatile
+    var currentIndex: Int = -1
+
+    /**
      * 「原始顺序」快照（第二十二轮需求 4）。
      *
      * 随机模式会真正打乱 [_songs]（列表顺序即播放顺序），因此必须单独记住
@@ -82,7 +91,12 @@ object PlaylistRepository {
     private fun shuffledKeepingCurrentFirst(list: List<Song>): List<Song> {
         if (list.size <= 1) return list
         val cur = currentPath
-        val idx = if (cur == null) -1 else list.indexOfFirst { it.path == cur }
+        // 重复曲优先按当前下标定位（优化建议 09）；下标无效/不匹配时回退按 path
+        val idx = when {
+            cur == null -> -1
+            currentIndex in list.indices && list[currentIndex].path == cur -> currentIndex
+            else -> list.indexOfFirst { it.path == cur }
+        }
         if (idx < 0) return list.shuffled()
         val rest = list.filterIndexed { i, _ -> i != idx }.shuffled()
         return listOf(list[idx]) + rest
@@ -134,15 +148,27 @@ object PlaylistRepository {
             return songs.size
         }
 
-        // 当前曲可能有多份，取第一份之后插入（与 playSong 的定位口径一致）
+        // 当前曲可能有多份：优先按当前下标定位（重复曲精确到被点的那一份，
+        // 优化建议 09）；下标无效时回退按 path 找第一份
         val cur = currentPath
-        val currentIndex = if (cur == null) -1 else list.indexOfFirst { it.path == cur }
-        val insertAt = if (currentIndex >= 0) currentIndex + 1 else list.size
+        val currentIndexInQueue = when {
+            currentIndex in list.indices -> currentIndex
+            cur == null -> -1
+            else -> list.indexOfFirst { it.path == cur }
+        }
+        val insertAt = if (currentIndexInQueue >= 0) currentIndexInQueue + 1 else list.size
 
         val next = list.toMutableList().apply { addAll(insertAt, songs) }
 
-        // 原始顺序快照同步插入（随机模式下它与 _songs 顺序不同，各自按当前曲定位）
-        val origCurrentIndex = if (cur == null) -1 else originalOrder.indexOfFirst { it.path == cur }
+        // 原始顺序快照同步插入（随机模式下它与 _songs 顺序不同，各自按当前条目定位）
+        val origCurrentIndex = when {
+            currentIndexInQueue >= 0 && currentIndexInQueue < list.size -> {
+                val curEntry = list[currentIndexInQueue]
+                originalOrder.indexOfFirst { it.path == curEntry.path }
+            }
+            cur == null -> -1
+            else -> originalOrder.indexOfFirst { it.path == cur }
+        }
         val origInsertAt = if (origCurrentIndex >= 0) origCurrentIndex + 1 else originalOrder.size
         originalOrder = originalOrder.toMutableList().apply { addAll(origInsertAt, songs) }
 
@@ -258,6 +284,7 @@ object PlaylistRepository {
     fun clear() {
         originalOrder = emptyList()
         currentPath = null
+        currentIndex = -1
         notify(emptyList())
     }
 
@@ -319,20 +346,23 @@ object PlaylistRepository {
 
     /**
      * 将当前播放列表及播放模式异步写入偏好设置（500ms 去抖）。
-     * 与 Dart 端一致：只保存每首歌的 id / path 标识，恢复时回查数据库。
+     *
+     * 优化建议 09（持久化格式 v2）：同时保存
+     * - `queue`：当前播放顺序（随机模式下即打乱后的顺序）；
+     * - `original`：入列时的原始顺序（切回顺序模式的还原依据）；
+     * - `currentIndex`：当前条目下标（重复曲也能定位到同一份）。
+     * 旧版只存一个数组（打乱后的顺序），恢复时无法还原原始顺序。
      */
     private fun persist() {
         persistJob?.cancel()
         persistJob = scope.launch {
             delay(PERSIST_DEBOUNCE_MS)
             try {
-                val data = JSONArray()
-                for (song in _songs.value) {
-                    val obj = JSONObject()
-                    if (song.id != null) obj.put("id", song.id) else obj.put("id", JSONObject.NULL)
-                    obj.put("path", song.path)
-                    data.put(obj)
-                }
+                val data = JSONObject()
+                data.put("v", 2)
+                data.put("queue", entriesOf(_songs.value))
+                data.put("original", entriesOf(originalOrder))
+                data.put("currentIndex", currentIndex)
                 AppPreferences.putString(AppPreferences.KEY_LAST_PLAYLIST_SONGS, data.toString())
                 AppPreferences.putInt(AppPreferences.KEY_LAST_PLAYLIST_MODE, _playMode.value.ordinal)
             } catch (e: Exception) {
@@ -342,8 +372,24 @@ object PlaylistRepository {
         }
     }
 
+    /** 持久化条目：id 优先（稳定标识），path 兜底 */
+    private fun entriesOf(songs: List<Song>): JSONArray {
+        val data = JSONArray()
+        for (song in songs) {
+            val obj = JSONObject()
+            if (song.id != null) obj.put("id", song.id) else obj.put("id", JSONObject.NULL)
+            obj.put("path", song.path)
+            data.put(obj)
+        }
+        return data
+    }
+
     /**
      * 从偏好设置恢复上次关闭前的播放列表与播放模式。
+     *
+     * v2 格式（优化建议 09）：按保存时的实际顺序恢复 queue 与 original
+     * （**不再重新随机**），并恢复当前条目下标；
+     * 旧版数组格式保持原行为（恢复的顺序视为原始顺序，随机模式重新打乱）。
      * 已从库中删除的歌曲会被跳过；返回实际恢复的歌曲数。
      */
     suspend fun restoreFromPrefs(): Int {
@@ -355,33 +401,58 @@ object PlaylistRepository {
             }
             if (raw.isNullOrEmpty()) return 0
 
-            val items = JSONArray(raw)
-            val restored = ArrayList<Song>(items.length())
-            for (i in 0 until items.length()) {
-                val obj = items.optJSONObject(i) ?: continue
-                val id = if (obj.isNull("id")) null else obj.optLong("id")
-                val path = obj.optString("path").ifEmpty { null }
-
-                var song: Song? = null
-                if (id != null) song = DatabaseHelper.querySongById(id)
-                if (song == null && path != null) song = DatabaseHelper.querySongByPath(path)
-                if (song != null) restored.add(song)
-            }
-            // 第二十二轮：恢复出来的就是"原始顺序"（持久化的正是入列顺序）。
-            // 若上次退出时处于随机模式，_songs 需要按随机顺序呈现，
-            // 但 originalOrder 必须保留这份原始顺序，供切回顺序模式时还原。
-            originalOrder = restored.toList()
-            val next = if (_playMode.value == PlayMode.RANDOM) {
-                shuffledKeepingCurrentFirst(originalOrder)
+            val trimmed = raw.trimStart()
+            if (trimmed.startsWith("{")) {
+                // v2：queue + original + currentIndex
+                val obj = JSONObject(trimmed)
+                val queue = resolveEntries(obj.optJSONArray("queue"))
+                if (queue.isEmpty()) return 0
+                val savedOriginal = resolveEntries(obj.optJSONArray("original"))
+                originalOrder = if (savedOriginal.isNotEmpty()) savedOriginal else queue.toList()
+                val savedIndex = obj.optInt("currentIndex", -1)
+                currentIndex = if (savedIndex in queue.indices) savedIndex else -1
+                currentPath = currentIndex.takeIf { it >= 0 }?.let { queue[it].path }
+                // 恢复的就是当时的实际播放顺序，不再重新随机
+                notify(queue)
+                queue.size
             } else {
-                originalOrder
+                // 旧版：单数组（保存的是当时的实际顺序，可能是打乱后的）
+                val restored = resolveEntries(JSONArray(trimmed))
+                if (restored.isEmpty()) return 0
+                // 旧格式没有原始顺序信息：恢复出来的顺序只能当作原始顺序；
+                // 若当时处于随机模式，_songs 需要按随机顺序呈现（与旧版行为一致）
+                originalOrder = restored.toList()
+                currentIndex = -1
+                currentPath = null
+                val next = if (_playMode.value == PlayMode.RANDOM) {
+                    shuffledKeepingCurrentFirst(originalOrder)
+                } else {
+                    originalOrder
+                }
+                notify(next)
+                restored.size
             }
-            notify(next)
-            restored.size
         } catch (e: Exception) {
             Log.w(TAG, "恢复播放列表失败: ${e.message}")
             0
         }
+    }
+
+    /** 逐条解析持久化条目并回查数据库（id 优先，path 兜底），跳过已删除的歌曲 */
+    private suspend fun resolveEntries(array: JSONArray?): List<Song> {
+        if (array == null) return emptyList()
+        val restored = ArrayList<Song>(array.length())
+        for (i in 0 until array.length()) {
+            val obj = array.optJSONObject(i) ?: continue
+            val id = if (obj.isNull("id")) null else obj.optLong("id")
+            val path = obj.optString("path").ifEmpty { null }
+
+            var song: Song? = null
+            if (id != null) song = DatabaseHelper.querySongById(id)
+            if (song == null && path != null) song = DatabaseHelper.querySongByPath(path)
+            if (song != null) restored.add(song)
+        }
+        return restored
     }
 
     private const val PERSIST_DEBOUNCE_MS = 500L

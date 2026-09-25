@@ -200,6 +200,13 @@ object PlayerController {
             if (PlaylistRepository.current.isEmpty()) {
                 PlaylistRepository.restoreFromPrefs()
             }
+            // 优化建议 09：恢复上次的当前条目（含重复曲的精确下标），
+            // 只定位不自动播放；按下播放键从该条目继续
+            val restoredIndex = PlaylistRepository.currentIndex
+            if (restoredIndex in PlaylistRepository.current.indices) {
+                _currentIndex.value = restoredIndex
+                _currentSong.value = PlaylistRepository.current[restoredIndex]
+            }
             applyPlayMode(PlaylistRepository.playMode.value)
             publishCurrentState()
         }
@@ -300,14 +307,34 @@ object PlayerController {
      *
      * 注意（第二十二轮需求 4）：随机模式下 [PlaylistRepository.setSongs] 会**重排队列**，
      * 因此不能把 [startIndex] 直接当作"入列后"的下标（会播成另一首）。
-     * 这里先把目标歌曲从**入参列表**中取出来，再按 path 定位播放 ——
-     * 无论队列是否被重排，都会播到调用方指定的那一首。
+     *
+     * 优化建议 09：目标条目按 **(path, 同名第几份)** 精确定位 ——
+     * 同一首歌在列表出现两次时，指定第二份不会错播到第一份；
+     * 队列被重排（随机）后按"同名第几份"在新队列中定位对应条目。
      */
     suspend fun playSongs(songs: List<Song>, startIndex: Int = 0): Boolean {
         if (songs.isEmpty()) return false
-        val target = songs[startIndex.coerceIn(0, songs.size - 1)]
+        val idx = startIndex.coerceIn(0, songs.size - 1)
+        val target = songs[idx]
+        // 目标是同 path 条目中的第几份（从 0 计）
+        val occurrence = songs.take(idx).count { it.path == target.path }
+
         PlaylistRepository.setSongs(songs)
-        return playSong(target)
+
+        val queue = PlaylistRepository.current
+        var seen = 0
+        var targetIndex = -1
+        for ((i, s) in queue.withIndex()) {
+            if (s.path == target.path) {
+                if (seen == occurrence) {
+                    targetIndex = i
+                    break
+                }
+                seen++
+            }
+        }
+        if (targetIndex < 0) targetIndex = queue.indexOfFirst { it.path == target.path }
+        return playAt(targetIndex)
     }
 
     /**
@@ -1008,8 +1035,15 @@ object PlayerController {
         // 放在这里是因为所有改变当前歌曲的路径（playAt / 自动续播 / 停止清空）
         // 最后都会走 publishCurrentState()，单点同步不会漏。
         // 占位曲目不是真实歌曲（其 path 是伪标识），不能写进队列仓库。
+        // 优化建议 09：同时回填当前下标（重复曲以条目下标定位）。
         val cur = _currentSong.value
-        PlaylistRepository.currentPath = if (cur == null || cur.isPlaceholder) null else cur.path
+        if (cur == null || cur.isPlaceholder) {
+            PlaylistRepository.currentPath = null
+            PlaylistRepository.currentIndex = -1
+        } else {
+            PlaylistRepository.currentPath = cur.path
+            PlaylistRepository.currentIndex = _currentIndex.value
+        }
         updateWidget()
     }
 
