@@ -74,11 +74,21 @@ class EasyTierConfigTest {
     }
 
     @Test
-    fun `completeness requires name secret and server ip`() {
+    fun `completeness only requires network name and secret`() {
         assertFalse(base.copy(networkName = "").isComplete)
         assertFalse(base.copy(networkSecret = "").isComplete)
-        assertFalse(base.copy(serverVirtualIp = "").isComplete)
-        assertTrue(base.isComplete)
+        // 转发目标可留空（由内网地址推导），不再是必填
+        assertTrue(base.copy(serverVirtualIp = "").isComplete)
+        assertFalse(base.copy(serverVirtualIp = "").hasPortForward)
+        assertTrue(base.hasPortForward)
         assertEquals("http://127.0.0.1:18080", base.localBaseUrl)
+    }
+
+    @Test
+    fun `forward target derived from intranet url`() {
+        assertEquals("10.0.0.222" to 8002, EasyTierConfig.parseHostPort("http://10.0.0.222:8002"))
+        assertEquals("10.0.0.222" to 80, EasyTierConfig.parseHostPort("http://10.0.0.222"))
+        assertEquals("music.example.com" to 443, EasyTierConfig.parseHostPort("https://music.example.com"))
+        assertEquals(null, EasyTierConfig.parseHostPort("10.0.0.222:8002"))
     }
 }

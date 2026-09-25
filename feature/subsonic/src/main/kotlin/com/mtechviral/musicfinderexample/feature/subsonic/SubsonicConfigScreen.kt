@@ -460,7 +460,10 @@ fun SubsonicConfigScreen() {
                 Spacer(Modifier.height(24.dp))
 
                 // EasyTier 组网（可选，doc/EasyTier集成方案.md）
-                EasyTierSection(onMessage = { pendingMessage = it })
+                EasyTierSection(
+                    intranetUrl = intranetUrl,
+                    onMessage = { pendingMessage = it },
+                )
 
                 Spacer(Modifier.height(24.dp))
 

@@ -41,8 +41,8 @@ object EasyTierEngine {
         /** 启动中 */
         object Starting : State()
 
-        /** 运行中（localBaseUrl 为本地转发地址） */
-        data class Running(val localBaseUrl: String) : State()
+        /** 运行中（detail 为本地转发映射或组网说明） */
+        data class Running(val detail: String) : State()
 
         /** 已停止 */
         object Stopped : State()
@@ -76,7 +76,7 @@ object EasyTierEngine {
     /** 实际启动逻辑（持有 [EasyTierEngine] 锁调用；全程阻塞 IO，运行在 IO 调度器上） */
     private fun startLocked(context: Context, config: EasyTierConfig): Boolean {
         if (!config.isComplete) {
-            _state.value = State.Error("配置不完整：网络名 / 网络密码 / 服务器虚拟 IP 必填")
+            _state.value = State.Error("配置不完整：网络名 / 网络密码 必填")
             return false
         }
         if (process?.isAlive == true && startedConfig == config) {
@@ -118,10 +118,18 @@ object EasyTierEngine {
                 return false
             }
 
-            // 注入本地转发地址：Subsonic 探测顺序变为 EasyTier → 内网 → 公网
-            SubsonicService.easyTierBaseUrl = config.localBaseUrl
+            // 注入本地转发地址：Subsonic 探测顺序变为 EasyTier → 内网 → 公网。
+            // 只有配置了端口转发目标才注入（否则本地回环没有监听者）；
+            // 无 TUN 模式下虚拟网地址只能经端口转发访问，直填虚拟 IP 不通
+            SubsonicService.easyTierBaseUrl = if (config.hasPortForward) config.localBaseUrl else null
             SubsonicService.resetConnection()
-            _state.value = State.Running(config.localBaseUrl)
+            _state.value = State.Running(
+                if (config.hasPortForward) {
+                    config.localBaseUrl + " → ${config.serverVirtualIp}:${config.serverPort}"
+                } else {
+                    "已组网（未配置端口转发）"
+                },
+            )
             Log.i(TAG, "EasyTier 已启动: ${config.localBaseUrl}")
             true
         } catch (e: Exception) {

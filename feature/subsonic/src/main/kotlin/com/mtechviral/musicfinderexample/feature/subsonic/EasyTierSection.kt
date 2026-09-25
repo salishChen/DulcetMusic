@@ -65,10 +65,15 @@ import kotlinx.coroutines.launch
 /**
  * EasyTier 组网卡片。
  *
+ * @param intranetUrl 主表单的「内网地址」：用于自动推导端口转发目标
+ *   （无 TUN 模式下虚拟网地址必须经端口转发访问，不能直连）
  * @param onMessage 提示条消息（复用远程配置页的 Snackbar）
  */
 @Composable
-fun EasyTierSection(onMessage: (String) -> Unit) {
+fun EasyTierSection(
+    intranetUrl: String = "",
+    onMessage: (String) -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -175,8 +180,8 @@ fun EasyTierSection(onMessage: (String) -> Unit) {
         ConfigTextField(
             value = config.serverVirtualIp,
             onValueChange = { config = config.copy(serverVirtualIp = it) },
-            label = "服务器虚拟 IP",
-            hint = "例如：10.144.144.2",
+            label = "转发目标 IP（默认取内网地址）",
+            hint = "留空自动取内网地址主机，如 10.0.0.222",
             leadingIcon = Icons.Filled.Public,
             isError = false,
         )
@@ -250,7 +255,7 @@ fun EasyTierSection(onMessage: (String) -> Unit) {
         val statusText = when (val s = engineState) {
             is EasyTierEngine.State.Disabled -> "未启用"
             is EasyTierEngine.State.Starting -> "启动中…"
-            is EasyTierEngine.State.Running -> "运行中（本地转发 ${s.localBaseUrl}）"
+            is EasyTierEngine.State.Running -> "运行中（${s.detail}）"
             is EasyTierEngine.State.Stopped -> "已停止"
             is EasyTierEngine.State.Error -> "异常：${s.message}"
         }
@@ -265,8 +270,9 @@ fun EasyTierSection(onMessage: (String) -> Unit) {
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "启用后无需在上方填写「内网地址」，系统会自动优先尝试 " +
-                config.localBaseUrl + "；主表单的内网/公网地址仍作为回退。",
+            text = "内网地址照常填虚拟网地址（如 http://10.0.0.222:8002）：" +
+                "无 TUN 模式下不能直连虚拟网 IP，系统会自动把该地址端口转发到本地回环" +
+                "（127.0.0.1:" + config.localPort + "）并优先访问，失败时自动回退公网地址。",
             fontSize = 11.sp,
             color = MaterialTheme.ytTextSecondary.copy(alpha = 0.6f),
             lineHeight = 16.sp,
@@ -281,11 +287,25 @@ fun EasyTierSection(onMessage: (String) -> Unit) {
                         return@Button
                     }
                     if (!config.isComplete) {
-                        onMessage("网络名 / 网络密码 / 服务器虚拟 IP 必填")
+                        onMessage("网络名 / 网络密码 必填")
                         return@Button
                     }
+                    // 转发目标：手动填写优先；留空时从内网地址自动推导
+                    var snapshot = config.copy(enabled = true)
+                    if (snapshot.serverVirtualIp.isBlank()) {
+                        val target = EasyTierConfig.parseHostPort(intranetUrl)
+                        if (target != null) {
+                            snapshot = snapshot.copy(
+                                serverVirtualIp = target.first,
+                                serverPort = target.second,
+                            )
+                            config = snapshot
+                        } else {
+                            onMessage("无法推导转发目标：请填「内网地址」或手动填转发目标 IP")
+                            return@Button
+                        }
+                    }
                     connecting = true
-                    val snapshot = config.copy(enabled = true)
                     config = snapshot
                     scope.launch {
                         EasyTierConfigStore.save(context, snapshot)

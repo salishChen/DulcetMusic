@@ -28,9 +28,15 @@ data class EasyTierConfig(
     val virtualIpv4: String = "",
     /** 本机设备名（可选，对应 `--hostname`）；留空由 EasyTier 取系统主机名 */
     val hostname: String = "",
-    /** Subsonic 服务器在虚拟网中的 IPv4，如 10.144.144.2 */
+    /**
+     * 端口转发目标（虚拟网内 Subsonic 的 IP，如 10.0.0.222），可选。
+     *
+     * 无 TUN 模式下手机**无法主动访问**虚拟网内其他 IP（没有 TUN 网卡路由），
+     * 必须用端口转发把「虚拟网内 Subsonic」映射到本地回环后访问。
+     * 通常**留空自动取内网地址的主机**；仅当内网地址与实际转发目标不同才手动填。
+     */
     val serverVirtualIp: String = "",
-    /** Subsonic 服务器端口（虚拟网内），默认 4533 */
+    /** 端口转发目标端口（虚拟网内 Subsonic 端口），留空时取内网地址的端口 */
     val serverPort: Int = 4533,
     /** 本地回环转发端口，应用侧「内网地址」= http://127.0.0.1:<localPort> */
     val localPort: Int = 18080,
@@ -39,11 +45,18 @@ data class EasyTierConfig(
     /** 本地 SOCKS5 端口 */
     val socks5Port: Int = 1080,
 ) {
-    /** 配置是否完整到可以启动组网 */
+    /**
+     * 配置是否完整到可以启动组网。
+     *
+     * 只要求网络名与网络密码：端口转发目标可留空（由内网地址推导），
+     * 不填转发目标时仅组网不转发（此时请直接用虚拟网地址 + SOCKS5/转发访问）。
+     */
     val isComplete: Boolean
-        get() = networkName.isNotBlank() &&
-            networkSecret.isNotBlank() &&
-            serverVirtualIp.isNotBlank()
+        get() = networkName.isNotBlank() && networkSecret.isNotBlank()
+
+    /** 是否配置了端口转发目标 */
+    val hasPortForward: Boolean
+        get() = serverVirtualIp.isNotBlank()
 
     /** 端口转发规则对应的本地访问地址（应用侧「内网地址」填它） */
     val localBaseUrl: String get() = "http://127.0.0.1:$localPort"
@@ -89,5 +102,35 @@ data class EasyTierConfig(
             args += listOf("--socks5", socks5Port.toString())
         }
         return args
+    }
+
+    companion object {
+        /**
+         * 从内网/公网 URL 推导端口转发目标（主机、端口）。
+         * 解析失败（非 http(s) URL / 无主机）返回 null。
+         */
+        fun parseHostPort(baseUrl: String): Pair<String, Int>? {
+            return try {
+                val trimmed = baseUrl.trim()
+                val uri = if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+                    java.net.URI(trimmed)
+                } else {
+                    null
+                }
+                val host = uri?.host?.takeIf { it.isNotEmpty() }
+                if (uri == null || host == null) {
+                    null
+                } else {
+                    val port = when {
+                        uri.port != -1 -> uri.port
+                        trimmed.startsWith("https://", ignoreCase = true) -> 443
+                        else -> 80
+                    }
+                    host to port
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 }
