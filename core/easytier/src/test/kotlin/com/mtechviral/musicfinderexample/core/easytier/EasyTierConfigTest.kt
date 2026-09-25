@@ -54,14 +54,23 @@ class EasyTierConfigTest {
     }
 
     @Test
-    fun `socks5 optional and logs disabled`() {
+    fun `socks5 optional and logs enabled for diagnostics`() {
         val args = base.copy(socks5Enabled = true, socks5Port = 1080).toArgs()
         assertTrue(args.contains("--socks5"))
         assertTrue(args.contains("1080"))
-        // 日志默认关闭，避免认证信息进入 logcat
+        // 日志级别 info 输出到引擎日志文件（排查连接问题必需；读取端脱敏）
         val logIdx = args.indexOf("--console-log-level")
         assertTrue(logIdx >= 0)
-        assertEquals("off", args[logIdx + 1])
+        assertEquals("info", args[logIdx + 1])
+    }
+
+    @Test
+    fun `fixed virtual ip and hostname produce args`() {
+        val args = base.copy(virtualIpv4 = "10.0.0.7", hostname = "my-phone").toArgs()
+        val ipIdx = args.indexOf("--ipv4")
+        assertEquals("10.0.0.7", args[ipIdx + 1])
+        val hostIdx = args.indexOf("--hostname")
+        assertEquals("my-phone", args[hostIdx + 1])
     }
 
     @Test

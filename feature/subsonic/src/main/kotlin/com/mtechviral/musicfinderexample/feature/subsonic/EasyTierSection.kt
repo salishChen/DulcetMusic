@@ -16,16 +16,20 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -35,6 +39,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -70,6 +75,7 @@ fun EasyTierSection(onMessage: (String) -> Unit) {
     var config by remember { mutableStateOf(EasyTierConfigStore.load(context)) }
     var obscureSecret by remember { mutableStateOf(true) }
     var connecting by remember { mutableStateOf(false) }
+    var showLog by remember { mutableStateOf(false) }
     val engineState by EasyTierEngine.state.collectAsStateWithLifecycle()
 
     Column(
@@ -178,6 +184,38 @@ fun EasyTierSection(onMessage: (String) -> Unit) {
         Row {
             Box(modifier = Modifier.weight(1f)) {
                 ConfigTextField(
+                    value = config.virtualIpv4,
+                    onValueChange = { config = config.copy(virtualIpv4 = it.trim()) },
+                    label = "本机虚拟 IP（建议填）",
+                    hint = "如 10.0.0.7",
+                    leadingIcon = Icons.Filled.Public,
+                    isError = false,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Box(modifier = Modifier.weight(1f)) {
+                ConfigTextField(
+                    value = config.hostname,
+                    onValueChange = { config = config.copy(hostname = it.trim()) },
+                    label = "设备名（可选）",
+                    hint = "留空取系统名",
+                    leadingIcon = Icons.Filled.Dns,
+                    isError = false,
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "本机虚拟 IP 建议与服务器同网段且不与其它设备重复" +
+                "（对照官方 App 的固定 IP 方式，如 10.0.0.7）；设备名仅用于在服务器侧标识本机，可留空。",
+            fontSize = 11.sp,
+            color = MaterialTheme.ytTextSecondary.copy(alpha = 0.6f),
+            lineHeight = 16.sp,
+        )
+        Spacer(Modifier.height(12.dp))
+        Row {
+            Box(modifier = Modifier.weight(1f)) {
+                ConfigTextField(
                     value = config.serverPort.toString(),
                     onValueChange = { v ->
                         v.filter { it.isDigit() }.take(5).toIntOrNull()
@@ -221,6 +259,10 @@ fun EasyTierSection(onMessage: (String) -> Unit) {
             fontSize = 12.sp,
             color = MaterialTheme.ytTextSecondary,
         )
+        // 日志入口：连接问题排查必需（引擎进程输出的尾部）
+        TextButton(onClick = { showLog = true }) {
+            Text("查看引擎日志", fontSize = 12.sp)
+        }
         Spacer(Modifier.height(8.dp))
         Text(
             text = "启用后无需在上方填写「内网地址」，系统会自动优先尝试 " +
@@ -292,5 +334,27 @@ fun EasyTierSection(onMessage: (String) -> Unit) {
                 Text("断开")
             }
         }
+    }
+
+    // 引擎日志（连接问题排查；读取时已脱敏）
+    if (showLog) {
+        AlertDialog(
+            onDismissRequest = { showLog = false },
+            title = { Text("EasyTier 引擎日志") },
+            text = {
+                val log = EasyTierEngine.logTail(context)
+                    .ifBlank { "（暂无日志：请先点「保存并连接」，稍候再看）" }
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(text = log, fontSize = 10.sp, lineHeight = 14.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLog = false }) { Text("关闭") }
+            },
+        )
     }
 }

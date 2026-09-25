@@ -22,6 +22,7 @@ object EasyTierConfigStore {
     private const val KEY_NETWORK_SECRET_ENC = "network_secret_enc"
     private const val KEY_PEERS = "peers"
     private const val KEY_VIRTUAL_IPV4 = "virtual_ipv4"
+    private const val KEY_HOSTNAME = "hostname"
     private const val KEY_SERVER_VIRTUAL_IP = "server_virtual_ip"
     private const val KEY_SERVER_PORT = "server_port"
     private const val KEY_LOCAL_PORT = "local_port"
@@ -42,6 +43,7 @@ object EasyTierConfigStore {
             networkSecret = secret,
             peers = p.getString(KEY_PEERS, "") ?: "",
             virtualIpv4 = p.getString(KEY_VIRTUAL_IPV4, "") ?: "",
+            hostname = p.getString(KEY_HOSTNAME, "") ?: "",
             serverVirtualIp = p.getString(KEY_SERVER_VIRTUAL_IP, "") ?: "",
             serverPort = p.getInt(KEY_SERVER_PORT, 4533),
             localPort = p.getInt(KEY_LOCAL_PORT, 18080),
@@ -57,6 +59,7 @@ object EasyTierConfigStore {
             .putString(KEY_NETWORK_NAME, config.networkName)
             .putString(KEY_PEERS, config.peers)
             .putString(KEY_VIRTUAL_IPV4, config.virtualIpv4)
+            .putString(KEY_HOSTNAME, config.hostname)
             .putString(KEY_SERVER_VIRTUAL_IP, config.serverVirtualIp)
             .putInt(KEY_SERVER_PORT, config.serverPort)
             .putInt(KEY_LOCAL_PORT, config.localPort)

@@ -23,8 +23,11 @@ data class EasyTierConfig(
      * 形如 `udp://公网中继:11010` 或 `tcp://主机:端口`。可留空（局域网内自动发现）。
      */
     val peers: String = "",
-    /** 本节点虚拟 IPv4（可选，对应 `-i/--ipv4`）；留空由网络分配（--dhcp） */
+    /** 本节点虚拟 IPv4（可选，对应 `-i/--ipv4`）；留空由网络分配（--dhcp）。
+     *  已知可用配置（官方 App 对照）建议填固定地址，如 10.0.0.7（与服务器同网段） */
     val virtualIpv4: String = "",
+    /** 本机设备名（可选，对应 `--hostname`）；留空由 EasyTier 取系统主机名 */
+    val hostname: String = "",
     /** Subsonic 服务器在虚拟网中的 IPv4，如 10.144.144.2 */
     val serverVirtualIp: String = "",
     /** Subsonic 服务器端口（虚拟网内），默认 4533 */
@@ -53,19 +56,23 @@ data class EasyTierConfig(
      * 生成 easytier-core 启动参数。
      *
      * 与官方参数一一对应（[配置选项](https://easytier.cn/guide/network/configurations.html)）；
-     * 日志默认关闭（`--console-log-level off`），避免认证信息进入 logcat。
+     * 日志级别 info 输出到引擎日志文件（诊断连接问题必需，内容不含 Subsonic 凭据，
+     * 读取端仍经 UrlSanitizer 脱敏）。
      */
     fun toArgs(): List<String> {
         val args = mutableListOf(
             "--no-tun",
             "--network-name", networkName,
             "--network-secret", networkSecret,
-            "--console-log-level", "off",
+            "--console-log-level", "info",
         )
         if (virtualIpv4.isNotBlank()) {
             args += listOf("--ipv4", virtualIpv4)
         } else {
             args += "--dhcp"
+        }
+        if (hostname.isNotBlank()) {
+            args += listOf("--hostname", hostname)
         }
         peers.split(',', '，', '\n', ' ')
             .map { it.trim() }
