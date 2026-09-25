@@ -169,7 +169,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         for ((id, locator) in updates) {
             db.execSQL(
                 "UPDATE songs SET path = ?, remoteStreamUrl = NULL WHERE id = ?",
-                arrayOf(locator, id),
+                arrayOf<Any?>(locator, id),
             )
         }
     }

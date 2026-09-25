@@ -2,6 +2,45 @@
 
 以 Kotlin + Jetpack Compose + Media3 完整重写，不再依赖 Flutter 框架（见 `android` 分支）。
 
+### 优化轮：按《doc/优化建议.md》落地 12 项优化（11 项已完成）
+
+* **01（P0）Subsonic 凭据保护**：密码改用 Android Keystore 保护的 AES-GCM 加密存储
+  （数据库/备份中只存密文，旧明文读取后自动加密回写；解密失败提示重新输入）；
+  远程歌曲 `path` 改为稳定定位符 `subsonic://<remoteId>@<来源哈希>`，**不再持久化
+  带认证参数（u/s/t）的流地址**（播放/下载时临时生成，DB 版本 8 自动清除旧数据）；
+  日志与异常消息统一脱敏（断网/HTTP 失败/下载失败不再泄露认证参数）；
+  备份规则排除 `music_player.db`，账号数据不随云备份/设备迁移离开设备。
+* **02（P0）发布签名**：release 改用 `keystore.properties`/环境变量提供的正式签名，
+  移除 debug 签名回退；`keystore.properties`、`*.jks` 等加入 .gitignore。
+* **03 重扫合并语义**：`insertSongs` 改为「匹配 → 只更新扫描元数据」——
+  远程按 `remoteId+来源`、本地按 `path`、兜底按身份键匹配；命中旧行保留
+  喜欢/播放统计/歌词/缓存与主键（歌单绑定不再被级联删除）；不再对 songs 表使用 REPLACE；
+  远程导入来源改为按服务器标识（`subsonic@用户@地址`），换服务器不误合并。
+* **05 缓存一致性**：清空缓存同时重置音频与封面数据库字段（封面可重新下载）；
+  淘汰口径覆盖音频+封面+`.tmp` 孤儿文件，删除失败保留记录不虚报释放；
+  播放/命中缓存刷新「最近使用」时间（近似严格 LRU）。
+* **06 并发缓存收尾**：`cacheSong`/`ArtworkCache.load` 成功、失败、取消均完成
+  在途任务并移除登记，等待者不再悬挂；协程取消语义保留。
+* **07 统计概览**：概览卡片改用全库 SQL 聚合（SUM(playCount)/COUNT），
+  不再受 Top 50 列表上限影响；「最近播放」卡片改为近 7 天窗口计数（文案「近7天播放」）。
+* **08 测试连接**：新增 `SubsonicService.testConnection`（只探测不写库），
+  区分地址错误/认证失败/网络不可达；测试失败不再覆盖已保存配置。
+* **09 队列持久化**：持久化格式 v2 同时保存当前顺序、入列原始顺序与当前条目下标，
+  恢复时原样还原（切回顺序模式可找回入列顺序）；重复曲按 (path, 同名第几份)
+  精确定位，`playSongs` 指定第二份不再落到第一份；重启恢复上次当前条目（不自动播放）。
+* **10 专辑复合身份 + 扫描索引**：专辑按「专辑名 + 专辑艺术家」复合键聚合与展示，
+  不同艺术家的同名专辑各自独立（详情路由 `album_detail/{title}/{artist}`）；
+  扫描匹配索引批次间复用（不再每批全表重读），DB 版本 7 增加 remoteId 索引。
+* **12 版本信息与小组件**：关于页读取 PackageManager 真实版本号；
+  小组件封面解码移到后台单线程、同路径复用解码结果、内容未变化跳过重复刷新。
+* **11 回归测试**：新增 19 个用例——`SongDaoMergeTest`（重扫合并/歌单绑定/换服务器）、
+  `SongDaoStatsAndCacheTest`（概览聚合/缓存字段重置与 LRU 时间）、
+  `AlbumDaoCompositeKeyTest`（同名专辑分离）、`RemoteLocatorTest`/`UrlSanitizerTest`；
+  `core:database` 接入 Robolectric 在 JVM 上跑真实 SQLite。
+* **04（待办）内容 URI 扫描**：媒体库/文件夹扫描改为内容 URI 的改造尚未实施，
+  见 `doc/优化建议.md` 04 节（含验收标准）。
+
+
 * 架构：按职责拆分为 `core:{model,common,database,network,media,cache,player,designsystem}`
   与 `feature:{home,songs,albums,artists,playlists,favorites,search,nowplaying,scan,stats,cache,subsonic,settings}`。
 * 播放：Media3 ExoPlayer + `MediaSessionService`，通知栏（上一曲/播放暂停/下一曲 + 自定义「词/解锁」按钮）、
