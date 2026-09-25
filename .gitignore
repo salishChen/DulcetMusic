@@ -11,6 +11,9 @@ local.properties
 *.apk
 *.aab
 *.keystore
+*.jks
+*.p12
+keystore.properties
 !.gitignore
 .flutter_reference/
 /.codebuddy/

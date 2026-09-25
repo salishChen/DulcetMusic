@@ -4,6 +4,7 @@ import android.content.Context
 import com.mtechviral.musicfinderexample.core.database.dao.AlbumDao
 import com.mtechviral.musicfinderexample.core.database.dao.ArtistDao
 import com.mtechviral.musicfinderexample.core.database.dao.ArtistMetaDao
+import com.mtechviral.musicfinderexample.core.database.dao.PlayOverview
 import com.mtechviral.musicfinderexample.core.database.dao.PlaylistDao
 import com.mtechviral.musicfinderexample.core.database.dao.SongDao
 import com.mtechviral.musicfinderexample.core.database.dao.SubsonicConfigDao
@@ -269,6 +270,15 @@ object DatabaseHelper {
 
     suspend fun queryRecentlyPlayed(limit: Int = 50): List<Song> =
         io { songDao.queryRecentlyPlayed(limit) }
+
+    /**
+     * 播放概览聚合（统计页顶部卡片）：全库 SUM/COUNT，不受 Top N 列表上限影响。
+     *
+     * @param recentWindowMs 「最近播放」的时间窗口（毫秒）；传 null 表示不限时间。
+     */
+    suspend fun queryPlayOverview(recentWindowMs: Long?): PlayOverview = io {
+        songDao.queryPlayOverview(recentWindowMs?.let { System.currentTimeMillis() - it })
+    }
 
     // ======================== 喜欢功能 ========================
 

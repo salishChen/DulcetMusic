@@ -1,8 +1,26 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+
+// ---------------------------------------------------------------------------
+// 正式发布签名凭据（优化建议 02）：
+// 从仓库外的 keystore.properties（见 .gitignore）或环境变量读取，
+// 构建脚本绝不引用 debug 签名；未配置时 release 产出未签名包，禁止直接分发。
+//   keystore.properties: storeFile / storePassword / keyAlias / keyPassword
+//   环境变量:            RELEASE_STORE_FILE / RELEASE_STORE_PASSWORD /
+//                        RELEASE_KEY_ALIAS / RELEASE_KEY_PASSWORD
+// ---------------------------------------------------------------------------
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+fun signingProp(key: String, env: String): String? =
+    keystoreProps.getProperty(key)?.takeIf { it.isNotBlank() } ?: System.getenv(env)
 
 android {
     namespace = "com.mtechviral.musicfinderexample"
@@ -19,6 +37,18 @@ android {
         versionName = "2.0.0"
     }
 
+    signingConfigs {
+        val storeFilePath = signingProp("storeFile", "RELEASE_STORE_FILE")
+        if (storeFilePath != null) {
+            create("release") {
+                storeFile = rootProject.file(storeFilePath)
+                storePassword = signingProp("storePassword", "RELEASE_STORE_PASSWORD")
+                keyAlias = signingProp("keyAlias", "RELEASE_KEY_ALIAS")
+                keyPassword = signingProp("keyPassword", "RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -26,7 +56,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            signingConfig = signingConfigs.getByName("debug")
+            // 只允许正式签名；未配置签名凭据时为 null（未签名包），
+            // 不再回退 debug 签名，避免用调试密钥分发正式包
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

@@ -13,7 +13,7 @@
  *     开启后把音乐添加到「喜欢」时会自动缓存到本地；
  *   - 「缓存管理」入口 → onOpenCacheManage()；
  *   - 悬浮窗歌词开关 → LyricsOverlayManager（悬浮窗权限 + Android 13+ 通知权限）；
- *   - 关于（愉乐 1.0.0）。
+ *   - 关于（愉乐 + 安装包版本号，取自 PackageManager）。
  */
 
 package com.mtechviral.musicfinderexample.feature.settings
@@ -92,9 +92,19 @@ private const val CACHE_MAX_MB = 51200
 /** 步进：Dart `divisions: 102` → Compose `steps = divisions - 1` */
 private const val CACHE_SLIDER_STEPS = 101
 
-/** 应用名与版本（对应 Dart AboutListTile 的 applicationName / applicationVersion） */
+/** 应用名（对应 Dart AboutListTile 的 applicationName） */
 private const val APP_NAME = "愉乐"
-private const val APP_VERSION = "1.0.0"
+
+/**
+ * 读取安装包真实版本号（优化建议 12）：
+ * 关于页显示的版本必须与构建的 versionName 一致，不再写死。
+ */
+private fun appVersionOf(context: android.content.Context): String = try {
+    @Suppress("DEPRECATION")
+    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
+} catch (_: Exception) {
+    "?"
+}
 
 /**
  * 设置页。
@@ -129,6 +139,8 @@ fun SettingsScreen(
     var actualCacheMB by remember { mutableStateOf(0) }
     var loadingCache by remember { mutableStateOf(true) }
     var showAboutDialog by remember { mutableStateOf(false) }
+    // 安装包版本（与构建 versionName 一致）
+    val appVersion = remember { appVersionOf(context) }
 
     // Android 13+ 通知权限（悬浮窗歌词服务依赖前台通知）
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -348,7 +360,7 @@ fun SettingsScreen(
             SettingsTile(
                 leading = Icons.Outlined.Info,
                 title = "关于",
-                subtitle = "$APP_NAME $APP_VERSION",
+                subtitle = "$APP_NAME $appVersion",
                 onClick = { showAboutDialog = true },
             )
         }
@@ -363,7 +375,7 @@ fun SettingsScreen(
                     Text(APP_NAME)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = APP_VERSION,
+                        text = appVersion,
                         fontSize = 12.sp,
                         color = MaterialTheme.ytTextSecondary,
                     )

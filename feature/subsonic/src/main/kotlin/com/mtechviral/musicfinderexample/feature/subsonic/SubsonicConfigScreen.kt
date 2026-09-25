@@ -3,7 +3,8 @@
  *
  * 远程配置页：
  *   - 读取 SubsonicService.loadConfig() 回填「服务器名称 / 内网地址 / 公网地址 / 用户名 / 密码」；
- *   - 「测试连接」先 saveConfig(tempConfig) 再 ping()，并展示成功 / 失败提示；
+ *   - 「测试连接」调用 SubsonicService.testConnection(tempConfig)（只探测、不写库），
+ *     并按结果展示成功 / 认证失败 / 网络不可达 / 地址错误提示；
  *   - 「保存配置」调用 saveConfig(config) 后提示「配置已保存」；
  *   - 「删除配置」取 SubsonicService.currentConfig?.id 后调用 DatabaseHelper.deleteSubsonicConfig(id)。
  *
@@ -340,7 +341,7 @@ fun SubsonicConfigScreen() {
                             if (!errors.hasError) {
                                 testing = true
                                 testResult = null
-                                // 临时保存配置以测试（与 Dart 一致）
+                                // 只做连接测试，不写入配置：测试失败不影响已保存的服务器配置
                                 val tempConfig = SubsonicConfig(
                                     intranetUrl = intranetUrl.trim(),
                                     publicUrl = publicUrl.trim(),
@@ -349,12 +350,17 @@ fun SubsonicConfigScreen() {
                                     serverName = serverName.trim(),
                                 )
                                 scope.launch {
-                                    SubsonicService.saveConfig(tempConfig)
-                                    val success = SubsonicService.ping()
-                                    // 保存后重新读库，保证后续「删除配置」能取到真实 id
-                                    configId = SubsonicService.loadConfig()?.id
-                                    testSuccess = success
-                                    testResult = if (success) "连接成功！" else "连接失败，请检查配置"
+                                    val result = SubsonicService.testConnection(tempConfig)
+                                    testSuccess = result is SubsonicService.ConnectionTestResult.Success
+                                    testResult = when (result) {
+                                        is SubsonicService.ConnectionTestResult.Success -> "连接成功！"
+                                        is SubsonicService.ConnectionTestResult.AuthFailed ->
+                                            "连接失败：用户名或密码错误"
+                                        is SubsonicService.ConnectionTestResult.InvalidUrl ->
+                                            "连接失败：${result.message}"
+                                        is SubsonicService.ConnectionTestResult.Unreachable ->
+                                            "连接失败，请检查配置"
+                                    }
                                     testing = false
                                 }
                             }

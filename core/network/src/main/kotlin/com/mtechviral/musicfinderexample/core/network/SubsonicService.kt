@@ -82,6 +82,10 @@ object SubsonicService {
         activeBaseUrl = null
     }
 
+    /** 取当前配置，未配置时抛出 [SubsonicException] */
+    private fun requireConfig(): SubsonicConfig =
+        config ?: throw SubsonicException("Subsonic 未配置")
+
     // ===================== URL 构建 =====================
 
     /**
@@ -138,9 +142,13 @@ object SubsonicService {
      * [endpoint] 可以是纯端点名（如 `getArtists`）或带参数的（如 `getArtist&id=123`）：
      * 当包含 `&` 时，第一段作为端点名，其余作为查询参数与认证参数合并。
      */
-    private fun buildUrl(baseUrl: String, endpoint: String): String {
+    private fun buildUrl(baseUrl: String, endpoint: String): String =
+        buildUrl(baseUrl, endpoint, requireConfig())
+
+    /** 以指定配置构建 API URL（连接测试用，不读取/修改全局 [config]） */
+    private fun buildUrl(baseUrl: String, endpoint: String, cfg: SubsonicConfig): String {
         val base = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-        val params = buildAuthParams()
+        val params = buildAuthParams(cfg)
 
         val parts = endpoint.split("&")
         val endpointName = parts[0]
@@ -154,8 +162,7 @@ object SubsonicService {
     }
 
     /** 构建认证参数：u / s（盐）/ t（md5(password+salt)）/ v / c / f */
-    private fun buildAuthParams(): String {
-        val cfg = config ?: throw SubsonicException("Subsonic 未配置")
+    private fun buildAuthParams(cfg: SubsonicConfig): String {
         val salt = generateSalt(16)
         val token = md5Hex(cfg.password + salt)
         return "u=${encode(cfg.username)}" +
@@ -194,7 +201,7 @@ object SubsonicService {
         val baseUrl = resolveBaseUrl()
         val url = buildUrl(baseUrl, endpoint)
         val body = httpGet(url, apiClient)
-            ?: throw SubsonicException("HTTP 请求失败: $url")
+            ?: throw SubsonicException("HTTP 请求失败: ${redactSensitive(url)}")
         val json = JSONObject(body)
         val subsonicResponse = json.optJSONObject("subsonic-response")
             ?: throw SubsonicException("响应缺少 subsonic-response 字段")
@@ -215,6 +222,92 @@ object SubsonicService {
         else JSONObject(body).optJSONObject("subsonic-response")?.optString("status") == "ok"
     } catch (_: Exception) {
         false
+    }
+
+    // ===================== 连接测试（不写入配置） =====================
+
+    /** 「测试连接」的结果分类：区分地址格式错误、认证失败与网络不可达。 */
+    sealed class ConnectionTestResult {
+        /** 连接成功 */
+        object Success : ConnectionTestResult()
+
+        /** 服务器可达但认证失败（用户名/密码错误） */
+        data class AuthFailed(val message: String) : ConnectionTestResult()
+
+        /** 网络不可达或 HTTP 失败 */
+        data class Unreachable(val message: String) : ConnectionTestResult()
+
+        /** 服务器地址格式错误 */
+        data class InvalidUrl(val message: String) : ConnectionTestResult()
+    }
+
+    /**
+     * 测试连接：仅用 [testConfig] 探测服务器，
+     * **不写数据库、不修改当前活跃配置**（测试失败不影响已保存的服务器配置）。
+     *
+     * 两个地址都填写时按「内网 → 公网」顺序探测，任一成功即成功；
+     * 全部失败时返回最后一次失败的分类结果。
+     */
+    suspend fun testConnection(testConfig: SubsonicConfig): ConnectionTestResult {
+        val candidates = testConfig.resolvableBaseUrls()
+        if (candidates.isEmpty()) {
+            return ConnectionTestResult.InvalidUrl("未填写服务器地址（内网或公网至少填写一个）")
+        }
+        // 先校验地址格式（OkHttp 非法 URL 会抛 IllegalArgumentException）
+        for ((baseUrl, _) in candidates) {
+            if (!isHttpUrl(baseUrl)) {
+                return ConnectionTestResult.InvalidUrl("服务器地址需以 http:// 或 https:// 开头")
+            }
+        }
+
+        var lastFailure: ConnectionTestResult = ConnectionTestResult.Unreachable("无法连接到服务器")
+        for ((baseUrl, probeClient) in candidates) {
+            val result = probePing(testConfig, baseUrl, probeClient)
+            if (result is ConnectionTestResult.Success) return result
+            lastFailure = result
+        }
+        return lastFailure
+    }
+
+    private suspend fun probePing(
+        cfg: SubsonicConfig,
+        baseUrl: String,
+        probeClient: OkHttpClient,
+    ): ConnectionTestResult = try {
+        val body = httpGet(buildUrl(baseUrl, "ping", cfg), probeClient)
+        when {
+            body == null -> ConnectionTestResult.Unreachable("HTTP 请求失败")
+            else -> {
+                val response = JSONObject(body).optJSONObject("subsonic-response")
+                when {
+                    response == null -> ConnectionTestResult.Unreachable("响应缺少 subsonic-response 字段")
+                    response.optString("status") == "ok" -> ConnectionTestResult.Success
+                    else -> {
+                        val error = response.optJSONObject("error")
+                        val code = error?.optInt("code", -1) ?: -1
+                        // 40/41/42：用户名或密码错误 / token 认证不支持
+                        if (code in setOf(40, 41, 42)) {
+                            ConnectionTestResult.AuthFailed("用户名或密码错误")
+                        } else {
+                            val message = error?.optString("message") ?: "未知错误"
+                            ConnectionTestResult.Unreachable("Subsonic 错误 ($code): $message")
+                        }
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        if (e is IllegalArgumentException) {
+            ConnectionTestResult.InvalidUrl("服务器地址格式错误")
+        } else {
+            ConnectionTestResult.Unreachable(redactSensitive(e.message ?: "连接失败"))
+        }
+    }
+
+    private fun isHttpUrl(url: String): Boolean {
+        val trimmed = url.trim()
+        return trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true)
     }
 
     // ===================== 曲库 =====================
@@ -493,6 +586,13 @@ object SubsonicService {
     }
 
     private fun log(message: String) {
-        android.util.Log.d(TAG, message)
+        android.util.Log.d(TAG, redactSensitive(message))
     }
+
+    /**
+     * 日志/错误信息脱敏：把 URL 查询串中的认证参数（u / s / t）替换为 `***`，
+     * 防止用户名、盐值与认证 token 进入日志或异常消息（优化建议 01）。
+     */
+    private fun redactSensitive(text: String): String =
+        text.replace(Regex("([?&])(u|s|t)=[^&\\s'\"]*"), "$1$2=***")
 }

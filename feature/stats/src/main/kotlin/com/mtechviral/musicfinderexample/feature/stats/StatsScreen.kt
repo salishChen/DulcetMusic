@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
+import com.mtechviral.musicfinderexample.core.database.dao.PlayOverview
 import com.mtechviral.musicfinderexample.core.designsystem.component.PrimaryAppBar
 import com.mtechviral.musicfinderexample.core.designsystem.theme.ytTextSecondary
 import com.mtechviral.musicfinderexample.core.model.Song
@@ -92,12 +93,20 @@ fun StatsScreen() {
     var loading by remember { mutableStateOf(true) }
     var topPlayed by remember { mutableStateOf<List<Song>>(emptyList()) }
     var recentlyPlayed by remember { mutableStateOf<List<Song>>(emptyList()) }
+    var overview by remember { mutableStateOf(PlayOverview(0, 0, 0)) }
     var selectedTab by remember { mutableStateOf(0) }
 
-    /** 查询统计数据（对应 Dart `_loadData`：queryTopPlayed(50) / queryRecentlyPlayed(50)） */
+    /**
+     * 查询统计数据。
+     *
+     * 概览卡片改用全库 SQL 聚合（优化建议 07）：
+     * 总播放次数 = SUM(playCount)、已听歌曲 = playCount > 0 计数，
+     * 不再受「最常播放」列表 50 首上限影响；「最近播放」卡片为近 7 天窗口计数。
+     */
     suspend fun loadData() {
         topPlayed = DatabaseHelper.queryTopPlayed(50)
         recentlyPlayed = DatabaseHelper.queryRecentlyPlayed(50)
+        overview = DatabaseHelper.queryPlayOverview(recentWindowMs = 7L * 24 * 60 * 60 * 1000)
         loading = false
     }
 
@@ -123,7 +132,7 @@ fun StatsScreen() {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    OverviewCard(topPlayed = topPlayed, recentlyCount = recentlyPlayed.size)
+                    OverviewCard(overview = overview)
 
                     TabRow(selectedTabIndex = selectedTab) {
                         Tab(
@@ -242,9 +251,9 @@ private fun StatSongRow(song: Song, rank: Int?, onClick: () -> Unit) {
 
 /** 概览卡片（对应 Dart `_buildOverviewCard` + `_statItem`） */
 @Composable
-private fun OverviewCard(topPlayed: List<Song>, recentlyCount: Int) {
-    val totalPlays = topPlayed.sumOf { it.playCount }
-    val uniquePlayed = topPlayed.size
+private fun OverviewCard(overview: PlayOverview) {
+    val totalPlays = overview.totalPlayCount
+    val uniquePlayed = overview.playedSongCount
     val primary = MaterialTheme.colorScheme.primary
 
     Row(
@@ -265,7 +274,7 @@ private fun OverviewCard(topPlayed: List<Song>, recentlyCount: Int) {
         StatDivider()
         StatItem(label = "已听歌曲", value = "$uniquePlayed", modifier = Modifier.weight(1f))
         StatDivider()
-        StatItem(label = "最近播放", value = "$recentlyCount", modifier = Modifier.weight(1f))
+        StatItem(label = "近7天播放", value = "${overview.recentPlayCount}", modifier = Modifier.weight(1f))
     }
 }
 

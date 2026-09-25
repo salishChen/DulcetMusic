@@ -29,9 +29,8 @@ class MusicWidgetProvider : AppWidgetProvider() {
         appWidgetManager: AppWidgetManager,
         appWidgetIds: IntArray,
     ) {
-        for (appWidgetId in appWidgetIds) {
-            updateWidget(context, appWidgetManager, appWidgetId)
-        }
+        // 系统回调在主线程；统一走后台渲染（封面解码不占主线程）
+        updateAllWidgets(context, force = true)
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -49,8 +48,71 @@ class MusicWidgetProvider : AppWidgetProvider() {
         const val ACTION_PLAY_PAUSE =
             "com.mtechviral.musicfinderexample.ACTION_PLAY_PAUSE"
 
-        /** 更新单个小组件显示 */
+        /** 目标尺寸：72dp * 2（与原实现一致） */
+        private const val TARGET_SIZE = 144
+
+        /**
+         * 小组件渲染的后台执行器（优化建议 12）：
+         * 封面解码与 RemoteViews 构建不再占用调用方线程（多为播放主线程）。
+         */
+        private val renderExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+        /** 封面解码缓存：同一封面路径的重复刷新不重复解码 */
+        @Volatile
+        private var cachedArtworkPath: String? = null
+
+        @Volatile
+        private var cachedArtworkBitmap: Bitmap? = null
+
+        /** 上次渲染的内容指纹：内容未变化时跳过重复刷新 */
+        @Volatile
+        private var lastRenderKey: String? = null
+
+        /**
+         * 更新单个小组件显示（后台执行，立即返回）。
+         */
         fun updateWidget(
+            context: Context,
+            appWidgetManager: AppWidgetManager,
+            appWidgetId: Int,
+        ) {
+            val appContext = context.applicationContext
+            renderExecutor.execute {
+                renderWidget(appContext, appWidgetManager, appWidgetId)
+            }
+        }
+
+        /** 通知所有小组件更新（后台执行；内容未变化时跳过，force 强制渲染） */
+        fun updateAllWidgets(context: Context, force: Boolean = false) {
+            val appContext = context.applicationContext
+            renderExecutor.execute {
+                val manager = AppWidgetManager.getInstance(appContext)
+                val widget = ComponentName(appContext, MusicWidgetProvider::class.java)
+                val ids = manager.getAppWidgetIds(widget)
+                if (ids.isEmpty()) return@execute
+
+                val prefs = appContext.getSharedPreferences(
+                    MusicWidgetUpdater.PREF_NAME,
+                    Context.MODE_PRIVATE,
+                )
+                val songTitle = prefs.getString(MusicWidgetUpdater.KEY_SONG_TITLE, null)
+                val isPlaying = prefs.getBoolean(MusicWidgetUpdater.KEY_IS_PLAYING, false)
+                val artworkPath = prefs.getString(MusicWidgetUpdater.KEY_ARTWORK_PATH, null)
+                val renderKey = "$songTitle|$isPlaying|$artworkPath"
+                if (!force && renderKey == lastRenderKey) {
+                    // 内容未变化（如拖动进度触发的高频刷新）：跳过解码与刷新
+                    return@execute
+                }
+                lastRenderKey = renderKey
+
+                for (id in ids) {
+                    renderWidget(appContext, manager, id)
+                }
+            }
+        }
+
+        /** 实际渲染（仅在 [renderExecutor] 上调用） */
+        private fun renderWidget(
             context: Context,
             appWidgetManager: AppWidgetManager,
             appWidgetId: Int,
@@ -77,13 +139,9 @@ class MusicWidgetProvider : AppWidgetProvider() {
             }
             views.setImageViewResource(R.id.widget_play_pause, iconRes)
 
-            if (!artworkPath.isNullOrEmpty()) {
-                val bitmap = loadBitmapFromFile(artworkPath)
-                if (bitmap != null) {
-                    views.setImageViewBitmap(R.id.widget_album_art, bitmap)
-                } else {
-                    views.setImageViewResource(R.id.widget_album_art, R.drawable.ic_default_artwork)
-                }
+            val bitmap = artworkFor(artworkPath)
+            if (bitmap != null) {
+                views.setImageViewBitmap(R.id.widget_album_art, bitmap)
             } else {
                 views.setImageViewResource(R.id.widget_album_art, R.drawable.ic_default_artwork)
             }
@@ -114,13 +172,14 @@ class MusicWidgetProvider : AppWidgetProvider() {
             appWidgetManager.updateAppWidget(appWidgetId, views)
         }
 
-        /** 通知所有小组件更新 */
-        fun updateAllWidgets(context: Context) {
-            val manager = AppWidgetManager.getInstance(context)
-            val widget = ComponentName(context, MusicWidgetProvider::class.java)
-            for (id in manager.getAppWidgetIds(widget)) {
-                updateWidget(context, manager, id)
-            }
+        /** 取封面 Bitmap（同路径命中缓存，不重复解码） */
+        private fun artworkFor(path: String?): Bitmap? {
+            if (path.isNullOrEmpty()) return null
+            cachedArtworkBitmap?.let { if (cachedArtworkPath == path) return it }
+            val bitmap = loadBitmapFromFile(path)
+            cachedArtworkPath = if (bitmap != null) path else null
+            cachedArtworkBitmap = bitmap
+            return bitmap
         }
 
         /** 从文件路径加载封面 Bitmap（采样加载，避免 OOM） */
@@ -149,8 +208,5 @@ class MusicWidgetProvider : AppWidgetProvider() {
             Log.e(TAG, "加载封面图片失败: ${e.message}")
             null
         }
-
-        /** 目标尺寸：72dp * 2（与原实现一致） */
-        private const val TARGET_SIZE = 144
     }
 }

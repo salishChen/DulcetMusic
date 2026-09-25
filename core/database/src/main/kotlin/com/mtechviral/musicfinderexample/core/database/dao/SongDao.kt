@@ -27,6 +27,18 @@ import com.mtechviral.musicfinderexample.core.database.mapAll
 import com.mtechviral.musicfinderexample.core.model.Song
 
 /**
+ * 播放概览聚合结果（统计页顶部卡片，优化建议 07）。
+ */
+data class PlayOverview(
+    /** 全库播放总次数（SUM(playCount)） */
+    val totalPlayCount: Long,
+    /** 已听歌曲数（playCount > 0） */
+    val playedSongCount: Int,
+    /** 时间窗口内播放过的歌曲数（lastPlayed >= since） */
+    val recentPlayCount: Int,
+)
+
+/**
  * songs 表数据访问对象。
  *
  * 逐条对应原 Flutter 工程 `DatabaseHelper` 中「歌曲」「远程歌曲缓存」「播放统计」
@@ -283,6 +295,42 @@ class SongDao(private val musicDatabase: MusicDatabase) {
             TABLE_SONGS, null, "$COL_LAST_PLAYED IS NOT NULL", null, null, null,
             "$COL_LAST_PLAYED DESC", limit.toString(),
         ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
+
+    // ======================== 播放概览聚合 ========================
+
+    /**
+     * 全库播放概览（优化建议 07）：独立的 SQL 聚合，不受 Top N 列表 50 首上限影响。
+     *
+     * - [totalPlayCount]：全部歌曲 playCount 求和；
+     * - [playedSongCount]：playCount > 0 的歌曲数（已听歌曲）；
+     * - [recentPlayCount]：`lastPlayed >= since` 的歌曲数（时间窗口由调用方指定）。
+     */
+    fun queryPlayOverview(recentSince: Long?): PlayOverview {
+        val totalPlays = db.rawQuery(
+            "SELECT IFNULL(SUM($COL_PLAY_COUNT), 0) FROM $TABLE_SONGS", null,
+        ).use { c -> if (c.moveToFirst()) c.getLong(0) else 0L }
+
+        val playedSongs = db.rawQuery(
+            "SELECT COUNT(*) FROM $TABLE_SONGS WHERE $COL_PLAY_COUNT > 0", null,
+        ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+        val recentPlayed = if (recentSince == null) {
+            db.rawQuery(
+                "SELECT COUNT(*) FROM $TABLE_SONGS WHERE $COL_LAST_PLAYED IS NOT NULL", null,
+            ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+        } else {
+            db.rawQuery(
+                "SELECT COUNT(*) FROM $TABLE_SONGS WHERE $COL_LAST_PLAYED >= ?",
+                arrayOf(recentSince.toString()),
+            ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+        }
+
+        return PlayOverview(
+            totalPlayCount = totalPlays,
+            playedSongCount = playedSongs,
+            recentPlayCount = recentPlayed,
+        )
+    }
 
     // ======================== 喜欢功能 ========================
 
