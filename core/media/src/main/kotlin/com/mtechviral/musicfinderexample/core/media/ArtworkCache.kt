@@ -89,10 +89,26 @@ object ArtworkCache {
         val result = deferred!!
         if (!owner) return result.await()
 
-        val bytes = withContext(Dispatchers.IO) { readBytes(path, cachedArtworkPath) }
-        synchronized(cache) { cache[cacheKey] = bytes }
-        mutex.withLock { pending.remove(cacheKey) }
-        result.complete(bytes)
+        // 优化建议 06：成功/失败/取消都要完成在途任务并移除登记，
+        // 保证并发等待者不会悬挂（收到 null 后可重试）。
+        var bytes: ByteArray? = null
+        var cancelled: Throwable? = null
+        try {
+            bytes = withContext(Dispatchers.IO) { readBytes(path, cachedArtworkPath) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            cancelled = e
+        } catch (e: Exception) {
+            Log.w(TAG, "加载封面异常 $path: ${e.message}")
+        } finally {
+            if (cancelled == null) {
+                // 只有真正读完才写缓存（含结果为 null 的情况）；
+                // 取消不写缓存，避免把「没读过」误记成「读过且没有封面」
+                synchronized(cache) { cache[cacheKey] = bytes }
+            }
+            mutex.withLock { pending.remove(cacheKey) }
+            result.complete(bytes)
+        }
+        cancelled?.let { throw it }
         return bytes
     }
 

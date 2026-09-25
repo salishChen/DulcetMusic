@@ -1072,6 +1072,8 @@ object PlayerController {
     private suspend fun resolvePlayableUri(song: Song): String {
         val cachedPath = song.cachedPath
         if (song.isCached && cachedPath != null && File(cachedPath).exists()) {
+            // 播放命中缓存：刷新「最近使用」时间，使淘汰接近严格 LRU（优化建议 05）
+            song.id?.let { DatabaseHelper.touchSongCache(it) }
             return cachedPath
         }
         val remoteId = song.remoteId
@@ -1093,6 +1095,8 @@ object PlayerController {
         val dbSong = DatabaseHelper.querySongByRemoteId(remoteId) ?: return song
         val cached = dbSong.cachedPath
         if (dbSong.isCached && cached != null && withContextIo { File(cached).exists() }) {
+            // 命中缓存同样刷新「最近使用」时间（优化建议 05）
+            song.id?.let { DatabaseHelper.touchSongCache(it) }
             return song.copy(cachedPath = cached)
         }
         return song

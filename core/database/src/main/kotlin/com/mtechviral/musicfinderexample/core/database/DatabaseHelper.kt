@@ -228,6 +228,27 @@ object DatabaseHelper {
         }
     }
 
+    /** 刷新缓存「最近使用」时间（播放/命中缓存时调用，优化建议 05） */
+    suspend fun touchSongCache(songId: Long) = writeMutex.withLock {
+        io { songDao.touchSongCache(songId) }
+    }
+
+    /** 按封面缓存路径批量解除引用（封面淘汰时调用） */
+    suspend fun clearArtworkCacheByPath(path: String) = writeMutex.withLock {
+        io {
+            songDao.clearArtworkCacheByPath(path)
+            invalidateCache()
+        }
+    }
+
+    /** 重置全部缓存字段（音频与封面，清空全部缓存时调用） */
+    suspend fun clearAllCacheRecords() = writeMutex.withLock {
+        io {
+            songDao.clearAllCacheRecords()
+            invalidateCache()
+        }
+    }
+
     /** 缓存时间最早的歌曲（LRU 淘汰） */
     suspend fun queryOldestCachedSong(): Song? = io { songDao.queryOldestCachedSong() }
 

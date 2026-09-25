@@ -315,6 +315,44 @@ class SongDao(private val musicDatabase: MusicDatabase) {
         )
     }
 
+    /**
+     * 刷新歌曲的缓存「最近使用」时间（播放/命中缓存时调用）。
+     * 与下载写入（updateSongCache）使用同一口径，使淘汰接近严格 LRU（优化建议 05）。
+     */
+    fun touchSongCache(songId: Long) {
+        db.update(
+            TABLE_SONGS,
+            ContentValues().apply { put(COL_CACHE_TIMESTAMP, System.currentTimeMillis()) },
+            "$COL_ID = ? AND $COL_CACHED_PATH IS NOT NULL",
+            arrayOf(songId.toString()),
+        )
+    }
+
+    /**
+     * 清除引用指定封面缓存文件的记录（封面淘汰/删除时调用；
+     * 多首歌可共享同一封面文件，按路径批量解除引用）。
+     */
+    fun clearArtworkCacheByPath(path: String) {
+        db.update(
+            TABLE_SONGS,
+            ContentValues().apply { putNull(COL_CACHED_ARTWORK_PATH) },
+            "$COL_CACHED_ARTWORK_PATH = ?",
+            arrayOf(path),
+        )
+    }
+
+    /**
+     * 重置全部缓存字段（音频与封面，优化建议 05）：
+     * 「清空全部缓存」后数据库与目录一起归零，封面可重新下载。
+     */
+    fun clearAllCacheRecords() {
+        db.execSQL(
+            "UPDATE $TABLE_SONGS SET $COL_CACHED_PATH = NULL, $COL_CACHE_TIMESTAMP = NULL, " +
+                "$COL_CACHED_ARTWORK_PATH = NULL WHERE $COL_CACHED_PATH IS NOT NULL " +
+                "OR $COL_CACHE_TIMESTAMP IS NOT NULL OR $COL_CACHED_ARTWORK_PATH IS NOT NULL",
+        )
+    }
+
     /** 查询缓存时间最早的歌曲（用于 LRU 淘汰） */
     fun queryOldestCachedSong(): Song? =
         db.query(

@@ -116,32 +116,87 @@ object CacheService {
     }
 
     /**
-     * 检查并执行 LRU 淘汰。
+     * 检查并执行淘汰（优化建议 05）。
+     *
+     * - 容量口径与 [getCacheSizeBytes] 一致：包含音频、封面与临时文件；
+     * - 先清理下载中断残留的 `.tmp` 孤儿文件；
+     * - 再按「最近使用」时间淘汰已登记的音频缓存；仍不足时淘汰最旧的封面缓存；
+     * - **删除失败时保留数据库记录并停止淘汰**，不虚报已释放空间。
+     *
      * @param requiredBytes 需要腾出的空间（字节）
      */
     suspend fun evictIfNeeded(requiredBytes: Long) {
         val maxSizeBytes = getCacheSizeMB().toLong() * 1024 * 1024
+        cleanupTempFiles()
         val currentSize = getCacheSizeBytes()
         if (currentSize + requiredBytes <= maxSizeBytes) return
 
         var needEvict = (currentSize + requiredBytes) - maxSizeBytes
+
+        // 1) 按「最近使用」时间淘汰音频缓存
         while (needEvict > 0) {
             val oldest = DatabaseHelper.queryOldestCachedSong() ?: break
             val cachedPath = oldest.cachedPath ?: break
-            // 删除缓存文件
             val file = File(cachedPath)
-            if (file.exists()) {
-                val fileSize = file.length()
-                if (file.delete()) needEvict -= fileSize else needEvict -= fileSize
+            val fileSize = if (file.exists()) file.length() else 0L
+            if (file.exists() && !file.delete()) {
+                // 删除失败：保留记录（否则 DB 会指向丢失文件），不再虚报释放
+                Log.w(TAG, "缓存文件删除失败，停止淘汰: $cachedPath")
+                break
             }
-            // 清除数据库中的缓存记录
             oldest.id?.let { DatabaseHelper.clearSongCache(it) }
+            needEvict -= fileSize
         }
+
+        // 2) 音频仍不足时淘汰封面缓存（封面同样计入容量）
+        if (needEvict > 0) {
+            evictArtwork(needEvict)
+        }
+    }
+
+    /** 清理下载中断残留的 `.tmp` 文件（占用容量但不属于任何缓存记录） */
+    private suspend fun cleanupTempFiles() {
+        withContext(Dispatchers.IO) {
+            val dir = getCacheDir()
+            dir.walkTopDown()
+                .filter { it.isFile && it.name.endsWith(".tmp") }
+                .forEach { runCatching { it.delete() } }
+        }
+    }
+
+    /**
+     * 按最旧优先淘汰封面缓存文件，返回实际释放的字节数。
+     * 删除成功后同步清除引用该文件的数据库封面字段（多首歌可共享同一封面）。
+     */
+    private suspend fun evictArtwork(requiredBytes: Long): Long {
+        var released = 0L
+        withContext(Dispatchers.IO) {
+            val artworkDir = File(getCacheDir(), ARTWORK_DIR_NAME)
+            if (!artworkDir.isDirectory) return@withContext
+            val files = artworkDir.listFiles { f -> f.isFile }
+                ?.sortedBy { it.lastModified() }
+                ?: return@withContext
+            for (file in files) {
+                if (released >= requiredBytes) break
+                val size = file.length()
+                if (file.delete()) {
+                    released += size
+                    DatabaseHelper.clearArtworkCacheByPath(file.absolutePath)
+                } else {
+                    Log.w(TAG, "封面缓存删除失败，停止淘汰: ${file.absolutePath}")
+                    break
+                }
+            }
+        }
+        return released
     }
 
     /**
      * 缓存歌曲到本地，返回缓存后的本地文件路径，失败返回 null。
      * 同一 remoteId 的并发请求复用同一个在途任务，不会重复下载。
+     *
+     * 优化建议 06：成功、失败与取消都会完成在途任务，
+     * 保证所有等待者可靠结束（返回结果或 null 可重试），不会悬挂。
      */
     suspend fun cacheSong(song: Song): String? {
         val remoteId = song.remoteId ?: return null
@@ -162,15 +217,24 @@ object CacheService {
         val task = deferred!!
         if (!owner) return task.await()
 
-        val result = try {
-            doCacheSong(song)
+        var result: String? = null
+        var cancelled: Throwable? = null
+        try {
+            result = doCacheSong(song)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            cancelled = e
+        } catch (e: Exception) {
+            Log.w(TAG, "缓存任务异常: ${e.message}")
         } finally {
             // 任务仍是自己时才移除（防止 ABA）：新任务已被注册则保留
             mutex.withLock {
                 if (inFlight[remoteId] === task) inFlight.remove(remoteId)
             }
+            // 无论成功/失败/取消都先完成任务，唤醒所有等待者
+            task.complete(result)
         }
-        task.complete(result)
+        // 保留协程取消语义（调用方仍会收到 CancellationException）
+        cancelled?.let { throw it }
         return result
     }
 
@@ -199,6 +263,9 @@ object CacheService {
             song.id?.let { DatabaseHelper.updateSongCache(it, cachePath.absolutePath) }
 
             cachePath.absolutePath
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // 保留协程取消语义（不要吞掉 CancellationException）
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "缓存歌曲失败: ${e.message}")
             null
@@ -262,6 +329,8 @@ object CacheService {
 
             // 检查是否已缓存
             if (cachePath.exists()) {
+                // 命中也刷新「最近使用」时间，供封面淘汰按 LRU 进行（优化建议 05）
+                cachePath.setLastModified(System.currentTimeMillis())
                 song.id?.let { DatabaseHelper.updateArtworkCache(it, cachePath.absolutePath) }
                 return@withContext cachePath.absolutePath
             }
@@ -277,6 +346,8 @@ object CacheService {
             song.id?.let { DatabaseHelper.updateArtworkCache(it, cachePath.absolutePath) }
 
             cachePath.absolutePath
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "缓存封面失败: ${e.message}")
             null
@@ -308,17 +379,19 @@ object CacheService {
         }
     }
 
-    /** 删除所有缓存（目录 + 数据库记录） */
+    /**
+     * 删除所有缓存（目录 + 数据库记录）。
+     *
+     * 优化建议 05：同时重置音频与封面的数据库缓存字段 ——
+     * 否则「清空全部缓存 → 重启」后封面字段残留，远程封面不会重新下载。
+     */
     suspend fun clearAllCache() {
         withContext(Dispatchers.IO) {
             val dir = getCacheDir()
             if (dir.exists()) dir.deleteRecursively()
             cacheDirRef = null
         }
-        val cachedSongs = DatabaseHelper.queryCachedSongs()
-        for (song in cachedSongs) {
-            song.id?.let { DatabaseHelper.clearSongCache(it) }
-        }
+        DatabaseHelper.clearAllCacheRecords()
     }
 
     /** 获取所有已缓存歌曲 */
