@@ -188,4 +188,38 @@ object EasyTierEngine {
         val logFile = File(File(context.filesDir, "easytier"), "easytier.log")
         UrlSanitizer.redact(logFile.readText().takeLast(maxChars))
     }.getOrDefault("")
+
+    /**
+     * 端到端检测转发通道（诊断用）：
+     * 1) 本地回环端口是否监听；2) 经转发访问虚拟网目标是否有 HTTP 响应。
+     * 用于区分「转发没通」与「Subsonic 服务/配置问题」。
+     */
+    suspend fun probeForward(config: EasyTierConfig): String = withContext(Dispatchers.IO) {
+        val target = "${config.serverVirtualIp}:${config.serverPort}"
+        if (!config.hasPortForward) return@withContext "未配置转发目标，无法检测"
+        if (process?.isAlive != true) return@withContext "引擎未运行，请先「保存并连接」"
+
+        val localUp = runCatching {
+            java.net.Socket().use {
+                it.connect(java.net.InetSocketAddress("127.0.0.1", config.localPort), 2000)
+            }
+        }.isSuccess
+        if (!localUp) {
+            return@withContext "本地端口 ${config.localPort} 未监听：转发未建立（请查看引擎日志）"
+        }
+        try {
+            val url = java.net.URL("http://127.0.0.1:${config.localPort}/rest/ping")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+            val code = conn.responseCode
+            conn.disconnect()
+            "转发通道正常：目标 $target 返回 HTTP $code（服务可达）"
+        } catch (e: java.net.SocketTimeoutException) {
+            "本地转发已监听，但 $target 无响应（超时）：" +
+                "请确认目标 IP:端口 正确、目标节点在线、且服务监听 0.0.0.0"
+        } catch (e: Exception) {
+            "经转发访问 $target 失败：${e.message ?: e.javaClass.simpleName}"
+        }
+    }
 }

@@ -264,9 +264,20 @@ fun EasyTierSection(
             fontSize = 12.sp,
             color = MaterialTheme.ytTextSecondary,
         )
-        // 日志入口：连接问题排查必需（引擎进程输出的尾部）
-        TextButton(onClick = { showLog = true }) {
-            Text("查看引擎日志", fontSize = 12.sp)
+        // 日志/检测入口：连接问题排查（区分转发不通与服务端问题）
+        Row {
+            TextButton(onClick = { showLog = true }) {
+                Text("查看引擎日志", fontSize = 12.sp)
+            }
+            TextButton(
+                onClick = {
+                    scope.launch {
+                        onMessage(EasyTierEngine.probeForward(config))
+                    }
+                },
+            ) {
+                Text("检测转发通道", fontSize = 12.sp)
+            }
         }
         Spacer(Modifier.height(8.dp))
         Text(
@@ -290,20 +301,22 @@ fun EasyTierSection(
                         onMessage("网络名 / 网络密码 必填")
                         return@Button
                     }
-                    // 转发目标：手动填写优先；留空时从内网地址自动推导
+                    // 转发目标：手动填写优先；为空或与内网地址主机一致时，
+                    // 从内网地址自动推导（含端口同步——避免只更新 IP 留下旧端口）
                     var snapshot = config.copy(enabled = true)
-                    if (snapshot.serverVirtualIp.isBlank()) {
-                        val target = EasyTierConfig.parseHostPort(intranetUrl)
-                        if (target != null) {
-                            snapshot = snapshot.copy(
-                                serverVirtualIp = target.first,
-                                serverPort = target.second,
-                            )
-                            config = snapshot
-                        } else {
-                            onMessage("无法推导转发目标：请填「内网地址」或手动填转发目标 IP")
-                            return@Button
-                        }
+                    val derived = EasyTierConfig.parseHostPort(intranetUrl)
+                    if (derived != null &&
+                        (snapshot.serverVirtualIp.isBlank() ||
+                            snapshot.serverVirtualIp == derived.first)
+                    ) {
+                        snapshot = snapshot.copy(
+                            serverVirtualIp = derived.first,
+                            serverPort = derived.second,
+                        )
+                        config = snapshot
+                    } else if (snapshot.serverVirtualIp.isBlank()) {
+                        onMessage("无法推导转发目标：请填「内网地址」或手动填转发目标 IP")
+                        return@Button
                     }
                     connecting = true
                     config = snapshot
