@@ -44,6 +44,13 @@ data class EasyTierConfig(
     val socks5Enabled: Boolean = false,
     /** 本地 SOCKS5 端口 */
     val socks5Port: Int = 1080,
+    /**
+     * 省电模式（默认开启，耗电优化）：
+     * 纯客户端（`--no-listener`，不接受入站连接）、按需 P2P（`--lazy-p2p`）、
+     * 关闭对称 NAT 打洞（`--disable-sym-hole-punching`，该打洞流量大且持续）。
+     * 配合引擎「空闲自动休眠」显著降低后台耗电。
+     */
+    val powersaver: Boolean = true,
 ) {
     /**
      * 配置是否完整到可以启动组网。
@@ -100,6 +107,12 @@ data class EasyTierConfig(
         }
         if (socks5Enabled) {
             args += listOf("--socks5", socks5Port.toString())
+        }
+        if (powersaver) {
+            // 省电三件套：不接受入站 / 按需 P2P / 关闭对称 NAT 打洞
+            args += "--no-listener"
+            args += "--lazy-p2p"
+            args += "--disable-sym-hole-punching"
         }
         return args
     }

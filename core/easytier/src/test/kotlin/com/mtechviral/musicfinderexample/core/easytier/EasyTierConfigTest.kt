@@ -117,4 +117,17 @@ class EasyTierConfigTest {
             base.copy(serverVirtualIp = "", serverPort = 4533).resolveForwardTarget(""),
         )
     }
+
+    @Test
+    fun `powersaver adds battery saving flags`() {
+        val args = base.copy(powersaver = true).toArgs()
+        assertTrue(args.contains("--no-listener"))
+        assertTrue(args.contains("--lazy-p2p"))
+        assertTrue(args.contains("--disable-sym-hole-punching"))
+        // 关闭省电时不加这些参数
+        val off = base.copy(powersaver = false).toArgs()
+        assertFalse(off.contains("--no-listener"))
+        assertFalse(off.contains("--lazy-p2p"))
+        assertFalse(off.contains("--disable-sym-hole-punching"))
+    }
 }

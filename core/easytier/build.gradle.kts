@@ -32,8 +32,8 @@ dependencies {
     implementation(project(":core:common"))
     // 复用 Keystore 凭据加密（network_secret 与 Subsonic 密码同等保护）
     implementation(project(":core:database"))
-    // 注入本地转发地址到 SubsonicService 探测链
-    implementation(project(":core:network"))
+    // 注：本地转发地址通过回调注入网络层（应用启动时接线），
+    // 本模块不依赖 core:network，避免循环依赖
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
 

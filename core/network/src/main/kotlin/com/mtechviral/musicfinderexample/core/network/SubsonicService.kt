@@ -119,8 +119,16 @@ object SubsonicService {
      * 两个都填写时按「内网 5s → 公网 10s」的顺序依次探测。
      */
     private suspend fun resolveBaseUrl(): String {
-        activeBaseUrl?.let { return it }
+        activeBaseUrl?.let {
+            // 省电：远程访问即视为组网活动，阻止空闲休眠
+            com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.touch()
+            return it
+        }
         val cfg = config ?: throw SubsonicException("Subsonic 未配置")
+
+        // 省电：EasyTier 组网按需唤醒（空闲 15 分钟自动休眠），就绪后再探测
+        com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.touch()
+        com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.awaitRunning()
 
         val candidates = cfg.resolvableBaseUrls()
         if (candidates.isEmpty()) {

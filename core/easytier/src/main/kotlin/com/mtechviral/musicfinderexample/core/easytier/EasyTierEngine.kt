@@ -3,11 +3,13 @@ package com.mtechviral.musicfinderexample.core.easytier
 import android.content.Context
 import android.util.Log
 import com.mtechviral.musicfinderexample.core.common.UrlSanitizer
-import com.mtechviral.musicfinderexample.core.network.SubsonicService
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -17,21 +19,25 @@ import java.io.File
  * 以 `--no-tun` 模式运行随包分发的 `easytier-core`（`jniLibs/<abi>/libeasytier.so`，
  * 安装后位于 `nativeLibraryDir`，Android 10+ 允许执行该目录中的只读文件），
  * 通过 `--port-forward` 把虚拟网内 Subsonic 的端口转发到本地回环 ——
- * **不需要 ROOT、不需要 VpnService**，应用侧只需把「内网地址」指向
- * [EasyTierConfig.localBaseUrl]。
+ * **不需要 ROOT、不需要 VpnService**。
  *
- * 生命周期：
- * - [start] 拉起进程并把本地转发地址注入 [SubsonicService.easyTierBaseUrl]
- *   （探测顺序变为：EasyTier → 内网 → 公网）；
- * - [stop] 结束进程并移除注入；
- * - 进程意外退出时置为 [State.Error]（由界面提示，重新启用即重启）；
- * - 引擎未打包（缺少 libeasytier.so）时给出明确 [State.Error] 提示，
- *   现有内网/公网直连完全不受影响。
+ * 省电策略（耗电优化）：
+ * - **按需唤醒**：不在应用启动时拉起；远程访问经 [touch]/[ensureStarted] 唤醒；
+ * - **空闲休眠**：[IDLE_STOP_MS] 无远程流量自动停止进程（状态 [State.Sleeping]），
+ *   下次远程访问自动唤醒；
+ * - **省电运行参数**（[EasyTierConfig.powersaver]）：纯客户端（`--no-listener`）、
+ *   按需 P2P（`--lazy-p2p`）、关闭对称 NAT 打洞（`--disable-sym-hole-punching`）。
+ *
+ * 与网络层解耦：本地转发地址通过 [onActiveBaseUrlChanged] 回调注入
+ * （由应用启动时接线到 SubsonicService），本模块不依赖网络层。
  */
 object EasyTierEngine {
 
     private const val TAG = "EasyTierEngine"
     private const val BINARY_NAME = "libeasytier.so"
+
+    /** 空闲多久后自动休眠（无远程流量） */
+    const val IDLE_STOP_MS = 15 * 60 * 1000L
 
     /** 引擎运行状态 */
     sealed class State {
@@ -44,8 +50,11 @@ object EasyTierEngine {
         /** 运行中（detail 为本地转发映射或组网说明） */
         data class Running(val detail: String) : State()
 
-        /** 已停止 */
+        /** 已停止（手动断开） */
         object Stopped : State()
+
+        /** 已休眠（省电：空闲自动停止，远程访问时自动唤醒） */
+        object Sleeping : State()
 
         /** 异常（引擎缺失 / 进程退出 / 启动失败） */
         data class Error(val message: String) : State()
@@ -54,8 +63,99 @@ object EasyTierEngine {
     private val _state = MutableStateFlow<State>(State.Disabled)
     val state: StateFlow<State> = _state.asStateFlow()
 
+    /**
+     * 本地转发地址变更回调（运行中且配置了端口转发时为 `http://127.0.0.1:<port>`，
+     * 停止/休眠时为 null）。由应用层接线到 SubsonicService。
+     */
+    var onActiveBaseUrlChanged: ((String?) -> Unit)? = null
+
     private var process: Process? = null
     private var startedConfig: EasyTierConfig? = null
+
+    @Volatile
+    private var appContext: Context? = null
+
+    /** 最近一次远程活动时间（空闲看门狗依据） */
+    @Volatile
+    private var lastActivityAt = 0L
+
+    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** 应用启动时调用：保存上下文并启动空闲看门狗 */
+    fun init(context: Context) {
+        if (appContext == null) {
+            appContext = context.applicationContext
+            idleWatchdog.start()
+        }
+    }
+
+    /** 空闲看门狗：远程流量停止超过 [IDLE_STOP_MS] 自动停止引擎（省电） */
+    private val idleWatchdog: Thread = Thread {
+        while (true) {
+            try {
+                Thread.sleep(30_000)
+                val idleFor = System.currentTimeMillis() - lastActivityAt
+                if (idleFor > IDLE_STOP_MS) {
+                    synchronized(this@EasyTierEngine) {
+                        if (process?.isAlive == true &&
+                            System.currentTimeMillis() - lastActivityAt > IDLE_STOP_MS
+                        ) {
+                            Log.i(TAG, "空闲 ${IDLE_STOP_MS / 60000} 分钟，组网引擎休眠（省电）")
+                            stopInternal()
+                            _state.value = State.Sleeping
+                        }
+                    }
+                }
+            } catch (_: InterruptedException) {
+                return@Thread
+            } catch (e: Exception) {
+                Log.w(TAG, "空闲看门狗异常: ${e.message}")
+            }
+        }
+    }.apply {
+        name = "easytier-idle-watchdog"
+        isDaemon = true
+    }
+
+    /** 记录一次远程活动（阻止空闲休眠） */
+    fun touch() {
+        lastActivityAt = System.currentTimeMillis()
+    }
+
+    /**
+     * 按需唤醒（非挂起）：已启用且未运行时拉起引擎。
+     * 所有远程访问入口（SubsonicService）都会经过这里。
+     */
+    fun ensureStarted() {
+        val ctx = appContext ?: return
+        touch()
+        synchronized(this) {
+            if (process?.isAlive == true) return
+            if (_state.value is State.Starting) return
+        }
+        val cfg = runCatching { EasyTierConfigStore.load(ctx) }.getOrNull() ?: return
+        if (!cfg.enabled) return
+        engineScope.launch { start(ctx, cfg) }
+    }
+
+    /**
+     * 等待引擎进入运行态（用于远程请求前的冷启动窗口）。
+     * 未启用或超时返回 false，调用方按无组网回退处理。
+     */
+    suspend fun awaitRunning(timeoutMs: Long = 5000): Boolean {
+        if (process?.isAlive == true) return true
+        val ctx = appContext ?: return false
+        val cfg = runCatching { EasyTierConfigStore.load(ctx) }.getOrNull() ?: return false
+        if (!cfg.enabled) return false
+        ensureStarted()
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (_state.value is State.Running) return true
+            if (_state.value is State.Error) return false
+            kotlinx.coroutines.delay(200)
+        }
+        return _state.value is State.Running
+    }
 
     /** 引擎二进制是否已随包分发 */
     fun engineAvailable(context: Context): Boolean = binaryFile(context).exists()
@@ -83,6 +183,7 @@ object EasyTierEngine {
             return true
         }
         stopInternal()
+        touch()
 
         val binary = binaryFile(context)
         if (!binary.exists()) {
@@ -118,11 +219,11 @@ object EasyTierEngine {
                 return false
             }
 
-            // 注入本地转发地址：Subsonic 探测顺序变为 EasyTier → 内网 → 公网。
-            // 只有配置了端口转发目标才注入（否则本地回环没有监听者）；
+            // 注入本地转发地址（仅配置了端口转发时）：
+            // Subsonic 探测顺序变为 EasyTier → 内网 → 公网。
             // 无 TUN 模式下虚拟网地址只能经端口转发访问，直填虚拟 IP 不通
-            SubsonicService.easyTierBaseUrl = if (config.hasPortForward) config.localBaseUrl else null
-            SubsonicService.resetConnection()
+            val baseUrl = if (config.hasPortForward) config.localBaseUrl else null
+            onActiveBaseUrlChanged?.invoke(baseUrl)
             _state.value = State.Running(
                 if (config.hasPortForward) {
                     config.localBaseUrl + " → ${config.serverVirtualIp}:${config.serverPort}"
@@ -155,8 +256,7 @@ object EasyTierEngine {
     }
 
     private fun stopInternal() {
-        SubsonicService.easyTierBaseUrl = null
-        SubsonicService.resetConnection()
+        onActiveBaseUrlChanged?.invoke(null)
         startedConfig = null
         val p = process ?: return
         process = null

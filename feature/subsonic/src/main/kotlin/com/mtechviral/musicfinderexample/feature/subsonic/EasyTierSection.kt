@@ -130,6 +130,31 @@ fun EasyTierSection(
             lineHeight = 18.sp,
         )
         Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "省电模式（推荐）",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = "空闲 15 分钟自动休眠组网，远程访问时自动唤醒；" +
+                        "纯客户端 + 按需 P2P，显著降低后台耗电",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.ytTextSecondary.copy(alpha = 0.7f),
+                    lineHeight = 15.sp,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Switch(
+                checked = config.powersaver,
+                onCheckedChange = {
+                    config = config.copy(powersaver = it)
+                    onMessage(if (it) "已开启省电模式（重新连接后生效）" else "已关闭省电模式（重新连接后生效）")
+                },
+            )
+        }
+        Spacer(Modifier.height(12.dp))
 
         ConfigTextField(
             value = config.networkName,
@@ -233,6 +258,7 @@ fun EasyTierSection(
             is EasyTierEngine.State.Starting -> "启动中…"
             is EasyTierEngine.State.Running -> "运行中（${s.detail}）"
             is EasyTierEngine.State.Stopped -> "已停止"
+            is EasyTierEngine.State.Sleeping -> "已休眠（省电，访问远程时自动唤醒）"
             is EasyTierEngine.State.Error -> "异常：${s.message}"
         }
         Text(

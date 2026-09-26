@@ -25,6 +25,8 @@ dependencies {
     api(project(":core:model"))
     implementation(project(":core:common"))
     implementation(project(":core:database"))
+    // EasyTier 组网按需唤醒（所有远程访问入口统一在本模块触达/唤醒）
+    implementation(project(":core:easytier"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)

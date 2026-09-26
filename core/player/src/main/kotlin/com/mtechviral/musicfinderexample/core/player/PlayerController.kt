@@ -64,6 +64,9 @@ object PlayerController {
     /** 位置轮询间隔（毫秒），对应 audioplayers 的 onPositionChanged 频率 */
     private const val POSITION_POLL_MS = 200L
 
+    /** 空闲/暂停时的降频轮询间隔（省电：避免 200ms 定时器空转） */
+    private const val IDLE_POLL_MS = 2000L
+
     /** 等待服务连接的超时（毫秒） */
     private const val CONNECT_TIMEOUT_MS = 5000L
 
@@ -994,12 +997,17 @@ object PlayerController {
         tickerJob?.cancel()
         tickerJob = scope.launch {
             while (isActive) {
-                delay(POSITION_POLL_MS)
+                // 空闲/暂停时降频轮询（省电）：播放中保持细粒度进度
+                delay(if (_isPlaying.value) POSITION_POLL_MS else IDLE_POLL_MS)
                 val p = controller ?: continue
                 val pos = p.currentPosition.coerceAtLeast(0L)
                 _position.value = pos
                 if (_isPlaying.value) {
                     _duration.value = currentDurationOrNull()
+                    // 省电：远程播放期间保持组网引擎活跃（长专辑连播防空闲休眠中断）
+                    if (_currentSong.value?.isRemote == true) {
+                        com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.touch()
+                    }
                     // 节流推送悬浮窗歌词
                     if (lastPublishedPosMs < 0 ||
                         kotlin.math.abs(pos - lastPublishedPosMs) >= PLATFORM_POS_INTERVAL_MS

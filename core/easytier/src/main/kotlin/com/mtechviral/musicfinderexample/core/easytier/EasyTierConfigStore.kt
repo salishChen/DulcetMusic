@@ -28,6 +28,7 @@ object EasyTierConfigStore {
     private const val KEY_LOCAL_PORT = "local_port"
     private const val KEY_SOCKS5_ENABLED = "socks5_enabled"
     private const val KEY_SOCKS5_PORT = "socks5_port"
+    private const val KEY_POWERSAVER = "powersaver"
 
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -49,6 +50,7 @@ object EasyTierConfigStore {
             localPort = p.getInt(KEY_LOCAL_PORT, 18080),
             socks5Enabled = p.getBoolean(KEY_SOCKS5_ENABLED, false),
             socks5Port = p.getInt(KEY_SOCKS5_PORT, 1080),
+            powersaver = p.getBoolean(KEY_POWERSAVER, true),
         )
     }
 
@@ -65,6 +67,7 @@ object EasyTierConfigStore {
             .putInt(KEY_LOCAL_PORT, config.localPort)
             .putBoolean(KEY_SOCKS5_ENABLED, config.socks5Enabled)
             .putInt(KEY_SOCKS5_PORT, config.socks5Port)
+            .putBoolean(KEY_POWERSAVER, config.powersaver)
         // network_secret：Keystore 加密后存储（优化建议 01 同口径）
         if (config.networkSecret.isNotEmpty()) {
             val enc = CredentialCipher.encrypt(config.networkSecret)
