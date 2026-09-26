@@ -67,6 +67,9 @@ object PlayerController {
     /** 空闲/暂停时的降频轮询间隔（省电：避免 200ms 定时器空转） */
     private const val IDLE_POLL_MS = 2000L
 
+    /** 通知栏封面补下载限时（首次播放远程歌曲；超时则本次不带封面，不阻塞播放） */
+    private const val ARTWORK_DOWNLOAD_TIMEOUT_MS = 2500L
+
     /** 等待服务连接的超时（毫秒） */
     private const val CONNECT_TIMEOUT_MS = 5000L
 
@@ -1084,7 +1087,11 @@ object PlayerController {
         val file = artworkFile(song) ?: return null
         if (file.exists() && file.length() > 0) return file.toUri()
         return try {
-            val bytes = ArtworkCache.load(song.path, song.cachedArtworkPath) ?: return null
+            // 远程歌曲首次播放时封面可能尚未下载：先补下载，保证通知栏/系统
+            // 播放空间首次播放就有封面（Media3 在构建 MediaItem 时缓存封面，
+            // 事后补文件不会刷新，只能等下次重建）
+            val artworkPath = resolveArtworkPath(song)
+            val bytes = ArtworkCache.load(song.path, artworkPath) ?: return null
             if (bytes.isEmpty()) return null
             withContextIo { file.writeBytes(bytes) }
             file.toUri()
@@ -1094,13 +1101,30 @@ object PlayerController {
         }
     }
 
+    /**
+     * 解析可用的封面文件路径：远程歌曲封面未缓存时先经缓存池补下载
+     * （限时 [ARTWORK_DOWNLOAD_TIMEOUT_MS]，失败/超时不阻塞播放）。
+     */
+    private suspend fun resolveArtworkPath(song: Song): String? {
+        if (!song.isRemote || !song.cachedArtworkPath.isNullOrEmpty()) {
+            return song.cachedArtworkPath
+        }
+        if (song.coverArtId == null || song.id == null) return song.cachedArtworkPath
+        val downloaded = kotlinx.coroutines.withTimeoutOrNull(ARTWORK_DOWNLOAD_TIMEOUT_MS) {
+            CacheService.cacheArtwork(song)
+        }
+        return downloaded ?: song.cachedArtworkPath
+    }
+
     /** 后台预热某首歌的通知栏封面文件（只做 IO，同样不访问播放器） */
     private fun ensureArtworkFile(song: Song) {
         ioScope.launch {
             try {
                 val file = artworkFile(song) ?: return@launch
                 if (file.exists() && file.length() > 0) return@launch
-                val bytes = ArtworkCache.load(song.path, song.cachedArtworkPath) ?: return@launch
+                // 远程歌曲：预热时一并补下载封面（自动续播的下一首提前就绪）
+                val artworkPath = resolveArtworkPath(song)
+                val bytes = ArtworkCache.load(song.path, artworkPath) ?: return@launch
                 if (bytes.isNotEmpty()) file.writeBytes(bytes)
             } catch (e: Exception) {
                 Log.w(TAG, "预热通知栏封面失败: ${e.message}")
