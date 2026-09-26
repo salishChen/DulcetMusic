@@ -217,38 +217,14 @@ fun EasyTierSection(
             color = MaterialTheme.ytTextSecondary.copy(alpha = 0.6f),
             lineHeight = 16.sp,
         )
-        Spacer(Modifier.height(12.dp))
-        Row {
-            Box(modifier = Modifier.weight(1f)) {
-                ConfigTextField(
-                    value = config.serverPort.toString(),
-                    onValueChange = { v ->
-                        v.filter { it.isDigit() }.take(5).toIntOrNull()
-                            ?.let { config = config.copy(serverPort = it) }
-                        if (v.isEmpty()) config = config.copy(serverPort = 0)
-                    },
-                    label = "服务器端口",
-                    hint = "4533",
-                    leadingIcon = Icons.Filled.Dns,
-                    isError = false,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Box(modifier = Modifier.weight(1f)) {
-                ConfigTextField(
-                    value = config.localPort.toString(),
-                    onValueChange = { v ->
-                        v.filter { it.isDigit() }.take(5).toIntOrNull()
-                            ?.let { config = config.copy(localPort = it) }
-                        if (v.isEmpty()) config = config.copy(localPort = 0)
-                    },
-                    label = "本地端口",
-                    hint = "18080",
-                    leadingIcon = Icons.Filled.Dns,
-                    isError = false,
-                )
-            }
-        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "转发端口自动取「内网地址」里的端口，本地回环端口自动使用 " +
+                config.localPort + "，无需单独设置。",
+            fontSize = 11.sp,
+            color = MaterialTheme.ytTextSecondary.copy(alpha = 0.6f),
+            lineHeight = 16.sp,
+        )
 
         Spacer(Modifier.height(12.dp))
         // 连接状态
@@ -293,33 +269,24 @@ fun EasyTierSection(
         Row {
             Button(
                 onClick = {
-                    if (config.serverPort !in 1..65535 || config.localPort !in 1..65535) {
-                        onMessage("端口需在 1~65535 之间")
-                        return@Button
-                    }
                     if (!config.isComplete) {
                         onMessage("网络名 / 网络密码 必填")
                         return@Button
                     }
-                    // 转发目标：手动填写优先；为空或与内网地址主机一致时，
-                    // 从内网地址自动推导（含端口同步——避免只更新 IP 留下旧端口）
-                    var snapshot = config.copy(enabled = true)
-                    val derived = EasyTierConfig.parseHostPort(intranetUrl)
-                    if (derived != null &&
-                        (snapshot.serverVirtualIp.isBlank() ||
-                            snapshot.serverVirtualIp == derived.first)
-                    ) {
-                        snapshot = snapshot.copy(
-                            serverVirtualIp = derived.first,
-                            serverPort = derived.second,
-                        )
-                        config = snapshot
-                    } else if (snapshot.serverVirtualIp.isBlank()) {
-                        onMessage("无法推导转发目标：请填「内网地址」或手动填转发目标 IP")
+                    // 转发目标自动解析（优化：端口始终取内网地址端口，不再单独设置）：
+                    // 主机优先手动「转发目标 IP」，留空取内网地址主机
+                    val target = config.resolveForwardTarget(intranetUrl)
+                    if (target == null) {
+                        onMessage("无法推导转发目标：请先填写「内网地址」")
                         return@Button
                     }
-                    connecting = true
+                    val snapshot = config.copy(
+                        enabled = true,
+                        serverVirtualIp = target.first,
+                        serverPort = target.second,
+                    )
                     config = snapshot
+                    connecting = true
                     scope.launch {
                         EasyTierConfigStore.save(context, snapshot)
                         val ok = EasyTierEngine.start(context, snapshot)

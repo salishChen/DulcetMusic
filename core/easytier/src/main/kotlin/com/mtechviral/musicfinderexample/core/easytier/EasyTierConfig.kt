@@ -104,6 +104,19 @@ data class EasyTierConfig(
         return args
     }
 
+    /**
+     * 解析实际转发目标（主机、端口）：
+     * - **端口始终取内网地址的端口**（不再单独设置，避免 IP/端口不一致）；
+     * - 主机优先用「转发目标 IP」手动值，留空则取内网地址主机；
+     * - 内网地址不可解析时，回退用手动主机 + 保存的端口。
+     */
+    fun resolveForwardTarget(intranetUrl: String): Pair<String, Int>? {
+        val derived = parseHostPort(intranetUrl)
+            ?: return if (serverVirtualIp.isBlank()) null else serverVirtualIp to serverPort
+        val host = serverVirtualIp.ifBlank { derived.first }
+        return host to derived.second
+    }
+
     companion object {
         /**
          * 从内网/公网 URL 推导端口转发目标（主机、端口）。

@@ -91,4 +91,30 @@ class EasyTierConfigTest {
         assertEquals("music.example.com" to 443, EasyTierConfig.parseHostPort("https://music.example.com"))
         assertEquals(null, EasyTierConfig.parseHostPort("10.0.0.222:8002"))
     }
+
+    @Test
+    fun `forward port always follows intranet url`() {
+        // 端口始终取内网地址端口；主机留空取内网地址主机
+        assertEquals(
+            "10.0.0.222" to 8002,
+            base.copy(serverVirtualIp = "", serverPort = 4533)
+                .resolveForwardTarget("http://10.0.0.222:8002"),
+        )
+        // 手动指定转发主机时，端口仍同步内网地址端口
+        assertEquals(
+            "10.0.0.9" to 8002,
+            base.copy(serverVirtualIp = "10.0.0.9", serverPort = 4533)
+                .resolveForwardTarget("http://10.0.0.222:8002"),
+        )
+        // 内网地址不可解析时回退手动主机 + 保存端口
+        assertEquals(
+            "10.0.0.9" to 4533,
+            base.copy(serverVirtualIp = "10.0.0.9", serverPort = 4533)
+                .resolveForwardTarget(""),
+        )
+        assertEquals(
+            null,
+            base.copy(serverVirtualIp = "", serverPort = 4533).resolveForwardTarget(""),
+        )
+    }
 }
