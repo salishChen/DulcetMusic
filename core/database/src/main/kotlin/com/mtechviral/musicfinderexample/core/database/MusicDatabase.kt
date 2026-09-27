@@ -146,7 +146,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         if (oldVersion in 9..10) {
             db.execSQL("ALTER TABLE remote_sources ADD COLUMN libraryId TEXT NOT NULL DEFAULT ''")
         }
-        if (oldVersion < 11) {
+        if (oldVersion < 12) {
             db.execSQL("""UPDATE remote_sources SET password = ''
                 WHERE id != COALESCE((SELECT activeSourceId FROM remote_state WHERE singletonId = 1), '')""")
         }
@@ -302,7 +302,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         const val DB_NAME = "music_player.db"
-        const val DB_VERSION = 11
+        const val DB_VERSION = 12
 
         // ---- songs 表列名 ----
         const val TABLE_SONGS = "songs"

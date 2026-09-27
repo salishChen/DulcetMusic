@@ -108,7 +108,7 @@ class RemoteSourceMigrationTest {
         }
         MusicDatabase(context).use { helper ->
             val db = helper.readableDatabase
-            assertEquals(11, db.version)
+            assertEquals(12, db.version)
             db.rawQuery("SELECT libraryId FROM remote_sources WHERE id = 'source'", null).use {
                 assertTrue(it.moveToFirst())
                 assertEquals("", it.getString(0))
@@ -117,6 +117,33 @@ class RemoteSourceMigrationTest {
                 assertTrue(it.moveToFirst())
                 assertEquals("", it.getString(0))
             }
+        }
+    }
+
+    @Test
+    fun v11UpgradeClearsPreviouslyRetainedInactiveCredentials() {
+        val file = context.getDatabasePath(MusicDatabase.DB_NAME)
+        file.parentFile?.mkdirs()
+        SQLiteDatabase.openOrCreateDatabase(file, null).use { old ->
+            old.execSQL("""CREATE TABLE remote_sources (
+                id TEXT PRIMARY KEY, protocol TEXT NOT NULL, displayName TEXT NOT NULL,
+                password TEXT NOT NULL DEFAULT '', libraryId TEXT NOT NULL DEFAULT ''
+            )""")
+            old.execSQL("CREATE TABLE remote_state(singletonId INTEGER PRIMARY KEY, activeSourceId TEXT)")
+            old.execSQL("INSERT INTO remote_state(singletonId, activeSourceId) VALUES (1, 'active')")
+            old.execSQL("INSERT INTO remote_sources(id, protocol, displayName, password) VALUES ('active', 'EMBY', 'Current', 'active-pass')")
+            old.execSQL("INSERT INTO remote_sources(id, protocol, displayName, password) VALUES ('inactive', 'EMBY', 'Old', 'old-pass')")
+            old.version = 11
+        }
+        MusicDatabase(context).use { helper ->
+            val db = helper.readableDatabase
+            assertEquals(12, db.version)
+            val passwords = mutableMapOf<String, String>()
+            db.rawQuery("SELECT id, password FROM remote_sources", null).use {
+                while (it.moveToNext()) passwords[it.getString(0)] = it.getString(1)
+            }
+            assertEquals("active-pass", passwords["active"])
+            assertEquals("", passwords["inactive"])
         }
     }
 }
