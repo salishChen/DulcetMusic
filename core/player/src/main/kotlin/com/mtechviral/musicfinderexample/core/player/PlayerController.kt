@@ -168,6 +168,14 @@ object PlayerController {
         CacheService.onSongCached = { updated ->
             scope.launch { mergeCurrentSong(updated, mergeArtwork = true, mergeLyrics = true) }
         }
+        // 旁路只写了半首（切歌/前跳）→ 立即转入补全任务（写入者释放后触发，无竞态）
+        CacheService.onTapClosedIncomplete = { song ->
+            if (CacheService.completionDownloadAllowed()) {
+                CacheService.requestSpeculativeCache(
+                    song, "补全已播歌曲", CacheService.PRIORITY_COMPLETION,
+                )
+            }
+        }
         registerScreenReceiver(app)
         if (controller != null || controllerFuture != null) return
         try {
@@ -288,8 +296,6 @@ object PlayerController {
         val p = awaitPlayer() ?: return false
 
         var playable = resolveCachedState(song)
-        // 切歌：记录被切走的歌曲（其旁路前缀交给推测性任务补全），并取消旧预取
-        val previous = _currentSong.value?.takeIf { !it.isPlaceholder && it.path != playable.path }
 
         _currentSong.value = playable
         _currentIndex.value = index
@@ -319,7 +325,7 @@ object PlayerController {
                 }
             }
 
-            postPlayWork(playable, previous)
+            postPlayWork(playable)
             if (openNowPlaying) NowPlayingUiState.open()
             return true
         } catch (e: Exception) {
@@ -853,11 +859,11 @@ object PlayerController {
 
     // ===================== 播放收尾（统计 / 预缓存 / 歌词） =====================
 
-    private fun postPlayWork(song: Song, previous: Song? = null) {
+    private fun postPlayWork(song: Song) {
         // 递增播放次数（后台执行，不阻塞播放）
         song.id?.let { id -> ioScope.launch { DatabaseHelper.incrementPlayCount(id) } }
-        // 推测性缓存调度（补全刚播过的 / 预取下一首）
-        scheduleSpeculativeCache(previous, song)
+        // 推测性预取下一首（已播歌曲的补全由 CacheService.onTapClosedIncomplete 触发）
+        scheduleSpeculativePrefetch(song)
         // 后台获取歌词（仅当歌曲尚无歌词时）
         if (song.isRemote && song.lyrics.isNullOrEmpty()) {
             fetchLyricsInBackground(song)
@@ -865,22 +871,13 @@ object PlayerController {
     }
 
     /**
-     * 推测性缓存调度（耗电优化，doc/耗电分析报告.md §2.3）。
+     * 推测性预取调度（耗电优化，doc/耗电分析报告.md §2.3）。
      *
-     * 全局只保留一个后台缓存任务，随切歌取消旧任务：
-     * 1. 优先补全**刚播过歌曲**的旁路前缀（可能只差尾部，Range 续传）；
-     * 2. 否则预取下一首 —— 受播放模式 / 单曲队列 / 计费网络 / 电量约束。
-     *
+     * 预取下一首 —— 受播放模式 / 单曲队列 / 计费网络 / 电量约束；
      * 单曲循环不预取相邻曲目（下一首不会立即播放）。
+     * 全局单任务且优先级低于"补全已播"，不会打断补全。
      */
-    private fun scheduleSpeculativeCache(previous: Song?, upcoming: Song) {
-        val partial = previous?.takeIf {
-            it.isRemote && !it.isCached && CacheService.hasPartialCache(it)
-        }
-        if (partial != null && CacheService.completionDownloadAllowed()) {
-            CacheService.requestSpeculativeCache(partial, "补全已播歌曲")
-            return
-        }
+    private fun scheduleSpeculativePrefetch(upcoming: Song) {
         if (!CacheService.prefetchDownloadAllowed()) {
             CacheService.requestSpeculativeCache(null, "电量/网络约束")
             return
@@ -900,7 +897,9 @@ object PlayerController {
         // 提前准备下一首的通知栏封面（与预取同受电量/网络约束）
         ensureArtworkFile(nextSong)
         if (nextSong.isRemote && !nextSong.isCached) {
-            CacheService.requestSpeculativeCache(nextSong, "预取下一首")
+            CacheService.requestSpeculativeCache(
+                nextSong, "预取下一首", CacheService.PRIORITY_PREFETCH,
+            )
         } else {
             CacheService.requestSpeculativeCache(null, "下一首已缓存")
         }
@@ -1010,7 +1009,7 @@ object PlayerController {
                 val song = _currentSong.value
                 if (song != null) {
                     _position.value = 0L
-                    postPlayWork(song, previous = null)
+                    postPlayWork(song)
                 }
             }
             updateFloatingLyrics()
@@ -1055,7 +1054,7 @@ object PlayerController {
             _position.value = p.currentPosition.coerceAtLeast(0L)
             ensureArtworkFile(resolved)
             publishCurrentState()
-            if (postWork) postPlayWork(resolved, previous = prev?.takeIf { it.path != resolved.path && !it.isPlaceholder })
+            if (postWork) postPlayWork(resolved)
         }
     }
 

@@ -1,19 +1,23 @@
 package com.mtechviral.musicfinderexample.feature.subsonic
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Button
@@ -21,11 +25,13 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,8 +39,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -51,12 +59,26 @@ import com.mtechviral.musicfinderexample.feature.home.LocalOpenSidebar
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-/** Kept under the old route name so existing navigation links continue to work. */
+/** 远程配置页的两步流程：先选音乐源类型，再填写具体配置。 */
+private enum class ConfigStep { SELECT, CONFIG }
+
+/**
+ * 远程配置页（导航路由沿用 [com.mtechviral.musicfinderexample.core.common.AppRoutes.SUBSONIC]）。
+ *
+ * 流程（需求）：
+ * - **首次进入**（尚未配置任何音乐源）：先展示音乐源类型选择页，
+ *   选定后再进入该类型的具体配置表单；
+ * - **再次进入**（已有配置）：直接进入当前音乐源的配置页，
+ *   经「更换类型」可返回类型选择。
+ *
+ * EasyTier 组网配置已提取为独立的「组网设置」一级页面（[MeshSettingsScreen]）。
+ */
 @Composable
 fun SubsonicConfigScreen() {
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val openSidebar = LocalOpenSidebar.current
+    var step by remember { mutableStateOf(ConfigStep.SELECT) }
     var protocol by remember { mutableStateOf(RemoteProtocol.SUBSONIC) }
     var sourceId by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
@@ -84,6 +106,8 @@ fun SubsonicConfigScreen() {
             password = current.password
             rootPath = current.rootPath
             libraryId = current.libraryId
+            // 已有配置：直接进入该音乐源的配置页（跳过类型选择）
+            step = ConfigStep.CONFIG
         }
         loaded = true
     }
@@ -116,25 +140,30 @@ fun SubsonicConfigScreen() {
         topBar = { PrimaryAppBar(title = "远程配置", onMenuClick = openSidebar) },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
-        if (loaded) Column(
+        if (!loaded) return@Scaffold
+        if (step == ConfigStep.SELECT) {
+            SourceTypeSelect(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                onSelect = { option ->
+                    if (protocol != option) {
+                        protocol = option
+                        libraryId = ""
+                        libraries = emptyList()
+                    }
+                    step = ConfigStep.CONFIG
+                },
+            )
+            return@Scaffold
+        }
+        Column(
             modifier = Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            listOf(RemoteProtocol.NAVIDROME, RemoteProtocol.SUBSONIC).let { choices ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    choices.forEach { option ->
-                        FilterChip(selected = protocol == option, onClick = {
-                            if (protocol != option) { protocol = option; libraryId = ""; libraries = emptyList() }
-                        }, label = { Text(option.label) })
-                    }
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(RemoteProtocol.WEBDAV, RemoteProtocol.EMBY).forEach { option ->
-                    FilterChip(selected = protocol == option, onClick = {
-                        if (protocol != option) { protocol = option; libraryId = ""; libraries = emptyList() }
-                    }, label = { Text(option.label) })
-                }
+            // 当前音乐源类型 + 返回类型选择入口
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("音乐源类型：${protocol.label}", fontWeight = FontWeight.Medium)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { step = ConfigStep.SELECT }) { Text("更换类型") }
             }
             ConfigTextField(name, { name = it }, "服务器名称", "例如：家里的音乐服务器", Icons.Filled.Dns)
             ConfigTextField(intranet, { intranet = it }, "内网地址", "http://192.168.1.2:4533", Icons.Filled.Home)
@@ -262,15 +291,58 @@ fun SubsonicConfigScreen() {
                         }
                         sourceId = null
                         result = "已移除当前配置，历史曲库和缓存仍保留"
+                        // 移除后回到类型选择页（下次进入重新走首次流程）
+                        step = ConfigStep.SELECT
                         busy = false
                     }
                 }) { Text("移除当前配置") }
             }
-            if (protocol == RemoteProtocol.SUBSONIC || protocol == RemoteProtocol.NAVIDROME) {
-                Spacer(Modifier.height(8.dp))
-                EasyTierSection(intranetUrl = intranet, onMessage = { message ->
-                    scope.launch { snackbar.showSnackbar(message) }
-                })
+        }
+    }
+}
+
+/** 音乐源类型条目（图标 + 名称 + 简介） */
+private data class SourceTypeItem(
+    val protocol: RemoteProtocol,
+    val icon: ImageVector,
+    val description: String,
+)
+
+private val kSourceTypeItems = listOf(
+    SourceTypeItem(RemoteProtocol.SUBSONIC, Icons.Filled.Dns, "自建音乐服务器（Subsonic API 兼容）"),
+    SourceTypeItem(RemoteProtocol.NAVIDROME, Icons.Filled.LibraryMusic, "Navidrome 等 Navidrome 兼容服务"),
+    SourceTypeItem(RemoteProtocol.WEBDAV, Icons.Filled.Folder, "WebDAV 网盘上的音乐目录"),
+    SourceTypeItem(RemoteProtocol.EMBY, Icons.Filled.Movie, "Emby 媒体服务器"),
+)
+
+/**
+ * 音乐源类型选择页（首次进入远程配置时的第一步）。
+ * 选定类型后再进入该类型的具体配置表单。
+ */
+@Composable
+private fun SourceTypeSelect(
+    onSelect: (RemoteProtocol) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("选择远程音乐源", fontWeight = FontWeight.Bold)
+        Text("先选择你的音乐来源类型，再进行具体配置。")
+        kSourceTypeItems.forEach { item ->
+            OutlinedCard(modifier = Modifier.fillMaxWidth().clickable { onSelect(item.protocol) }) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(item.icon, contentDescription = null, modifier = Modifier.size(28.dp))
+                    Spacer(Modifier.size(14.dp))
+                    Column {
+                        Text(item.protocol.label, fontWeight = FontWeight.Medium)
+                        Text(item.description)
+                    }
+                }
             }
         }
     }

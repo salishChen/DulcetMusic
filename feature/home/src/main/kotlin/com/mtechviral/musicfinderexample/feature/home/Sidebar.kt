@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.ManageSearch
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.People
@@ -94,7 +95,7 @@ val LocalSidebarDrag = staticCompositionLocalOf { SidebarDragHandle() }
 /** 侧边栏条目定义（对应 Dart `SidebarItem`） */
 data class SidebarItem(val title: String, val icon: ImageVector)
 
-/** 九个一级页面入口（顺序与 Dart `kSidebarItems` 完全一致） */
+/** 十个一级页面入口（顺序与 Dart `kSidebarItems` 一致，新增「组网设置」位于「设置」上方） */
 val kSidebarItems: List<SidebarItem> = listOf(
     SidebarItem("歌曲", Icons.Filled.MusicNote),
     SidebarItem("专辑", Icons.Filled.Album),
@@ -104,14 +105,15 @@ val kSidebarItems: List<SidebarItem> = listOf(
     SidebarItem("扫描音乐", Icons.Filled.ManageSearch),
     SidebarItem("远程配置", Icons.Filled.Cloud),
     SidebarItem("统计", Icons.Filled.BarChart),
+    SidebarItem("组网设置", Icons.Filled.Hub),
     SidebarItem("设置", Icons.Filled.Settings),
 )
 
 /** 音乐相关分组（索引 0-4） */
 val kMusicGroup = listOf(0, 1, 2, 3, 4)
 
-/** 设置相关分组（索引 5-8） */
-val kSettingsGroup = listOf(5, 6, 7, 8)
+/** 设置相关分组（索引 5-9） */
+val kSettingsGroup = listOf(5, 6, 7, 8, 9)
 
 /**
  * 侧边栏内容：上方 Logo，其下两张无标题卡片（音乐 / 设置），当前页高亮。

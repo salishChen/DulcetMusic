@@ -27,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -68,12 +69,12 @@ object CacheService {
     // ===================== 耗电优化（doc/耗电分析报告.md §2） =====================
 
     /**
-     * 音频缓存键的写入者申领表。
+     * 音频缓存键的写入者申领表（key -> 写入者类型，[CLAIM_TAP] / [CLAIM_DOWNLOAD]）。
      *
      * 播放流旁路（[CacheTap]）与后台下载对**同一首歌**互斥：
      * 同一内容同时只有一个写入者，首次播放不再出现"边播边另起一套整曲下载"。
      */
-    private val claimedKeys = HashSet<String>()
+    private val claimedKeys = HashMap<String, String>()
 
     /** 在途下载的 Call（按缓存键）：取消任务时联动 `Call.cancel()`，立刻中断阻塞读 */
     private val activeCalls = HashMap<String, Call>()
@@ -82,6 +83,7 @@ object CacheService {
     private val speculativeLock = Any()
     private var speculativeJob: Job? = null
     private var speculativeKey: String? = null
+    private var speculativePriority = 0
 
     /** 封面在途任务（`revision|sourceId|coverArtId` -> Deferred）：并发触发复用同一下载 */
     private val artworkInFlight = HashMap<String, CompletableDeferred<String?>>()
@@ -95,6 +97,16 @@ object CacheService {
      */
     @Volatile
     var onSongCached: ((Song) -> Unit)? = null
+
+    /**
+     * 播放流旁路结束但**未落成完整缓存**（保留了可续传前缀）时的通知
+     * （由 PlayerController 注册，转入补全任务）。
+     *
+     * 在写入者申领**释放之后**才触发 —— 避免"切歌时补全任务先于流关闭启动、
+     * 被互斥挡掉后永远丢失"的竞态（表现为播放过的歌不缓存）。
+     */
+    @Volatile
+    var onTapClosedIncomplete: ((Song) -> Unit)? = null
 
     /** Called before switching the only active remote source. */
     fun cancelPending() {
@@ -297,7 +309,20 @@ object CacheService {
         val task = deferred!!
         if (!owner) return task.await()
 
-        if (!claimKey(cacheKey)) {
+        // 写入者互斥：若正被**播放流旁路**占用（切歌竞态：流通常在几秒内关闭），
+        // 短暂等待释放后接管；被其它下载占用则直接让路（在途去重已保证不重复）。
+        var claimed = false
+        var attempts = 0
+        while (attempts < CLAIM_WAIT_ATTEMPTS) {
+            attempts++
+            if (claimKey(cacheKey, CLAIM_DOWNLOAD)) {
+                claimed = true
+                break
+            }
+            if (claimHolder(cacheKey) != CLAIM_TAP) break
+            delay(CLAIM_WAIT_INTERVAL_MS)
+        }
+        if (!claimed) {
             // 播放流旁路或另一下载正在写同一首歌：不产生第二套传输
             mutex.withLock { if (inFlight[taskKey] === task) inFlight.remove(taskKey) }
             task.complete(null)
@@ -480,7 +505,7 @@ object CacheService {
      */
     fun openTap(song: Song, position: Long): CacheTap? {
         val key = cacheKeyOf(song) ?: return null
-        if (!claimKey(key)) return null
+        if (!claimKey(key, CLAIM_TAP)) return null
         val dir = resolveCacheDir()
         val tap = CacheTap.open(
             File(dir, "$key$PARTIAL_FILE_SUFFIX"),
@@ -498,14 +523,17 @@ object CacheService {
      * 播放流旁路结束。
      *
      * 顺序读完整个资源（[eof]）时前缀直接落为正式缓存 —— 首次播放即完成整曲缓存，
-     * **零额外网络传输**；中途切歌/前跳则保留前缀，由 [requestSpeculativeCache]
-     * 的补全任务按 Range 续传。
+     * **零额外网络传输**；中途切歌/前跳则保留前缀并经 [onTapClosedIncomplete]
+     * 转入补全任务按 Range 续传（在写入者释放后触发，无互斥竞态）。
      */
     fun closeTap(song: Song, revision: Long, tap: CacheTap, eof: Boolean) {
         val key = cacheKeyOf(song)
         val completed = tap.finish(eof)
         if (key != null) releaseKey(key)
-        if (!completed) return
+        if (!completed) {
+            if (hasPartialCache(song)) onTapClosedIncomplete?.invoke(song)
+            return
+        }
         val target = tap.target
         scope.launch {
             try {
@@ -528,22 +556,44 @@ object CacheService {
 
     // ===================== 推测性缓存调度（报告 §2.3） =====================
 
+    /** 推测性任务优先级：预取（下一首 / 补封面等纯推测） */
+    const val PRIORITY_PREFETCH = 1
+
+    /** 推测性任务优先级：补全已播放内容（只差尾部，价值更高） */
+    const val PRIORITY_COMPLETION = 2
+
     /**
      * 请求一次推测性缓存（补全刚播过歌曲的前缀 / 预取下一首）。
      *
      * 全局只保留**一个**任务：目标变化时旧任务立即取消
      * （协程取消 + 联动 `Call.cancel()`），连续点播不会堆积后台下载。
-     * [song] 为 null 表示取消当前任务。
+     *
+     * 优先级调度：高优先级（补全已播）可打断低优先级（预取）；
+     * 正在执行高优先级任务时，低优先级请求直接让路（预取丢了就丢了）。
+     * [song] 为 null 表示无条件取消当前任务。
      */
-    fun requestSpeculativeCache(song: Song?, reason: String) {
+    fun requestSpeculativeCache(
+        song: Song?,
+        reason: String,
+        priority: Int = PRIORITY_PREFETCH,
+    ) {
         val key = song?.let { cacheKeyOf(it) }
         synchronized(speculativeLock) {
-            if (key != null && key == speculativeKey && speculativeJob?.isActive == true) return
+            if (song == null || key == null) {
+                speculativeJob?.cancel()
+                speculativeKey?.let { cancelCall(it) }
+                speculativeJob = null
+                speculativeKey = null
+                speculativePriority = 0
+                return
+            }
+            if (key == speculativeKey && speculativeJob?.isActive == true) return
+            // 旧任务优先级更高（如正在补全已播歌曲）：预取请求让路
+            if (speculativeJob?.isActive == true && speculativePriority > priority) return
             speculativeJob?.cancel()
             speculativeKey?.let { cancelCall(it) }
-            speculativeJob = null
             speculativeKey = key
-            if (song == null || key == null) return
+            speculativePriority = priority
             Log.d(TAG, "推测性缓存[$reason]: ${song.title}")
             speculativeJob = scope.launch { cacheSong(song) }
         }
@@ -587,7 +637,10 @@ object CacheService {
 
     // ===================== 写入者互斥 / Call 登记 =====================
 
-    private fun claimKey(key: String): Boolean = synchronized(claimedKeys) { claimedKeys.add(key) }
+    private fun claimKey(key: String, owner: String): Boolean =
+        synchronized(claimedKeys) { if (claimedKeys.containsKey(key)) false else { claimedKeys[key] = owner; true } }
+
+    private fun claimHolder(key: String): String? = synchronized(claimedKeys) { claimedKeys[key] }
 
     private fun releaseKey(key: String) {
         synchronized(claimedKeys) { claimedKeys.remove(key) }
@@ -895,6 +948,14 @@ object CacheService {
     /** 正式音频缓存 / 可续传前缀文件后缀（同键同目录，落盘即改名） */
     private const val CACHE_FILE_SUFFIX = ".cache"
     private const val PARTIAL_FILE_SUFFIX = ".partial"
+
+    /** 写入者类型：播放流旁路 / 后台下载 */
+    private const val CLAIM_TAP = "tap"
+    private const val CLAIM_DOWNLOAD = "download"
+
+    /** 下载等待播放流旁路释放写入者的轮询参数（切歌竞态兜底） */
+    private const val CLAIM_WAIT_ATTEMPTS = 40
+    private const val CLAIM_WAIT_INTERVAL_MS = 500L
 
     /** 下载缓冲（流式落盘，避免整首歌驻留内存） */
     private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024

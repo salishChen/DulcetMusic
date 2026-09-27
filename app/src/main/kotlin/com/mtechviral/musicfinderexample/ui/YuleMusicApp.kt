@@ -46,6 +46,7 @@ import com.mtechviral.musicfinderexample.feature.songs.SongsScreen
 import com.mtechviral.musicfinderexample.feature.songs.songsGraph
 import com.mtechviral.musicfinderexample.feature.stats.StatsScreen
 import com.mtechviral.musicfinderexample.feature.stats.statsGraph
+import com.mtechviral.musicfinderexample.feature.subsonic.MeshSettingsScreen
 import com.mtechviral.musicfinderexample.feature.subsonic.SubsonicConfigScreen
 import com.mtechviral.musicfinderexample.feature.subsonic.subsonicGraph
 
@@ -112,7 +113,7 @@ fun YuleMusicApp() {
                         navController = navController,
                         startDestination = AppRoutes.HOME,
                     ) {
-                        // 一级页面容器：拼接式侧边栏 + 九个一级页面保活切换
+                        // 一级页面容器：拼接式侧边栏 + 十个一级页面保活切换
                         composable(AppRoutes.HOME) {
                             HomeShell { index ->
                                 PrimaryPage(
@@ -177,7 +178,7 @@ fun YuleMusicApp() {
 
 /**
  * 一级页面按侧边栏下标分发（顺序与 `kSidebarItems` 完全一致）：
- * 0 歌曲 / 1 专辑 / 2 艺术家 / 3 歌单 / 4 喜欢 / 5 扫描音乐 / 6 远程配置 / 7 统计 / 8 设置
+ * 0 歌曲 / 1 专辑 / 2 艺术家 / 3 歌单 / 4 喜欢 / 5 扫描音乐 / 6 远程配置 / 7 统计 / 8 组网设置 / 9 设置
  */
 @Composable
 private fun PrimaryPage(
@@ -209,7 +210,8 @@ private fun PrimaryPage(
         5 -> ScanScreen(onOpenSubsonicConfig = onOpenSubsonicConfig)
         6 -> SubsonicConfigScreen()
         7 -> StatsScreen()
-        8 -> SettingsScreen(
+        8 -> MeshSettingsScreen()
+        9 -> SettingsScreen(
             onOpenCacheManage = onOpenCacheManage,
             onOpenLyricsOverlaySettings = onOpenLyricsOverlaySettings,
             onOpenExclusionList = onOpenExclusionList,
