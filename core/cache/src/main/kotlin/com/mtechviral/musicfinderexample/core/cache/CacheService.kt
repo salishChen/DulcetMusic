@@ -7,6 +7,7 @@ import com.mtechviral.musicfinderexample.core.common.UrlSanitizer
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.model.Song
+import com.mtechviral.musicfinderexample.core.media.MetadataParser
 import com.mtechviral.musicfinderexample.core.network.SubsonicService
 import com.mtechviral.musicfinderexample.core.network.RemoteRequest
 import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
@@ -292,6 +293,15 @@ object CacheService {
 
             // 更新数据库
             song.id?.let { DatabaseHelper.updateSongCache(it, cachePath.absolutePath) }
+            if (song.sourceType == Song.SOURCE_TYPE_WEBDAV && song.id != null) {
+                try {
+                    enrichCachedWebDavSong(song, cachePath, revision)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "WebDAV 标签补全失败: ${e.message}")
+                }
+            }
 
             cachePath.absolutePath
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -301,6 +311,30 @@ object CacheService {
             Log.w(TAG, "缓存歌曲失败: ${e.message}")
             null
         }
+    }
+
+    private suspend fun enrichCachedWebDavSong(song: Song, cachePath: File, revision: Long) {
+        val sourceId = song.sourceId ?: return
+        val remoteId = song.remoteId ?: return
+        val songId = song.id ?: return
+        val parsed = MetadataParser.parse(cachePath.absolutePath) ?: return
+        fun stillCurrent() = RemoteSessionManager.activeSourceId == sourceId &&
+            RemoteSessionManager.sessionRevision == revision
+        if (!stillCurrent()) return
+        val updated = DatabaseHelper.enrichWebDavSong(songId, sourceId, remoteId,
+            parsed, cachePath.nameWithoutExtension)
+        if (parsed.hasArtwork && stillCurrent()) {
+            val bytes = MetadataParser.readEmbeddedArtwork(cachePath.absolutePath)
+            if (bytes != null && bytes.size <= 4_000_000 && stillCurrent()) {
+                val artworkDir = File(getCacheDir(), ARTWORK_DIR_NAME)
+                artworkDir.mkdirs()
+                val target = File(artworkDir,
+                    "${RemoteLocator.sha256Hex("$sourceId|$remoteId|embedded")}.img")
+                target.writeBytes(bytes)
+                if (stillCurrent()) DatabaseHelper.updateArtworkCache(songId, target.absolutePath)
+            }
+        }
+        if (updated && stillCurrent()) MusicLibrary.reload()
     }
 
     /**
@@ -317,7 +351,8 @@ object CacheService {
             }
             // 回调通知：合并更新后的 Song 对象
             if (onCached != null && (cachedPath != null || artworkPath != null)) {
-                onCached(song.mergeCache(cachedPath, artworkPath))
+                val latest = song.id?.let { DatabaseHelper.querySongById(it) } ?: song
+                onCached(latest.mergeCache(cachedPath, artworkPath))
             }
         }
     }

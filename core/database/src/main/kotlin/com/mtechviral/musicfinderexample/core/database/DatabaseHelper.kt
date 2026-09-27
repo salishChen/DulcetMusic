@@ -242,6 +242,15 @@ object DatabaseHelper {
         }
     }
 
+    suspend fun enrichWebDavSong(songId: Long, sourceId: String, remoteId: String,
+                                 parsed: Song, cacheFileStem: String): Boolean = writeMutex.withLock {
+        io {
+            songDao.enrichWebDavSong(songId, sourceId, remoteId, parsed, cacheFileStem).also {
+                if (it) invalidateCache()
+            }
+        }
+    }
+
     suspend fun queryCachedSongs(): List<Song> = io { songDao.queryCachedSongs() }
 
     suspend fun clearSongCache(songId: Long) = writeMutex.withLock {

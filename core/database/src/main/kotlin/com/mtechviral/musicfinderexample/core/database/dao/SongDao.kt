@@ -6,17 +6,22 @@ import com.mtechviral.musicfinderexample.core.database.MusicDatabase
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ARTIST
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ALBUM
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ALBUM_ARTIST
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_BITRATE
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_BIT_DEPTH
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_CACHED_ARTWORK_PATH
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_CACHED_PATH
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_CACHE_TIMESTAMP
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_COVER_ART_ID
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_DURATION
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ID
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_IS_LIKED
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_LAST_PLAYED
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_LYRICS
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_PATH
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_PLAY_COUNT
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_HAS_ARTWORK
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_REMOTE_ID
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SAMPLE_RATE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE_TYPE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE_ID
@@ -308,6 +313,30 @@ class SongDao(private val musicDatabase: MusicDatabase) {
             "$COL_ID = ?",
             arrayOf(songId.toString()),
         )
+    }
+
+    /** Enrich a cached WebDAV file without replacing its remote identity or user state. */
+    fun enrichWebDavSong(songId: Long, sourceId: String, remoteId: String,
+                         parsed: Song, cacheFileStem: String): Boolean {
+        val values = ContentValues().apply {
+            if (parsed.title.isNotBlank() && parsed.title != cacheFileStem) put(COL_TITLE, parsed.title)
+            parsed.artist?.let { put(COL_ARTIST, it) }
+            parsed.album?.let { put(COL_ALBUM, it) }
+            parsed.albumArtist?.let { put(COL_ALBUM_ARTIST, it) }
+            parsed.trackNumber?.let { put(COL_TRACK_NUMBER, it) }
+            parsed.duration?.let { put(COL_DURATION, it) }
+            parsed.bitrate?.let { put(COL_BITRATE, it) }
+            parsed.sampleRate?.let { put(COL_SAMPLE_RATE, it) }
+            parsed.bitDepth?.let { put(COL_BIT_DEPTH, it) }
+            parsed.lyrics?.let { put(COL_LYRICS, it) }
+            if (parsed.hasArtwork) put(COL_HAS_ARTWORK, 1)
+        }
+        if (values.size() == 0) return false
+        val changed = db.update(TABLE_SONGS, values,
+            "$COL_ID = ? AND $COL_SOURCE_ID = ? AND $COL_REMOTE_ID = ? AND $COL_SOURCE_TYPE = ?",
+            arrayOf(songId.toString(), sourceId, remoteId, Song.SOURCE_TYPE_WEBDAV)) > 0
+        if (changed) invalidateMatchIndex()
+        return changed
     }
 
     /** 查询所有已缓存的远程歌曲 */

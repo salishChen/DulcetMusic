@@ -205,4 +205,28 @@ class SongDaoMergeTest {
         assertEquals(1234L, songDao.querySongByRemoteId("source-a", "one")?.duration)
         assertEquals(null, songDao.querySongByRemoteId("source-b", "one")?.duration)
     }
+
+    @Test
+    fun webDavMetadataEnrichmentKeepsRemoteIdentityAndUserState() {
+        val original = Song(
+            title = "File", path = "remote://dav/ZmlsZS5tcDM", artist = "Folder Artist",
+            sourceType = Song.SOURCE_TYPE_WEBDAV, sourceId = "dav", remoteId = "file.mp3",
+            isLiked = true,
+        )
+        songDao.insertSongs(listOf(original), "dav")
+        val before = songDao.querySongByRemoteId("dav", "file.mp3")!!
+        val parsed = Song(title = "Tagged Title", path = "/cache/hash.cache",
+            artist = "Tagged Artist", duration = 30_000, hasArtwork = true)
+
+        assertTrue(songDao.enrichWebDavSong(before.id!!, "dav", "file.mp3", parsed, "hash"))
+        val after = songDao.querySongByRemoteId("dav", "file.mp3")!!
+        assertEquals(before.id, after.id)
+        assertEquals(before.path, after.path)
+        assertEquals("Tagged Title", after.title)
+        assertEquals("Tagged Artist", after.artist)
+        assertEquals(30_000L, after.duration)
+        assertTrue(after.hasArtwork)
+        assertTrue(after.isLiked)
+        assertEquals("dav", after.sourceId)
+    }
 }
