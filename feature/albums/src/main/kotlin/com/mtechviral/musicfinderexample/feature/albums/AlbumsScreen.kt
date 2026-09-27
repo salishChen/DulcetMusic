@@ -103,7 +103,7 @@ fun AlbumsScreen(onOpenAlbum: (Album) -> Unit = {}) {
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     // 优化建议 10：同名专辑按「专辑名 + 专辑艺术家」区分，key 用复合键
-                    items(albums, key = { "${it.title}|${it.artist}" }) { album ->
+                    items(albums, key = { "${it.sourceId}|${it.title}|${it.artist}" }) { album ->
                         AlbumGridCard(
                             album = album,
                             onClick = { onOpenAlbum(album) },
@@ -112,6 +112,7 @@ fun AlbumsScreen(onOpenAlbum: (Album) -> Unit = {}) {
                                     actionSongs = DatabaseHelper.querySongsByAlbum(
                                         album.title,
                                         album.artist,
+                                        album.sourceId,
                                     )
                                     actionAlbum = album
                                 }

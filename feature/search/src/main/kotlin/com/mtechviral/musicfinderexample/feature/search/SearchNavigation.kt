@@ -22,7 +22,7 @@ class SearchNavigator internal constructor(private val navController: NavControl
 
     /** 优化建议 10：专辑详情按「专辑名 + 专辑艺术家」复合键跳转 */
     fun openAlbum(album: Album) {
-        navController?.navigate(AppRoutes.albumDetail(album.title, album.artist))
+        navController?.navigate(AppRoutes.albumDetail(album.title, album.artist, album.sourceId))
     }
 
     fun openArtist(name: String) {

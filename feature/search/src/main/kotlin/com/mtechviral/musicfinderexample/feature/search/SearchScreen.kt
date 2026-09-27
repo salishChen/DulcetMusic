@@ -310,7 +310,7 @@ private fun AlbumsTab(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         // 优化建议 10：同名专辑按「专辑名 + 专辑艺术家」区分，key 用复合键
-        items(items = albums, key = { "${it.title}|${it.artist}" }) { album ->
+        items(items = albums, key = { "${it.sourceId}|${it.title}|${it.artist}" }) { album ->
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -333,7 +333,7 @@ private fun AlbumsTab(
                     fontWeight = FontWeight.W500,
                 )
                 HighlightedText(
-                    text = "${album.artist ?: "未知艺术家"} · ${album.songCount}首",
+                    text = "${album.displayArtist} · ${album.songCount}首",
                     query = query,
                     fontSize = 11.sp,
                     color = secondary,
@@ -564,17 +564,22 @@ internal object SearchEngine {
             val album = song.album
             album != null && album.isNotEmpty() && album.lowercase().contains(q)
         }
-        .groupBy { "${it.album.orEmpty()}|${it.albumArtist ?: it.artist.orEmpty()}" }
+        .groupBy { Triple(it.album.orEmpty(), it.albumArtist ?: it.artist, it.sourceId) }
         .map { (_, songs) ->
             val first = songs.first()
-            val withArtwork = songs.filter { it.hasArtwork }
+            val cover = songs.firstOrNull { it.hasArtwork }
+                ?: songs.firstOrNull { it.cachedArtworkPath != null }
+                ?: songs.firstOrNull { it.coverArtId != null }
+                ?: first
             Album(
                 title = first.album.orEmpty(),
                 // 与数据库聚合口径一致：COALESCE(albumArtist, artist)
                 artist = (first.albumArtist ?: first.artist)?.takeIf { it.isNotEmpty() },
-                coverSongId = withArtwork.mapNotNull { it.id }.maxOrNull(),
-                coverSongPath = withArtwork.mapNotNull { it.path }.maxOrNull(),
-                coverArtworkPath = songs.mapNotNull { it.cachedArtworkPath }.maxOrNull(),
+                sourceId = first.sourceId,
+                coverSongId = cover.id,
+                coverSongPath = cover.path,
+                coverArtworkPath = cover.cachedArtworkPath,
+                coverArtId = cover.coverArtId,
                 songCount = songs.size,
             )
         }

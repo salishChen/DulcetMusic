@@ -120,7 +120,7 @@ fun YuleMusicApp() {
                                     onOpenSearch = { navController.navigate(AppRoutes.SEARCH) },
                                     onOpenAlbum = {
                                         navController.navigate(
-                                            AppRoutes.albumDetail(it.title, it.artist),
+                                            AppRoutes.albumDetail(it.title, it.artist, it.sourceId),
                                         )
                                     },
                                     onOpenArtist = {

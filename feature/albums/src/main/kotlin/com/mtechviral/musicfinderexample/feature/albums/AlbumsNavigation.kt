@@ -25,7 +25,7 @@ fun NavGraphBuilder.albumsGraph(navController: NavController) {
     composable(route = AppRoutes.ALBUMS) {
         AlbumsScreen(
             onOpenAlbum = { album ->
-                navController.navigate(AppRoutes.albumDetail(album.title, album.artist))
+                navController.navigate(AppRoutes.albumDetail(album.title, album.artist, album.sourceId))
             },
         )
     }
@@ -35,16 +35,19 @@ fun NavGraphBuilder.albumsGraph(navController: NavController) {
         arguments = listOf(
             navArgument(AppRoutes.ARG_TITLE) { type = NavType.StringType },
             navArgument(AppRoutes.ARG_ARTIST) { type = NavType.StringType },
+            navArgument(AppRoutes.ARG_SOURCE_ID) { type = NavType.StringType },
         ),
     ) { backStackEntry ->
         // AppRoutes.albumDetail 跳转时已做 Uri.encode，Navigation 读取路径参数时会自动解码，
         // 此处不要再解码一次（否则标题中含 "%xx" 时会被二次解码）
         val albumTitle = backStackEntry.arguments?.getString(AppRoutes.ARG_TITLE).orEmpty()
         val artistArg = backStackEntry.arguments?.getString(AppRoutes.ARG_ARTIST).orEmpty()
+        val sourceArg = backStackEntry.arguments?.getString(AppRoutes.ARG_SOURCE_ID).orEmpty()
         AlbumDetailScreen(
             albumTitle = albumTitle,
             // 优化建议 10：复合键（专辑名 + 专辑艺术家）定位专辑；占位符还原为 null
             albumArtist = artistArg.takeIf { it.isNotEmpty() && it != AppRoutes.UNKNOWN_ARTIST },
+            sourceId = sourceArg.takeIf { it.isNotEmpty() && it != AppRoutes.LOCAL_SOURCE },
             onBack = { navController.popBackStack() },
         )
     }

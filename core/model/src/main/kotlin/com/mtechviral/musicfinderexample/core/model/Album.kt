@@ -11,6 +11,8 @@ data class Album(
 
     /** 专辑艺术家（优先 albumArtist，回退 artist） */
     val artist: String? = null,
+    /** null means local; a remote album belongs to the one active source. */
+    val sourceId: String? = null,
 
     /** 用于取封面的歌曲 id（专辑内任一含封面歌曲） */
     val coverSongId: Long? = null,
@@ -29,5 +31,6 @@ data class Album(
 ) {
     /** 展示用艺术家（空值回退） */
     val displayArtist: String
-        get() = if (artist.isNullOrBlank()) "未知艺术家" else artist
+        get() = (if (artist.isNullOrBlank()) "未知艺术家" else artist) +
+            if (sourceId == null) "" else " · 远程"
 }

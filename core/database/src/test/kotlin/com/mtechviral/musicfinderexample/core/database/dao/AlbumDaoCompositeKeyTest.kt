@@ -94,4 +94,26 @@ class AlbumDaoCompositeKeyTest {
         assertEquals(representative.cachedArtworkPath, album.coverArtworkPath)
         assertEquals(representative.coverArtId, album.coverArtId)
     }
+
+    @Test
+    fun localAndActiveRemoteAlbumsWithSameNameStaySeparate() {
+        db.writableDatabase.execSQL(
+            "INSERT INTO remote_sources(id, protocol, displayName) VALUES ('remote-a', 'SUBSONIC', 'Remote')")
+        db.writableDatabase.execSQL(
+            "UPDATE remote_state SET activeSourceId = 'remote-a' WHERE singletonId = 1")
+        songDao.insertSongs(listOf(
+            Song(title = "Local", path = "/local.mp3", artist = "Same Artist", album = "Same Album"),
+        ), "media_library")
+        songDao.insertSongs(listOf(
+            Song(title = "Remote", path = "remote://remote-a/c29uZw", artist = "Same Artist",
+                album = "Same Album", sourceType = Song.SOURCE_TYPE_SUBSONIC,
+                sourceId = "remote-a", remoteId = "song"),
+        ), "remote-a")
+
+        val albums = albumDao.queryAlbums()
+        assertEquals(2, albums.size)
+        assertEquals(setOf(null, "remote-a"), albums.map { it.sourceId }.toSet())
+        assertEquals(listOf("Local"), albumDao.querySongsByAlbum("Same Album", "Same Artist").map { it.title })
+        assertEquals(listOf("Remote"), albumDao.querySongsByAlbum("Same Album", "Same Artist", "remote-a").map { it.title })
+    }
 }

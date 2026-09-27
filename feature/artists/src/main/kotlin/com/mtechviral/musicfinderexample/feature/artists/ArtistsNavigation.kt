@@ -40,7 +40,7 @@ fun NavGraphBuilder.artistsGraph(navController: NavController) {
             // 专辑详情路由由 feature:albums 的 albumsGraph 注册，同一个 NavHost 内按路由字符串跳转
             // 优化建议 10：专辑按「专辑名 + 专辑艺术家」复合键跳转
             onOpenAlbum = { album ->
-                navController.navigate(AppRoutes.albumDetail(album.title, album.artist))
+                navController.navigate(AppRoutes.albumDetail(album.title, album.artist, album.sourceId))
             },
             onBack = { navController.popBackStack() },
         )

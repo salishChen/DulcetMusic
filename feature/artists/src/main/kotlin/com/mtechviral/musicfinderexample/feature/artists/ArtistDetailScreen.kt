@@ -267,7 +267,7 @@ fun ArtistDetailScreen(
                                 contentPadding = PaddingValues(horizontal = 16.dp),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
-                                items(albums, key = { it.title }) { album ->
+                                items(albums, key = { "${it.sourceId}|${it.title}|${it.artist}" }) { album ->
                                     ArtistAlbumCard(
                                         album = album,
                                         onClick = { onOpenAlbum(album) },

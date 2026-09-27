@@ -30,36 +30,36 @@ class AlbumDao(private val musicDatabase: MusicDatabase) {
      * 封面优先取「含内嵌封面的歌曲」，其次取缓存的远程封面。
      */
     fun queryAlbums(): List<Album> = query("""
-        SELECT grouped.title, grouped.artist, grouped.coverSongId,
+        SELECT grouped.title, grouped.artist, grouped.sourceId, grouped.coverSongId,
                cover.path AS coverSongPath, cover.cachedArtworkPath AS coverArtworkPath,
                cover.coverArtId, grouped.songCount
         FROM (
-            SELECT album AS title, COALESCE(albumArtist, artist) AS artist,
+            SELECT album AS title, COALESCE(albumArtist, artist) AS artist, sourceId,
                    COALESCE(MAX(CASE WHEN hasArtwork = 1 THEN id END),
                             MAX(CASE WHEN cachedArtworkPath IS NOT NULL THEN id END),
                             MAX(CASE WHEN coverArtId IS NOT NULL THEN id END), MAX(id)) AS coverSongId,
                    COUNT(*) AS songCount
             FROM visible_songs
             WHERE album IS NOT NULL AND album != ''
-            GROUP BY album, COALESCE(albumArtist, artist)
+            GROUP BY album, COALESCE(albumArtist, artist), sourceId
         ) grouped JOIN songs cover ON cover.id = grouped.coverSongId
         ORDER BY grouped.title COLLATE NOCASE ASC, grouped.artist COLLATE NOCASE ASC
     """.trimIndent())
 
     /** 指定艺术家的专辑列表（含其担任专辑艺术家的合辑） */
     fun queryAlbumsByArtist(artist: String): List<Album> = query("""
-        SELECT grouped.title, grouped.artist, grouped.coverSongId,
+        SELECT grouped.title, grouped.artist, grouped.sourceId, grouped.coverSongId,
                cover.path AS coverSongPath, cover.cachedArtworkPath AS coverArtworkPath,
                cover.coverArtId, grouped.songCount
         FROM (
-            SELECT album AS title, COALESCE(albumArtist, artist) AS artist,
+            SELECT album AS title, COALESCE(albumArtist, artist) AS artist, sourceId,
                    COALESCE(MAX(CASE WHEN hasArtwork = 1 THEN id END),
                             MAX(CASE WHEN cachedArtworkPath IS NOT NULL THEN id END),
                             MAX(CASE WHEN coverArtId IS NOT NULL THEN id END), MAX(id)) AS coverSongId,
                    COUNT(*) AS songCount
             FROM visible_songs
             WHERE (artist = ? OR albumArtist = ?) AND album IS NOT NULL AND album != ''
-            GROUP BY album, COALESCE(albumArtist, artist)
+            GROUP BY album, COALESCE(albumArtist, artist), sourceId
         ) grouped JOIN songs cover ON cover.id = grouped.coverSongId
         ORDER BY grouped.title COLLATE NOCASE ASC, grouped.artist COLLATE NOCASE ASC
     """.trimIndent(), arrayOf(artist, artist))
@@ -70,16 +70,18 @@ class AlbumDao(private val musicDatabase: MusicDatabase) {
      * 优化建议 10：按「专辑名 + 专辑艺术家」复合键过滤；
      * [artist] 为 null 表示专辑艺术家未知（与聚合分组口径一致）。
      */
-    fun querySongsByAlbum(album: String, artist: String?): List<Song> {
+    fun querySongsByAlbum(album: String, artist: String?, sourceId: String? = null): List<Song> {
         val artistKey = "COALESCE($COL_ALBUM_ARTIST, $COL_ARTIST)"
         val where = if (artist == null) {
             "$COL_ALBUM = ? AND ($artistKey IS NULL OR $artistKey = '')"
         } else {
             "$COL_ALBUM = ? AND $artistKey = ?"
         }
-        val args = if (artist == null) arrayOf(album) else arrayOf(album, artist)
+        val sourceWhere = if (sourceId == null) "sourceId IS NULL" else "sourceId = ?"
+        val args = (if (artist == null) listOf(album) else listOf(album, artist)) +
+            listOfNotNull(sourceId)
         return musicDatabase.readableDatabase.query(
-            VIEW_VISIBLE_SONGS, null, where, args, null, null,
+            VIEW_VISIBLE_SONGS, null, "($where) AND $sourceWhere", args.toTypedArray(), null, null,
             "trackNumber ASC, title COLLATE NOCASE ASC",
         ).use { c ->
             c.mapAll { com.mtechviral.musicfinderexample.core.database.SongMapper.fromCursor(it) }
@@ -92,6 +94,7 @@ class AlbumDao(private val musicDatabase: MusicDatabase) {
                 Album(
                     title = cur.stringOrNull("title") ?: "未知专辑",
                     artist = cur.stringOrNull("artist"),
+                    sourceId = cur.stringOrNull("sourceId"),
                     coverSongId = cur.longOrNull("coverSongId"),
                     coverSongPath = cur.stringOrNull("coverSongPath"),
                     coverArtworkPath = cur.stringOrNull("coverArtworkPath"),

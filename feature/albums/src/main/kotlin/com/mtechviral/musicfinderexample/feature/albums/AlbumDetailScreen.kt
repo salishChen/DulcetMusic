@@ -83,6 +83,7 @@ import kotlinx.coroutines.launch
 fun AlbumDetailScreen(
     albumTitle: String,
     albumArtist: String? = null,
+    sourceId: String? = null,
     onBack: () -> Unit = {},
 ) {
     // 监听曲库变化：缓存/扫描完成后自动刷新
@@ -101,10 +102,11 @@ fun AlbumDetailScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(albumTitle, albumArtist, library) {
-        songs = DatabaseHelper.querySongsByAlbum(albumTitle, albumArtist)
+    LaunchedEffect(albumTitle, albumArtist, sourceId, library) {
+        songs = DatabaseHelper.querySongsByAlbum(albumTitle, albumArtist, sourceId)
         album = DatabaseHelper.queryAlbums().firstOrNull {
-            it.title == albumTitle && (it.artist?.takeIf { a -> a.isNotEmpty() }) == albumArtist
+            it.title == albumTitle && (it.artist?.takeIf { a -> a.isNotEmpty() }) == albumArtist &&
+                it.sourceId == sourceId
         }
         loading = false
     }
@@ -119,6 +121,7 @@ fun AlbumDetailScreen(
     val albumForActions = album ?: Album(
         title = albumTitle,
         artist = albumArtist ?: coverSong?.artist,
+        sourceId = sourceId,
         coverSongId = coverSong?.id,
         coverSongPath = coverSong?.path,
         coverArtworkPath = coverSong?.cachedArtworkPath,
@@ -283,7 +286,7 @@ fun AlbumDetailScreen(
             onToggleLike = {
                 // 喜欢状态已在弹窗内部写入，这里只刷新本页列表
                 scope.launch {
-                    songs = DatabaseHelper.querySongsByAlbum(albumTitle, albumArtist)
+                    songs = DatabaseHelper.querySongsByAlbum(albumTitle, albumArtist, sourceId)
                 }
             },
             onDelete = {
@@ -304,7 +307,7 @@ fun AlbumDetailScreen(
             onAddToPlaylist = { list -> pickingSongs = list },
             onToggleLike = {
                 scope.launch {
-                    songs = DatabaseHelper.querySongsByAlbum(albumTitle, albumArtist)
+                    songs = DatabaseHelper.querySongsByAlbum(albumTitle, albumArtist, sourceId)
                 }
             },
             onDelete = {
