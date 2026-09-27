@@ -29,8 +29,13 @@ class SubsonicProvider(override val source: RemoteSource) : RemoteMusicProvider 
         SubsonicService.currentSourceId = source.id
     }
 
+    override suspend fun libraries(): List<RemoteLibrary> = SubsonicService.getMusicFolders(
+        config(), includeEasyTier = SubsonicService.currentSourceId == source.id,
+    )
+
     override suspend fun getAllSongs(): List<Song> =
-        (if (source.protocol == RemoteProtocol.NAVIDROME) SubsonicService.getAllSongsPaged()
+        (if (source.protocol == RemoteProtocol.NAVIDROME || source.libraryId.isNotBlank())
+            SubsonicService.getAllSongsPaged(musicFolderId = source.libraryId)
             else SubsonicService.getAllSongs()).map { song ->
             val id = requireNotNull(song.remoteId) { "Subsonic song has no id" }
             song.copy(sourceId = source.id, path = RemoteLocator.forSource(source.id, id))

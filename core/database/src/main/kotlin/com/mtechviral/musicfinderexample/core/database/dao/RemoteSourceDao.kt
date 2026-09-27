@@ -31,6 +31,7 @@ class RemoteSourceDao(private val database: MusicDatabase) {
             username = c.getString(c.getColumnIndexOrThrow("username")),
             password = CredentialCipher.decrypt(c.getString(c.getColumnIndexOrThrow("password"))) ?: "",
             rootPath = c.getString(c.getColumnIndexOrThrow("rootPath")),
+            libraryId = c.getString(c.getColumnIndexOrThrow("libraryId")),
             serverIdentity = c.getString(c.getColumnIndexOrThrow("serverIdentity")),
         )
     }
@@ -49,6 +50,7 @@ class RemoteSourceDao(private val database: MusicDatabase) {
                 put("username", source.username)
                 put("password", encrypted)
                 put("rootPath", source.rootPath)
+                put("libraryId", source.libraryId)
                 put("serverIdentity", source.serverIdentity)
             }
             if (db.update("remote_sources", values, "id = ?", arrayOf(source.id)) == 0) {

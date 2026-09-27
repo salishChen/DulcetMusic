@@ -23,6 +23,7 @@ class EmbyProviderTest {
     private lateinit var server: ServerSocket
     private lateinit var thread: Thread
     private val requestBodies = CopyOnWriteArrayList<String>()
+    private val paths = CopyOnWriteArrayList<String>()
 
     @Before
     fun setUp() {
@@ -32,6 +33,7 @@ class EmbyProviderTest {
                 server.accept().use { socket ->
                     val reader = socket.getInputStream().bufferedReader()
                     val path = reader.readLine()?.split(' ')?.getOrNull(1).orEmpty()
+                    paths += path
                     var contentLength = 0
                     while (true) {
                         val line = reader.readLine() ?: break
@@ -52,6 +54,8 @@ class EmbyProviderTest {
                         path.endsWith("/Users/AuthenticateByName") ->
                             """{"AccessToken":"token","User":{"Id":"user"}}"""
                         path.endsWith("/System/Info/Public") -> """{"Id":"server-1"}"""
+                        path.contains("/Views?") ->
+                            """{"Items":[{"Id":"music-library","Name":"Music","CollectionType":"music"},{"Id":"films","Name":"Films","CollectionType":"movies"}]}"""
                         path.contains("StartIndex=0") ->
                             """{"TotalRecordCount":2,"Items":[{"Id":"item/1","Name":"Song","RunTimeTicks":123450000,"Artists":["Singer"],"MediaSources":[{"Id":"first","Name":"FLAC","Container":"flac","Bitrate":900000},{"Id":"second","Name":"MP3","Container":"mp3","Bitrate":320000}]}]}"""
                         path.contains("StartIndex=1") ->
@@ -85,6 +89,7 @@ class EmbyProviderTest {
         ))
         assertEquals("Emby 登录成功", provider.testConnection())
         assertEquals("server-1", provider.serverIdentity)
+        assertEquals(listOf(RemoteLibrary("music-library", "Music")), provider.libraries())
         assertTrue(requestBodies.first().contains("\"Pw\":\"pass\""))
         val songs = provider.getAllSongs()
         assertEquals(3, songs.size)
@@ -108,5 +113,19 @@ class EmbyProviderTest {
         ))
         val error = runCatching { provider.testConnection() }.exceptionOrNull()
         assertTrue(error?.message?.contains("服务器身份") == true)
+    }
+
+    @Test
+    fun selectedMusicLibraryScopesPagedItems() = runBlocking {
+        val provider = EmbyProvider(RemoteSource(
+            id = "emby", protocol = RemoteProtocol.EMBY, displayName = "Emby",
+            intranetUrl = "http://127.0.0.1:${server.localPort}/emby/",
+            username = "user", password = "pass", libraryId = "music-library",
+        ))
+        provider.testConnection()
+        provider.getAllSongs()
+        assertTrue(paths.any { it.contains("/Items?") })
+        assertTrue(paths.filter { it.contains("/Items?") }
+            .all { it.contains("ParentId=music-library") })
     }
 }

@@ -351,8 +351,37 @@ object SubsonicService {
 
     // ===================== 曲库 =====================
 
+    suspend fun getMusicFolders(candidate: SubsonicConfig,
+                                includeEasyTier: Boolean = false): List<RemoteLibrary> {
+        var last: Exception? = null
+        for ((baseUrl, client) in candidate.resolvableBaseUrls(includeEasyTier)) {
+            try {
+                val body = httpGet(buildUrl(baseUrl, "getMusicFolders", candidate), client)
+                    ?: throw SubsonicException("音乐库列表请求失败")
+                val response = JSONObject(body).optJSONObject("subsonic-response")
+                    ?: throw SubsonicException("音乐库列表响应无效")
+                if (response.optString("status") != "ok") {
+                    throw SubsonicException("服务器拒绝读取音乐库列表")
+                }
+                val folders = response.optJSONObject("musicFolders")?.optJSONArray("musicFolder")
+                    ?: JSONArray()
+                return (0 until folders.length()).mapNotNull { index ->
+                    val folder = folders.optJSONObject(index) ?: return@mapNotNull null
+                    val id = folder.opt("id")?.toString()?.takeIf { it.isNotBlank() }
+                        ?: return@mapNotNull null
+                    RemoteLibrary(id, folder.optString("name").ifBlank { id })
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        throw last ?: SubsonicException("无法读取音乐库列表")
+    }
+
     /** Navidrome supports tag-based, offset-paginated album listing. */
-    suspend fun getAllSongsPaged(pageSize: Int = 500): List<Song> {
+    suspend fun getAllSongsPaged(pageSize: Int = 500, musicFolderId: String? = null): List<Song> {
         require(pageSize in 1..500)
         val allSongs = ArrayList<Song>()
         val seenAlbumIds = HashSet<String>()
@@ -362,7 +391,7 @@ object SubsonicService {
             val response = request("getAlbumList2", listOf(
                 "type" to "alphabeticalByName", "size" to pageSize.toString(),
                 "offset" to offset.toString(),
-            ))
+            ) + listOfNotNull(musicFolderId?.takeIf { it.isNotBlank() }?.let { "musicFolderId" to it }))
             val listing = response.optJSONObject("albumList2")
                 ?: throw SubsonicException("服务器未返回分页专辑列表")
             val albums = listing.optJSONArray("album") ?: JSONArray()

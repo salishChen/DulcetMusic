@@ -18,5 +18,7 @@ data class RemoteSource(
     val username: String = "",
     val password: String = "",
     val rootPath: String = "",
+    /** Selected Navidrome music folder or Emby music view; empty means all accessible music. */
+    val libraryId: String = "",
     val serverIdentity: String? = null,
 )

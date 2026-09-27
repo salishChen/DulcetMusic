@@ -143,6 +143,9 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
             migrateLegacyRemoteSource(db)
         }
         if (oldVersion < 10) createVisibleSongsView(db)
+        if (oldVersion in 9..10) {
+            db.execSQL("ALTER TABLE remote_sources ADD COLUMN libraryId TEXT NOT NULL DEFAULT ''")
+        }
     }
 
     /**
@@ -226,6 +229,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
                 username TEXT NOT NULL DEFAULT '',
                 password TEXT NOT NULL DEFAULT '',
                 rootPath TEXT NOT NULL DEFAULT '',
+                libraryId TEXT NOT NULL DEFAULT '',
                 serverIdentity TEXT
             )
         """.trimIndent())
@@ -294,7 +298,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         const val DB_NAME = "music_player.db"
-        const val DB_VERSION = 10
+        const val DB_VERSION = 11
 
         // ---- songs 表列名 ----
         const val TABLE_SONGS = "songs"

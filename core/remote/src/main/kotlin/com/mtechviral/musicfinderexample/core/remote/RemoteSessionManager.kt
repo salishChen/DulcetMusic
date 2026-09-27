@@ -8,6 +8,7 @@ import com.mtechviral.musicfinderexample.core.model.RemoteSource
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.network.EmbyProvider
 import com.mtechviral.musicfinderexample.core.network.RemoteMusicProvider
+import com.mtechviral.musicfinderexample.core.network.RemoteLibrary
 import com.mtechviral.musicfinderexample.core.network.RemoteRequest
 import com.mtechviral.musicfinderexample.core.network.SubsonicProvider
 import com.mtechviral.musicfinderexample.core.network.SubsonicService
@@ -74,6 +75,15 @@ object RemoteSessionManager {
     suspend fun test(candidate: RemoteSource): String {
         scanJob?.cancelAndJoin()
         return mutex.withLock { newProvider(candidate).testConnection() }
+    }
+
+    suspend fun libraries(candidate: RemoteSource): List<RemoteLibrary> {
+        scanJob?.cancelAndJoin()
+        return mutex.withLock {
+            val temporary = newProvider(candidate)
+            temporary.testConnection()
+            temporary.libraries()
+        }
     }
 
     /** The scan belongs to the active source, not to the lifetime of the scan screen. */

@@ -40,6 +40,8 @@ class NavidromePagingTest {
                             payload("\"albumList2\":{\"album\":[${album("a")},${album("b")}]}" )
                         path.contains("/getAlbumList2?") && path.contains("offset=2") ->
                             payload("\"albumList2\":{\"album\":[${album("c")}]}" )
+                        path.contains("/getMusicFolders?") ->
+                            payload("\"musicFolders\":{\"musicFolder\":[{\"id\":\"folder-1\",\"name\":\"Music\"}]}" )
                         path.contains("/getAlbum?") -> {
                             val id = Regex("[?&]id=([^&]+)").find(path)?.groupValues?.get(1).orEmpty()
                             payload("\"album\":{\"song\":[{\"id\":\"song-$id\",\"title\":\"Track $id\",\"artist\":\"Singer $id\",\"bitRate\":320}]}" )
@@ -71,11 +73,18 @@ class NavidromePagingTest {
 
     @Test
     fun albumPagesAndSongArtistAreReadWithoutSkippingTheLastPage() = runBlocking {
-        val songs = SubsonicService.getAllSongsPaged(pageSize = 2)
+        val folders = SubsonicService.getMusicFolders(SubsonicConfig(
+            intranetUrl = "http://127.0.0.1:${server.localPort}/proxy/",
+            username = "user", password = "pass",
+        ))
+        assertEquals(listOf(RemoteLibrary("folder-1", "Music")), folders)
+        val songs = SubsonicService.getAllSongsPaged(pageSize = 2, musicFolderId = "folder-1")
         assertEquals(3, songs.size)
         assertEquals(setOf("Singer a", "Singer b", "Singer c"), songs.map { it.artist }.toSet())
         assertTrue(songs.all { it.bitrate == 320_000 })
         assertTrue(paths.any { it.contains("offset=2") })
+        assertTrue(paths.filter { it.contains("/getAlbumList2?") }
+            .all { it.contains("musicFolderId=folder-1") })
         assertEquals(3, paths.count { it.contains("/getAlbum?") })
     }
 

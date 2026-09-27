@@ -88,4 +88,28 @@ class RemoteSourceMigrationTest {
             db.rawQuery("PRAGMA foreign_key_check", null).use { assertFalse(it.moveToFirst()) }
         }
     }
+
+    @Test
+    fun v10UpgradeDefaultsToAllAccessibleLibraries() {
+        val file = context.getDatabasePath(MusicDatabase.DB_NAME)
+        file.parentFile?.mkdirs()
+        SQLiteDatabase.openOrCreateDatabase(file, null).use { old ->
+            old.execSQL("""CREATE TABLE remote_sources (
+                id TEXT PRIMARY KEY NOT NULL, protocol TEXT NOT NULL, displayName TEXT NOT NULL,
+                intranetUrl TEXT NOT NULL DEFAULT '', publicUrl TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '',
+                rootPath TEXT NOT NULL DEFAULT '', serverIdentity TEXT
+            )""")
+            old.execSQL("INSERT INTO remote_sources(id, protocol, displayName) VALUES ('source', 'NAVIDROME', 'Music')")
+            old.version = 10
+        }
+        MusicDatabase(context).use { helper ->
+            val db = helper.readableDatabase
+            assertEquals(11, db.version)
+            db.rawQuery("SELECT libraryId FROM remote_sources WHERE id = 'source'", null).use {
+                assertTrue(it.moveToFirst())
+                assertEquals("", it.getString(0))
+            }
+        }
+    }
 }

@@ -43,6 +43,7 @@ import com.mtechviral.musicfinderexample.core.cache.CacheService
 import com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine
 import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
 import com.mtechviral.musicfinderexample.core.model.RemoteSource
+import com.mtechviral.musicfinderexample.core.network.RemoteLibrary
 import com.mtechviral.musicfinderexample.core.player.PlayerController
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
@@ -64,6 +65,8 @@ fun SubsonicConfigScreen() {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var rootPath by remember { mutableStateOf("") }
+    var libraryId by remember { mutableStateOf("") }
+    var libraries by remember { mutableStateOf<List<RemoteLibrary>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf("") }
@@ -80,6 +83,7 @@ fun SubsonicConfigScreen() {
             username = current.username
             password = current.password
             rootPath = current.rootPath
+            libraryId = current.libraryId
         }
         loaded = true
     }
@@ -91,6 +95,7 @@ fun SubsonicConfigScreen() {
         val current = RemoteSessionManager.source.value
         val sameSource = current?.protocol == protocol && current.username == username.trim() &&
             (protocol != RemoteProtocol.WEBDAV || current.rootPath == rootPath.trim()) &&
+            current.libraryId == (if (protocol == RemoteProtocol.WEBDAV) "" else libraryId.trim()) &&
             ((current.intranetUrl == intranet.trim() && current.publicUrl == publicUrl.trim()) ||
                 sameServerWithNewAddress)
         return RemoteSource(
@@ -102,6 +107,7 @@ fun SubsonicConfigScreen() {
             username = username.trim(),
             password = password,
             rootPath = rootPath.trim(),
+            libraryId = if (protocol == RemoteProtocol.WEBDAV) "" else libraryId.trim(),
             serverIdentity = if (sameSource) current?.serverIdentity else null,
         )
     }
@@ -117,13 +123,17 @@ fun SubsonicConfigScreen() {
             listOf(RemoteProtocol.NAVIDROME, RemoteProtocol.SUBSONIC).let { choices ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     choices.forEach { option ->
-                        FilterChip(selected = protocol == option, onClick = { protocol = option }, label = { Text(option.label) })
+                        FilterChip(selected = protocol == option, onClick = {
+                            if (protocol != option) { protocol = option; libraryId = ""; libraries = emptyList() }
+                        }, label = { Text(option.label) })
                     }
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(RemoteProtocol.WEBDAV, RemoteProtocol.EMBY).forEach { option ->
-                    FilterChip(selected = protocol == option, onClick = { protocol = option }, label = { Text(option.label) })
+                    FilterChip(selected = protocol == option, onClick = {
+                        if (protocol != option) { protocol = option; libraryId = ""; libraries = emptyList() }
+                    }, label = { Text(option.label) })
                 }
             }
             ConfigTextField(name, { name = it }, "服务器名称", "例如：家里的音乐服务器", Icons.Filled.Dns)
@@ -142,7 +152,41 @@ fun SubsonicConfigScreen() {
                 password, { password = it }, "密码", "", Icons.Filled.Lock,
                 visualTransformation = PasswordVisualTransformation(),
             )
+            if (protocol != RemoteProtocol.WEBDAV) {
+                OutlinedButton(enabled = !busy, onClick = {
+                    scope.launch {
+                        busy = true
+                        result = try {
+                            val next = candidate()
+                            if (RemoteSessionManager.activeSourceId != null) {
+                                PlayerController.stopRemoteForSourceSwitch()
+                                CacheService.cancelPending()
+                            }
+                            libraries = RemoteSessionManager.libraries(next)
+                            if (libraries.none { it.id == libraryId }) libraryId = ""
+                            if (libraries.isEmpty()) "没有可选音乐库，将扫描所有可访问音频"
+                                else "已读取 ${libraries.size} 个音乐库"
+                        } catch (e: Exception) { "读取音乐库失败：${e.message ?: "未知错误"}" }
+                        busy = false
+                    }
+                }) { Text("读取音乐库") }
+                if (libraryId.isNotBlank() || libraries.isNotEmpty()) {
+                    if (libraryId.isNotBlank() && libraries.none { it.id == libraryId }) {
+                        Text("当前音乐库 ID：$libraryId（可重新读取列表）")
+                    }
+                    FilterChip(selected = libraryId.isBlank(), onClick = { libraryId = "" },
+                        label = { Text("全部可访问音乐") })
+                    libraries.forEach { library ->
+                        FilterChip(selected = libraryId == library.id,
+                            onClick = { libraryId = library.id }, label = { Text(library.name) })
+                    }
+                }
+            }
             val current = RemoteSessionManager.source.value
+            if (current != null && current.protocol == protocol &&
+                current.libraryId != libraryId && protocol != RemoteProtocol.WEBDAV) {
+                Text("切换音乐库会建立新的曲库归属，旧库歌曲和缓存仍保留。")
+            }
             if (current != null && current.protocol == protocol &&
                 current.username == username.trim() &&
                 (current.intranetUrl != intranet.trim() || current.publicUrl != publicUrl.trim())) {

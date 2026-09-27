@@ -71,12 +71,13 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
         val songs = ArrayList<Song>()
         var start = 0
         do {
-            val url = base.newBuilder().addPathSegment("Users").addPathSegment(user).addPathSegment("Items")
+            val builder = base.newBuilder().addPathSegment("Users").addPathSegment(user).addPathSegment("Items")
                 .addQueryParameter("Recursive", "true")
                 .addQueryParameter("IncludeItemTypes", "Audio")
                 .addQueryParameter("StartIndex", start.toString())
                 .addQueryParameter("Limit", "200")
-                .build()
+            if (source.libraryId.isNotBlank()) builder.addQueryParameter("ParentId", source.libraryId)
+            val url = builder.build()
             val response = JSONObject(call(url))
             val items = response.optJSONArray("Items") ?: break
             for (i in 0 until items.length()) {
@@ -118,6 +119,23 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
             if (items.length() == 0 || start >= response.optInt("TotalRecordCount", start)) break
         } while (true)
         songs
+    }
+
+    override suspend fun libraries(): List<RemoteLibrary> = withContext(Dispatchers.IO) {
+        val base = baseUrl ?: run { testConnection(); requireNotNull(baseUrl) }
+        val user = requireNotNull(userId)
+        val url = base.newBuilder().addPathSegment("Users").addPathSegment(user)
+            .addPathSegment("Views")
+            .addQueryParameter("IncludeExternalContent", "false").build()
+        val items = JSONObject(call(url)).optJSONArray("Items") ?: return@withContext emptyList()
+        (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            if (!item.optString("CollectionType").equals("music", ignoreCase = true)) {
+                return@mapNotNull null
+            }
+            val id = item.optString("Id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            RemoteLibrary(id, item.optString("Name").ifBlank { id })
+        }
     }
 
     override suspend fun stream(song: Song): RemoteRequest {
