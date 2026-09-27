@@ -4,10 +4,14 @@ import android.app.Application
 import android.util.Log
 import com.mtechviral.musicfinderexample.core.cache.CacheService
 import com.mtechviral.musicfinderexample.core.common.AppPreferences
+import com.mtechviral.musicfinderexample.core.common.AppVisibility
 import com.mtechviral.musicfinderexample.core.common.ExclusionList
 import com.mtechviral.musicfinderexample.core.common.ThemePreference
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
+import com.mtechviral.musicfinderexample.core.easytier.EasyTierConfigStore
+import com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine
+import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
 import com.mtechviral.musicfinderexample.core.network.SubsonicService
 import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
 import com.mtechviral.musicfinderexample.core.player.LyricsOverlayManager
@@ -36,10 +40,11 @@ class YuleMusicApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // 1. 偏好设置 / 主题（默认浅色）+ 排除列表
+        // 1. 偏好设置 / 主题（默认浅色）+ 排除列表 + 前后台可见性
         AppPreferences.init(this)
         ThemePreference.load()
         ExclusionList.load()
+        AppVisibility.init(this)
 
         // 2. 数据库 / 缓存池
         DatabaseHelper.init(this)
@@ -65,20 +70,13 @@ class YuleMusicApplication : Application() {
                 Log.w(TAG, "加载曲库失败: ${e.message}")
             }
 
-            // EasyTier 组网（省电策略，耗电优化）：
-            // 不在启动时拉起 —— 由远程访问按需唤醒（SubsonicService 统一触达），
-            // 空闲 15 分钟自动休眠；本地转发地址经回调注入 SubsonicService
-            com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.init(this@YuleMusicApplication)
-            com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.onActiveBaseUrlChanged = { base ->
-                val active = RemoteSessionManager.source.value
-                val bound = com.mtechviral.musicfinderexample.core.easytier.EasyTierConfigStore
-                    .boundSourceId(this@YuleMusicApplication)
-                SubsonicService.easyTierBaseUrl = base.takeIf {
-                    active?.id == bound && active?.protocol in setOf(
-                        com.mtechviral.musicfinderexample.core.model.RemoteProtocol.SUBSONIC,
-                        com.mtechviral.musicfinderexample.core.model.RemoteProtocol.NAVIDROME,
-                    )
-                }
+            // EasyTier 组网（省电策略，耗电优化，doc/耗电分析报告.md §4）：
+            // 不在启动时拉起 —— 仅"绑定组网的数据源"按需唤醒，实际隧道流量
+            // 经租约保活，空闲 15 分钟自动休眠；直连数据源不启动/不保活引擎
+            EasyTierEngine.init(this@YuleMusicApplication)
+            SubsonicService.tunnelEligible = { easyTierBoundToActiveSource() }
+            EasyTierEngine.onActiveBaseUrlChanged = { base ->
+                SubsonicService.easyTierBaseUrl = base.takeIf { easyTierBoundToActiveSource() }
                 SubsonicService.resetConnection()
             }
 
@@ -95,16 +93,32 @@ class YuleMusicApplication : Application() {
     }
 
     /**
+     * 当前远程源是否绑定 EasyTier 组网（Subsonic/Navidrome 才经隧道转发）。
+     *
+     * 组网唤醒与保活都以此为前提（报告 §4.2）：
+     * 非绑定源的直连请求不会启动引擎，也不会刷新其保活时间。
+     */
+    private fun easyTierBoundToActiveSource(): Boolean {
+        val active = RemoteSessionManager.source.value ?: return false
+        val bound = EasyTierConfigStore.boundSourceId(this)
+        return active.id == bound &&
+            active.protocol in setOf(RemoteProtocol.SUBSONIC, RemoteProtocol.NAVIDROME)
+    }
+
+    /**
      * 检查并缓存未完成的封面（coverArtId 有值但 cachedArtworkPath 为空的歌曲）。
+     *
+     * 耗电优化（报告 §6）：批任务有预算、按封面 ID 去重、失败退避，
+     * 低电量或计费网络未充电时跳过 —— 大曲库/弱网下不再每次启动全量补下载。
      * 缓存完成后刷新曲库快照（保留当前播放态，不重建实例）。
      */
     private suspend fun cachePendingArtwork() {
         try {
             val pendingSongs = DatabaseHelper.querySongsNeedingArtworkCache()
             if (pendingSongs.isEmpty()) return
-            Log.d(TAG, "启动时发现 ${pendingSongs.size} 首歌曲封面未缓存，开始后台缓存...")
-            CacheService.cacheArtworkBatch(pendingSongs)
-            MusicLibrary.reload()
+            Log.d(TAG, "启动时发现 ${pendingSongs.size} 首歌曲封面未缓存，开始后台补缓存...")
+            val updated = CacheService.cacheArtworkBatch(pendingSongs)
+            if (updated.isNotEmpty()) MusicLibrary.reload()
         } catch (e: Exception) {
             Log.w(TAG, "启动时封面缓存失败: ${e.message}")
         }

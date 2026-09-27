@@ -3,6 +3,7 @@ package com.mtechviral.musicfinderexample.core.player
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,9 +15,11 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * 对应原 Flutter 工程 `lib/data/lyrics_overlay_manager.dart`，但原实现需要
  * 通过 MethodChannel 跨引擎通信；原生端与 [FloatingLyricsService] 同进程，
- * 直接以「偏好设置 + 广播」协作，语义完全一致：
- * - 歌词数据写入 SharedPreferences，即使 UI 不在前台，服务也能自行同步显示；
- * - 显示/隐藏/锁定/行数等状态通过广播即时通知服务。
+ * 直接以「内存状态 + 偏好设置」协作（耗电优化，doc/耗电分析报告.md §3）：
+ * - **播放实时状态**（歌词 / 位置 / 播放中）经 [playback] StateFlow 内存直传，
+ *   不再写 SharedPreferences、不再发广播 —— 进度变化不产生任何持久化；
+ * - SharedPreferences 仅保存颜色、字号、位置等**用户设置**；
+ * - 显示/隐藏/锁定/行数等状态通过 StateFlow 与广播即时通知服务。
  */
 object LyricsOverlayManager {
 
@@ -31,10 +34,6 @@ object LyricsOverlayManager {
     const val KEY_POS_X = "pos_x"
     const val KEY_POS_Y = "pos_y"
     const val KEY_LINES_COUNT = "lines_count"
-    const val KEY_LYRICS_RAW = "lyrics_raw"
-    const val KEY_POSITION_MS = "position_ms"
-    const val KEY_IS_PLAYING = "is_playing"
-    const val KEY_LAST_UPDATE = "last_update"
 
     /** 悬浮窗是否可见（原生端以偏好标记为准，服务启动即写 true） */
     const val KEY_VISIBLE = "overlay_visible"
@@ -119,6 +118,30 @@ object LyricsOverlayManager {
     private val _settingsRevision = MutableStateFlow(0L)
     val settingsRevision: StateFlow<Long> = _settingsRevision.asStateFlow()
 
+    /**
+     * 播放实时状态快照（耗电优化：同进程内存直传）。
+     *
+     * [clockMs] 是单调时钟打点（`SystemClock.elapsedRealtime`），
+     * 悬浮窗服务据此外推播放位置、只在歌词行变化时刷新显示。
+     */
+    data class PlaybackSnapshot(
+        val lyrics: String?,
+        val positionMs: Long,
+        val isPlaying: Boolean,
+        val clockMs: Long,
+    )
+
+    private val _playback = MutableStateFlow<PlaybackSnapshot?>(null)
+
+    /** 播放实时状态（歌词 / 位置 / 播放中），由 [PlayerController] 推送 */
+    val playback: StateFlow<PlaybackSnapshot?> = _playback.asStateFlow()
+
+    /**
+     * 悬浮窗刚显示时回调（由 [PlayerController] 注册）：
+     * 立刻推一份当前播放状态，避免等待下一次进度推送。
+     */
+    var onOverlayShown: (() -> Unit)? = null
+
     private fun notifySettingsChanged() {
         _settingsRevision.value = _settingsRevision.value + 1
     }
@@ -193,6 +216,7 @@ object LyricsOverlayManager {
         }
         // 即使调用失败，也标记为可见（服务可能已在运行）——与原逻辑一致
         _isVisible.value = true
+        onOverlayShown?.invoke()
         return true
     }
 
@@ -207,26 +231,21 @@ object LyricsOverlayManager {
         _isVisible.value = false
     }
 
-    /** 更新歌词内容（服务端会自行按位置同步显示） */
+    /**
+     * 推送播放实时状态（耗电优化）。
+     *
+     * 只更新内存中的 [playback] StateFlow —— 不写偏好、不发广播：
+     * 播放进度每秒都在变，此前每次 `apply()` 都引入持久化工作、
+     * 每次广播都让服务重新解析歌词，是悬浮歌词链路的主要耗电来源。
+     */
     fun updateLyrics(lyrics: String?, positionMs: Long, isPlaying: Boolean) {
         if (!_isVisible.value) return
-        prefs().edit()
-            .putString(KEY_LYRICS_RAW, lyrics ?: "")
-            .putLong(KEY_POSITION_MS, positionMs)
-            .putLong(KEY_LAST_UPDATE, System.currentTimeMillis())
-            .putBoolean(KEY_IS_PLAYING, isPlaying)
-            .apply()
-        sendUpdateBroadcast()
-    }
-
-    /** 更新播放位置 */
-    fun updatePosition(positionMs: Long) {
-        if (!_isVisible.value) return
-        prefs().edit()
-            .putLong(KEY_POSITION_MS, positionMs)
-            .putLong(KEY_LAST_UPDATE, System.currentTimeMillis())
-            .apply()
-        sendUpdateBroadcast()
+        _playback.value = PlaybackSnapshot(
+            lyrics = lyrics,
+            positionMs = positionMs,
+            isPlaying = isPlaying,
+            clockMs = SystemClock.elapsedRealtime(),
+        )
     }
 
     /** 切换锁定状态（等价于 `setLocked(!isLocked)`，并可靠通知服务） */

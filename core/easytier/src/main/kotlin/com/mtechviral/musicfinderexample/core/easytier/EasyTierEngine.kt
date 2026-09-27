@@ -5,7 +5,9 @@ import android.util.Log
 import com.mtechviral.musicfinderexample.core.common.UrlSanitizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,9 +24,12 @@ import java.io.File
  * **不需要 ROOT、不需要 VpnService**。
  *
  * 省电策略（耗电优化）：
- * - **按需唤醒**：不在应用启动时拉起；远程访问经 [touch]/[ensureStarted] 唤醒；
- * - **空闲休眠**：[IDLE_STOP_MS] 无远程流量自动停止进程（状态 [State.Sleeping]），
- *   下次远程访问自动唤醒；
+ * - **按需唤醒**：不在应用启动时拉起；仅"绑定组网的数据源"经 [awaitRunning] 唤醒；
+ * - **空闲休眠**：无隧道租约且 [IDLE_STOP_MS] 无组网流量自动停止进程
+ *   （状态 [State.Sleeping]），下次真实隧道访问自动唤醒；
+ * - **保活按实际通道**（doc/耗电分析报告.md §4）：只有流量真正走隧道
+ *   （[isTunnelUrl] 命中本地转发地址）才 [touch] / 持有 [acquireTunnelLease]；
+ *   播放缓存曲、直连远程歌曲不再刷新活动时间；
  * - **省电运行参数**（[EasyTierConfig.powersaver]）：纯客户端（`--no-listener`）、
  *   按需 P2P（`--lazy-p2p`）、关闭对称 NAT 打洞（`--disable-sym-hole-punching`）。
  *
@@ -38,6 +43,9 @@ object EasyTierEngine {
 
     /** 空闲多久后自动休眠（无远程流量） */
     const val IDLE_STOP_MS = 15 * 60 * 1000L
+
+    /** 空闲看门狗检查间隔 */
+    private const val WATCHDOG_INTERVAL_MS = 30_000L
 
     /** 引擎运行状态 */
     sealed class State {
@@ -79,45 +87,76 @@ object EasyTierEngine {
     @Volatile
     private var lastActivityAt = 0L
 
+    /** 活跃的本地转发地址（如 `http://127.0.0.1:18080`）；未运行/未配置转发时为 null */
+    @Volatile
+    private var forwardPrefix: String? = null
+
+    /**
+     * 隧道实际使用中的租约数（活跃流请求持有）。
+     * 持有期间看门狗不会休眠引擎 —— 长曲播放/下载经隧道传输不会被中途停止。
+     */
+    private val tunnelLeases = java.util.concurrent.atomic.AtomicInteger(0)
+
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** 应用启动时调用：保存上下文并启动空闲看门狗 */
+    /** 空闲看门狗任务：**仅在引擎运行期间存在**（不再常驻每 30 秒空转） */
+    private var watchdogJob: Job? = null
+
+    /** 应用启动时调用：保存上下文 */
     fun init(context: Context) {
         if (appContext == null) {
             appContext = context.applicationContext
-            idleWatchdog.start()
         }
     }
 
-    /** 空闲看门狗：远程流量停止超过 [IDLE_STOP_MS] 自动停止引擎（省电） */
-    private val idleWatchdog: Thread = Thread {
-        while (true) {
-            try {
-                Thread.sleep(30_000)
+    /** 该 URL 是否经由本引擎的本地转发（即"实际使用隧道传输"） */
+    fun isTunnelUrl(url: String): Boolean {
+        val prefix = forwardPrefix ?: return false
+        return url.startsWith(prefix)
+    }
+
+    /**
+     * 申请隧道传输租约（流请求打开时调用）。
+     *
+     * 返回 null 表示当前没有活跃转发（未走隧道），调用方无须释放；
+     * 持有期间引擎不会空闲休眠，[AutoCloseable.close] 释放并刷新活动时间。
+     */
+    fun acquireTunnelLease(): AutoCloseable? {
+        if (forwardPrefix == null) return null
+        tunnelLeases.incrementAndGet()
+        touch()
+        return AutoCloseable {
+            touch()
+            tunnelLeases.decrementAndGet()
+        }
+    }
+
+    /**
+     * 空闲看门狗：无租约且远程流量停止超过 [IDLE_STOP_MS] 自动停止引擎（省电）。
+     * 随引擎启动，进程停止后自行退出 —— 引擎关闭期间不再有周期性检查。
+     */
+    private fun startWatchdog() {
+        if (watchdogJob?.isActive == true) return
+        watchdogJob = engineScope.launch {
+            while (process?.isAlive == true) {
+                delay(WATCHDOG_INTERVAL_MS)
+                if (tunnelLeases.get() > 0) continue
                 val idleFor = System.currentTimeMillis() - lastActivityAt
-                if (idleFor > IDLE_STOP_MS) {
-                    synchronized(this@EasyTierEngine) {
-                        if (process?.isAlive == true &&
-                            System.currentTimeMillis() - lastActivityAt > IDLE_STOP_MS
-                        ) {
-                            Log.i(TAG, "空闲 ${IDLE_STOP_MS / 60000} 分钟，组网引擎休眠（省电）")
-                            stopInternal()
-                            _state.value = State.Sleeping
-                        }
+                if (idleFor <= IDLE_STOP_MS) continue
+                synchronized(this@EasyTierEngine) {
+                    if (process?.isAlive == true && tunnelLeases.get() == 0 &&
+                        System.currentTimeMillis() - lastActivityAt > IDLE_STOP_MS
+                    ) {
+                        Log.i(TAG, "空闲 ${IDLE_STOP_MS / 60000} 分钟，组网引擎休眠（省电）")
+                        stopInternal()
+                        _state.value = State.Sleeping
                     }
                 }
-            } catch (_: InterruptedException) {
-                return@Thread
-            } catch (e: Exception) {
-                Log.w(TAG, "空闲看门狗异常: ${e.message}")
             }
         }
-    }.apply {
-        name = "easytier-idle-watchdog"
-        isDaemon = true
     }
 
-    /** 记录一次远程活动（阻止空闲休眠） */
+    /** 记录一次**隧道**活动（阻止空闲休眠；仅真实隧道流量调用） */
     fun touch() {
         lastActivityAt = System.currentTimeMillis()
     }
@@ -223,6 +262,7 @@ object EasyTierEngine {
             // Subsonic 探测顺序变为 EasyTier → 内网 → 公网。
             // 无 TUN 模式下虚拟网地址只能经端口转发访问，直填虚拟 IP 不通
             val baseUrl = if (config.hasPortForward) config.localBaseUrl else null
+            forwardPrefix = baseUrl
             onActiveBaseUrlChanged?.invoke(baseUrl)
             _state.value = State.Running(
                 if (config.hasPortForward) {
@@ -231,6 +271,8 @@ object EasyTierEngine {
                     "已组网（未配置端口转发）"
                 },
             )
+            // 空闲看门狗随引擎生命周期启停
+            startWatchdog()
             Log.i(TAG, "EasyTier 已启动: ${config.localBaseUrl}")
             true
         } catch (e: Exception) {
@@ -257,6 +299,7 @@ object EasyTierEngine {
 
     private fun stopInternal() {
         onActiveBaseUrlChanged?.invoke(null)
+        forwardPrefix = null
         startedConfig = null
         val p = process ?: return
         process = null

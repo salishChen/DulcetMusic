@@ -49,6 +49,15 @@ object SubsonicService {
     @Volatile
     var easyTierBaseUrl: String? = null
 
+    /**
+     * 组网隧道是否为当前数据源的候选通道（耗电优化，doc/耗电分析报告.md §4.2）。
+     *
+     * 由应用层注入（仅"启用引擎且当前远程源绑定组网"时为 true）：
+     * 直连数据源的请求**不再唤醒组网引擎**，也不刷新其保活时间。
+     */
+    @Volatile
+    var tunnelEligible: () -> Boolean = { false }
+
     private val secureRandom = SecureRandom()
 
     /** 普通 API 请求：30s 超时（与 Dart 端一致） */
@@ -137,15 +146,20 @@ object SubsonicService {
      */
     private suspend fun resolveBaseUrl(): String {
         activeBaseUrl?.let {
-            // 省电：远程访问即视为组网活动，阻止空闲休眠
-            com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.touch()
+            // 保活按实际通道（报告 §4.2）：只有当前选中的地址**就是隧道转发**时
+            // 才视为组网活动；缓存曲/直连远程歌曲不再刷新引擎活动时间
+            if (easyTierBaseUrl != null && it == easyTierBaseUrl) {
+                com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.touch()
+            }
             return it
         }
         val cfg = config ?: throw SubsonicException("Subsonic 未配置")
 
-        // 省电：EasyTier 组网按需唤醒（空闲 15 分钟自动休眠），就绪后再探测
-        com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.touch()
-        com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.awaitRunning()
+        // 省电：EasyTier 按需唤醒，但仅"绑定组网的数据源"才拉起引擎 ——
+        // 直连请求不再启动组网（报告 §4.2），就绪后再探测
+        if (tunnelEligible()) {
+            com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.awaitRunning()
+        }
 
         val candidates = cfg.resolvableBaseUrls()
         if (candidates.isEmpty()) {

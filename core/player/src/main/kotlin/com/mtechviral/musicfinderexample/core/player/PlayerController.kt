@@ -1,7 +1,11 @@
 package com.mtechviral.musicfinderexample.core.player
 
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.PowerManager
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -13,6 +17,7 @@ import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.mtechviral.musicfinderexample.core.cache.CacheService
+import com.mtechviral.musicfinderexample.core.common.AppVisibility
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.media.ArtworkCache
@@ -121,6 +126,8 @@ object PlayerController {
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     private var tickerJob: Job? = null
+    private var queueJob: Job? = null
+    private var modeJob: Job? = null
     private var lastPublishedPosMs = -1L
 
     /**
@@ -152,6 +159,16 @@ object PlayerController {
         val app = context.applicationContext
         appContext = app
         LyricsOverlayManager.init(app)
+        // 悬浮窗刚显示时立刻补推一次播放状态（避免等下一次进度推送）
+        LyricsOverlayManager.onOverlayShown = {
+            updateFloatingLyrics()
+            if (_isPlaying.value) startTicker()
+        }
+        // 旁路缓存落盘后合并 UI 状态（缓存角标 / 通知栏封面）
+        CacheService.onSongCached = { updated ->
+            scope.launch { mergeCurrentSong(updated, mergeArtwork = true, mergeLyrics = true) }
+        }
+        registerScreenReceiver(app)
         if (controller != null || controllerFuture != null) return
         try {
             val token = SessionToken(app, ComponentName(app, PlaybackService::class.java))
@@ -182,6 +199,13 @@ object PlayerController {
             controller = null
             controllerFuture = null
             _connected.value = false
+            // 耗电优化（报告 §5）：断开即停位置轮询、取消队列/模式订阅，
+            // 不让 ticker 在 controller == null 时空转、不让订阅在重连时叠加
+            stopTicker()
+            queueJob?.cancel()
+            queueJob = null
+            modeJob?.cancel()
+            modeJob = null
         }
     }
 
@@ -190,17 +214,18 @@ object PlayerController {
         controller = c
         c.addListener(playerListener)
 
-        // 播放列表内容变化 -> 同步会话队列
-        scope.launch {
+        // 播放列表内容变化 -> 同步会话队列（Job 纳入可取消管理，断开时取消）
+        queueJob?.cancel()
+        queueJob = scope.launch {
             PlaylistRepository.songs.collect { syncQueue(it) }
         }
         // 播放模式变化 -> 同步 repeat / shuffle
-        scope.launch {
+        modeJob?.cancel()
+        modeJob = scope.launch {
             PlaylistRepository.playMode.collect { applyPlayMode(it) }
         }
 
         _connected.value = true
-        startTicker()
 
         // 恢复播放列表（应用启动时序：先连上服务，再恢复上次列表）
         scope.launch {
@@ -263,6 +288,8 @@ object PlayerController {
         val p = awaitPlayer() ?: return false
 
         var playable = resolveCachedState(song)
+        // 切歌：记录被切走的歌曲（其旁路前缀交给推测性任务补全），并取消旧预取
+        val previous = _currentSong.value?.takeIf { !it.isPlaceholder && it.path != playable.path }
 
         _currentSong.value = playable
         _currentIndex.value = index
@@ -282,21 +309,17 @@ object PlayerController {
             p.play()
             _isPlaying.value = true
 
-            if (playable.isRemote && !playable.isCached) {
-                // 后台缓存音频 + 封面
-                CacheService.startCaching(playable) { updated ->
-                    scope.launch { mergeCurrentSong(updated, mergeArtwork = true, mergeLyrics = true) }
-                }
-            } else if (playable.isRemote && playable.cachedArtworkPath == null &&
+            if (playable.isRemote && playable.cachedArtworkPath == null &&
                 playable.coverArtId != null && playable.id != null
             ) {
-                // 音频已缓存但封面可能未缓存：仅补充封面缓存
-                CacheService.startCaching(playable) { updated ->
+                // 音频由播放流旁路写缓存（SongTapDataSource），首次播放不再并行整曲下载；
+                // 这里只补充封面缓存
+                CacheService.cacheArtworkAsync(playable) { updated ->
                     scope.launch { mergeCurrentSong(updated, mergeArtwork = true) }
                 }
             }
 
-            postPlayWork(playable)
+            postPlayWork(playable, previous)
             if (openNowPlaying) NowPlayingUiState.open()
             return true
         } catch (e: Exception) {
@@ -506,6 +529,9 @@ object PlayerController {
         p?.stop()
         p?.clearMediaItems()
         _isPlaying.value = false
+        stopTicker()
+        // 不再有任何待播目标：取消推测性缓存任务
+        CacheService.requestSpeculativeCache(null, "清空播放列表")
         // 第二十二轮需求 5：清空后**不置空** currentSong，而是放入占位曲目，
         // 使底部播放栏与播放页保持可见（歌名「愉乐~愉悦~」/ 歌手「Hi~」）。
         _currentSong.value = Song.placeholder
@@ -655,7 +681,7 @@ object PlayerController {
                 // 重排后当前歌曲仍在队列中、其 window uid 未变 —— Media3 的
                 // evaluateMediaItemTransitionReason 只在 window uid 变化时才回调
                 // onMediaItemTransition，所以这里必须自己同步下标（_currentIndex
-                // 还驱动 precacheNext 的"下一首"计算，不同步会预缓存错歌）。
+                // 还驱动 scheduleSpeculativeCache 的"下一首"计算，不同步会预缓存错歌）。
                 _currentIndex.value = newIndex
             }
 
@@ -827,30 +853,57 @@ object PlayerController {
 
     // ===================== 播放收尾（统计 / 预缓存 / 歌词） =====================
 
-    private fun postPlayWork(song: Song) {
+    private fun postPlayWork(song: Song, previous: Song? = null) {
         // 递增播放次数（后台执行，不阻塞播放）
         song.id?.let { id -> ioScope.launch { DatabaseHelper.incrementPlayCount(id) } }
-        // 预缓存下一首
-        precacheNext()
+        // 推测性缓存调度（补全刚播过的 / 预取下一首）
+        scheduleSpeculativeCache(previous, song)
         // 后台获取歌词（仅当歌曲尚无歌词时）
         if (song.isRemote && song.lyrics.isNullOrEmpty()) {
             fetchLyricsInBackground(song)
         }
     }
 
-    /** 预缓存队列中的下一首远程歌曲 */
-    private fun precacheNext() {
-        val songs = PlaylistRepository.current
-        if (songs.isEmpty()) return
-        val idx = _currentIndex.value
-        if (idx < 0) return
-        val nextIdx = (idx + 1) % songs.size
-        val nextSong = songs[nextIdx]
-        if (nextSong.isRemote && !nextSong.isCached) {
-            CacheService.startCaching(nextSong)
+    /**
+     * 推测性缓存调度（耗电优化，doc/耗电分析报告.md §2.3）。
+     *
+     * 全局只保留一个后台缓存任务，随切歌取消旧任务：
+     * 1. 优先补全**刚播过歌曲**的旁路前缀（可能只差尾部，Range 续传）；
+     * 2. 否则预取下一首 —— 受播放模式 / 单曲队列 / 计费网络 / 电量约束。
+     *
+     * 单曲循环不预取相邻曲目（下一首不会立即播放）。
+     */
+    private fun scheduleSpeculativeCache(previous: Song?, upcoming: Song) {
+        val partial = previous?.takeIf {
+            it.isRemote && !it.isCached && CacheService.hasPartialCache(it)
         }
-        // 提前准备下一首的通知栏封面
+        if (partial != null && CacheService.completionDownloadAllowed()) {
+            CacheService.requestSpeculativeCache(partial, "补全已播歌曲")
+            return
+        }
+        if (!CacheService.prefetchDownloadAllowed()) {
+            CacheService.requestSpeculativeCache(null, "电量/网络约束")
+            return
+        }
+        // 单曲循环：下一首不会立即播放，不预取相邻曲目
+        if (PlaylistRepository.playMode.value == PlayMode.SINGLE) {
+            CacheService.requestSpeculativeCache(null, "单曲循环")
+            return
+        }
+        val songs = PlaylistRepository.current
+        val idx = _currentIndex.value
+        if (songs.size <= 1 || idx < 0) {
+            CacheService.requestSpeculativeCache(null, "无可预取")
+            return
+        }
+        val nextSong = songs[(idx + 1) % songs.size]
+        // 提前准备下一首的通知栏封面（与预取同受电量/网络约束）
         ensureArtworkFile(nextSong)
+        if (nextSong.isRemote && !nextSong.isCached) {
+            CacheService.requestSpeculativeCache(nextSong, "预取下一首")
+        } else {
+            CacheService.requestSpeculativeCache(null, "下一首已缓存")
+        }
     }
 
     /**
@@ -923,6 +976,8 @@ object PlayerController {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _isPlaying.value = isPlaying
             publishCurrentState()
+            // 耗电优化（报告 §5）：位置轮询只在播放中运行；暂停/播完直接停表
+            if (isPlaying) startTicker() else stopTicker()
             // 暂停/继续/播完都要把最新播放状态同步给悬浮窗歌词，
             // 否则服务侧会一直按"播放中"外推位置，歌词行会自己往前走
             updateFloatingLyrics()
@@ -955,7 +1010,7 @@ object PlayerController {
                 val song = _currentSong.value
                 if (song != null) {
                     _position.value = 0L
-                    postPlayWork(song)
+                    postPlayWork(song, previous = null)
                 }
             }
             updateFloatingLyrics()
@@ -1000,28 +1055,34 @@ object PlayerController {
             _position.value = p.currentPosition.coerceAtLeast(0L)
             ensureArtworkFile(resolved)
             publishCurrentState()
-            if (postWork) postPlayWork(resolved)
+            if (postWork) postPlayWork(resolved, previous = prev?.takeIf { it.path != resolved.path && !it.isPlaceholder })
         }
     }
 
     // ===================== 位置轮询 =====================
 
+    /**
+     * 启动位置轮询（幂等；耗电优化，doc/耗电分析报告.md §5）。
+     *
+     * 只在**播放中**运行，按消费者密度决定频率：
+     * - 有可见消费者（界面可见 / 悬浮歌词可见）：200ms 精细轮询；
+     * - 无消费者但屏幕可交互：2s 降频；
+     * - 熄屏且无悬浮歌词：停表（亮屏经 [registerScreenReceiver] 恢复）。
+     *
+     * 暂停 / 播完 / 断连直接 [stopTicker]；状态变化依赖播放器回调。
+     */
     private fun startTicker() {
-        tickerJob?.cancel()
+        if (tickerJob?.isActive == true) return
         tickerJob = scope.launch {
             while (isActive) {
-                // 空闲/暂停时降频轮询（省电）：播放中保持细粒度进度
-                delay(if (_isPlaying.value) POSITION_POLL_MS else IDLE_POLL_MS)
-                val p = controller ?: continue
+                val interval = pollIntervalMs() ?: break
+                delay(interval)
+                val p = controller ?: break
                 val pos = p.currentPosition.coerceAtLeast(0L)
                 _position.value = pos
                 if (_isPlaying.value) {
                     _duration.value = currentDurationOrNull()
-                    // 省电：远程播放期间保持组网引擎活跃（长专辑连播防空闲休眠中断）
-                    if (_currentSong.value?.isRemote == true) {
-                        com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.touch()
-                    }
-                    // 节流推送悬浮窗歌词
+                    // 节流推送悬浮窗歌词（内存 StateFlow 直传，无偏好/广播）
                     if (lastPublishedPosMs < 0 ||
                         kotlin.math.abs(pos - lastPublishedPosMs) >= PLATFORM_POS_INTERVAL_MS
                     ) {
@@ -1030,6 +1091,57 @@ object PlayerController {
                     }
                 }
             }
+        }
+    }
+
+    private fun stopTicker() {
+        tickerJob?.cancel()
+        tickerJob = null
+    }
+
+    /** 下一次轮询间隔；null 表示无需轮询（暂停 / 熄屏且无歌词消费者） */
+    private fun pollIntervalMs(): Long? {
+        if (!_isPlaying.value) return null
+        val hasVisibleConsumer =
+            LyricsOverlayManager.isVisible.value || AppVisibility.visible.value
+        return when {
+            hasVisibleConsumer -> POSITION_POLL_MS
+            isScreenInteractive() -> IDLE_POLL_MS
+            // 熄屏且悬浮歌词不可见：停表，亮屏恢复
+            else -> null
+        }
+    }
+
+    private fun isScreenInteractive(): Boolean {
+        val pm = appContext?.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return true
+        return pm.isInteractive
+    }
+
+    /**
+     * 屏幕开关监听（耗电优化）：
+     * 熄屏停止位置轮询与歌词推送；亮屏恢复并立即校准一次。
+     */
+    private fun registerScreenReceiver(app: Context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    Intent.ACTION_SCREEN_ON -> if (_isPlaying.value) {
+                        updateFloatingLyrics()
+                        startTicker()
+                    }
+
+                    Intent.ACTION_SCREEN_OFF -> stopTicker()
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        }
+        try {
+            app.registerReceiver(receiver, filter)
+        } catch (e: Exception) {
+            Log.w(TAG, "注册屏幕状态接收器失败: ${e.message}")
         }
     }
 

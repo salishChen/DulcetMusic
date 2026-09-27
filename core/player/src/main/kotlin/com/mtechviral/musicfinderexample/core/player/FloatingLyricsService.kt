@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
@@ -37,10 +38,12 @@ import kotlinx.coroutines.launch
  * 全局悬浮窗歌词服务。
  *
  * 由原 Android 侧 Java 实现（`FloatingLyricsService.java`）1:1 迁移为 Kotlin，
- * 行为、偏好键名、广播协议、布局 id 全部保持不变：
+ * 行为、偏好键名、布局 id 全部保持不变：
  * - `SYSTEM_ALERT_WINDOW` 悬浮窗，可拖动、点击展开设置面板、可锁定；
- * - 歌词与播放位置通过 SharedPreferences 接收，**独立于 UI 进程刷新**；
- * - 播放中按 200ms 定时器外推播放位置，逐行高亮；
+ * - 播放实时状态经 [LyricsOverlayManager.playback]（同进程 StateFlow）接收，
+ *   **不再轮询偏好、不再因进度变化重复解析歌词**（耗电优化，报告 §3）；
+ * - 播放中按"到下一句歌词行的剩余时间"自适应调度刷新，逐行高亮；
+ *   暂停/熄屏即停表，亮屏恢复并重新校准；
  * - 支持颜色（8 个预设色）、字号（10~36）、单行/双行、锁定。
  */
 class FloatingLyricsService : Service() {
@@ -65,16 +68,21 @@ class FloatingLyricsService : Service() {
 
     // 歌词数据
     private var lyricLines: List<LrcLine> = emptyList()
-    private var currentPositionMs = 0L
-    private var isPlaying = false
-    private var lastUpdateTime = 0L
 
-    /** 最近一次解析的原始歌词（避免每 200ms 重复解析） */
+    /** 播放位置基准（由播放快照提供；播放中按单调时钟外推） */
+    private var basePositionMs = 0L
+    private var baseClockMs = 0L
+    private var isPlaying = false
+
+    /** 最近一次解析的原始歌词（歌词只在原文变化时解析一次） */
     private var lastRawLyrics: String? = null
 
-    // 定时更新
+    /** 最近一次渲染的两行文本（显示只在活动行变化时更新） */
+    private var lastRenderedLine1: String? = null
+    private var lastRenderedLine2: String? = null
+
+    // 自适应显示定时（暂停/熄屏停表）
     private lateinit var handler: Handler
-    private lateinit var updateRunnable: Runnable
 
     private var stateReceiver: BroadcastReceiver? = null
 
@@ -87,14 +95,36 @@ class FloatingLyricsService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         handler = Handler(Looper.getMainLooper())
         loadSettings()
-        loadLyricsFromPrefs()
         createFloatingView()
         registerReceivers()
         observeSettings()
-        startUpdateTimer()
+        observePlayback()
         // 标记悬浮窗已显示（管理器据此恢复 UI 状态）
         prefs().edit().putBoolean(LyricsOverlayManager.KEY_VISIBLE, true).apply()
         LyricsOverlayManager.onServiceVisibilityChanged(true)
+    }
+
+    /**
+     * 订阅播放实时状态（同进程 StateFlow，耗电优化）。
+     *
+     * 歌词只在原文变化时解析一次；快照到达即刷新显示并重排显示定时 ——
+     * 暂停/继续/seek 都由快照事件驱动，不再轮询偏好。
+     */
+    private fun observePlayback() {
+        serviceScope.launch {
+            LyricsOverlayManager.playback.collect { snap ->
+                if (snap != null) applyPlaybackSnapshot(snap)
+            }
+        }
+    }
+
+    private fun applyPlaybackSnapshot(snap: LyricsOverlayManager.PlaybackSnapshot) {
+        parseAndSetLyricsIfNeeded(snap.lyrics)
+        basePositionMs = snap.positionMs
+        baseClockMs = snap.clockMs
+        isPlaying = snap.isPlaying
+        updateLyricsDisplay()
+        rescheduleDisplayTimer()
     }
 
     /**
@@ -118,30 +148,24 @@ class FloatingLyricsService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand: ${intent?.getStringExtra("action")}")
         when (intent?.getStringExtra("action")) {
+            // 兼容旧版 startService 直传协议：只更新内存状态，不再写偏好
             "update_lyrics" -> {
-                intent.getStringExtra("lyrics")?.let { raw ->
-                    savePrefString(LyricsOverlayManager.KEY_LYRICS_RAW, raw)
-                    parseAndSetLyrics(raw)
-                }
+                intent.getStringExtra("lyrics")?.let { parseAndSetLyricsIfNeeded(it) }
                 val pos = intent.getLongExtra("position", -1L)
                 if (pos >= 0) {
-                    currentPositionMs = pos
-                    lastUpdateTime = System.currentTimeMillis()
-                    savePrefLong(LyricsOverlayManager.KEY_POSITION_MS, pos)
-                    savePrefLong(LyricsOverlayManager.KEY_LAST_UPDATE, lastUpdateTime)
+                    basePositionMs = pos
+                    baseClockMs = SystemClock.elapsedRealtime()
                 }
                 isPlaying = intent.getBooleanExtra("is_playing", isPlaying)
-                savePrefBool(LyricsOverlayManager.KEY_IS_PLAYING, isPlaying)
                 updateLyricsDisplay()
+                rescheduleDisplayTimer()
             }
 
             "update_position" -> {
-                currentPositionMs =
-                    intent.getLongExtra("position", currentPositionMs)
-                lastUpdateTime = System.currentTimeMillis()
-                savePrefLong(LyricsOverlayManager.KEY_POSITION_MS, currentPositionMs)
-                savePrefLong(LyricsOverlayManager.KEY_LAST_UPDATE, lastUpdateTime)
+                basePositionMs = intent.getLongExtra("position", basePositionMs)
+                baseClockMs = SystemClock.elapsedRealtime()
                 updateLyricsDisplay()
+                rescheduleDisplayTimer()
             }
 
             "update_color" -> setLyricsColor(intent.getIntExtra("color", Color.WHITE))
@@ -164,12 +188,19 @@ class FloatingLyricsService : Service() {
                     LyricsOverlayManager.ACTION_TOGGLE_LOCK -> toggleLock()
                     LyricsOverlayManager.ACTION_RECENTER -> recenterOverlay()
                     LyricsOverlayManager.ACTION_UPDATE_STATE -> {
-                        // 设置页/通知栏改了任何一项都走这里：重新读取并立即生效
+                        // 设置页/通知栏改了任何一项都走这里：重新读取并立即生效。
+                        // 播放实时状态不经广播（内存 StateFlow 直传），这里不重复解析歌词
                         loadSettings()
-                        loadLyricsFromPrefs()
                         applyLyricsStyle()
                         applyLinesCount()
                         updateLyricsDisplay()
+                    }
+
+                    // 熄屏：停止显示定时任务（悬浮窗本就不可见）；亮屏恢复并重新校准
+                    Intent.ACTION_SCREEN_OFF -> handler.removeCallbacks(displayTick)
+                    Intent.ACTION_SCREEN_ON -> {
+                        updateLyricsDisplay()
+                        rescheduleDisplayTimer()
                     }
                 }
             }
@@ -178,6 +209,8 @@ class FloatingLyricsService : Service() {
             addAction(LyricsOverlayManager.ACTION_TOGGLE_LOCK)
             addAction(LyricsOverlayManager.ACTION_UPDATE_STATE)
             addAction(LyricsOverlayManager.ACTION_RECENTER)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(stateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -186,31 +219,52 @@ class FloatingLyricsService : Service() {
         }
     }
 
-    private fun startUpdateTimer() {
-        updateRunnable = object : Runnable {
-            override fun run() {
-                // 兜底通道：直接轮询偏好里的最新播放状态。
-                // 原先只依赖 ACTION_UPDATE_STATE 广播，一旦广播未送达（部分 ROM 后台限制），
-                // 悬浮窗就会永远停在第一句歌词上；这里每 200ms 主动同步一次。
-                syncFromPrefs()
-                if (isPlaying) updateLyricsDisplay()
-                handler.postDelayed(this, UPDATE_INTERVAL_MS)
-            }
+    // ===================== 自适应显示定时（耗电优化） =====================
+
+    private val displayTick = object : Runnable {
+        override fun run() {
+            updateLyricsDisplay()
+            rescheduleDisplayTimer()
         }
-        handler.post(updateRunnable)
     }
 
-    /** 从偏好读取最新歌词 / 位置 / 播放状态（与广播双通道，保证实时刷新） */
-    private fun syncFromPrefs() {
-        val p = prefs()
-        val raw = p.getString(LyricsOverlayManager.KEY_LYRICS_RAW, null)
-        if (raw != null && raw != lastRawLyrics) {
-            lastRawLyrics = raw
-            parseAndSetLyrics(raw)
+    /**
+     * 重新安排显示刷新。
+     *
+     * 与旧实现（无论播放与否固定每 200ms 轮询偏好并重绘）的区别：
+     * - 暂停/停止：不排定时任务，状态变化由播放快照事件驱动；
+     * - 熄屏（屏幕不可交互）：停表，亮屏后经 ACTION_SCREEN_ON 恢复；
+     * - 播放中：只在"下一句歌词行临近"时唤醒刷新（[nextDisplayDelayMs]）。
+     */
+    private fun rescheduleDisplayTimer() {
+        handler.removeCallbacks(displayTick)
+        if (!isPlaying) return
+        if (!isScreenInteractive()) return
+        if (lyricLines.isEmpty()) return
+        handler.postDelayed(displayTick, nextDisplayDelayMs())
+    }
+
+    /** 到下一句歌词行的剩余时间（截断到 [MIN_DISPLAY_TICK_MS]~[MAX_DISPLAY_TICK_MS]） */
+    private fun nextDisplayDelayMs(): Long {
+        val pos = extrapolatedPositionMs()
+        val activeIdx = LrcParser.activeIndex(lyricLines, pos)
+        val nextTime = when {
+            activeIdx + 1 < lyricLines.size -> lyricLines[activeIdx + 1].timeMs
+            activeIdx < 0 && lyricLines.isNotEmpty() -> lyricLines[0].timeMs
+            else -> return MAX_DISPLAY_TICK_MS
         }
-        currentPositionMs = p.getLong(LyricsOverlayManager.KEY_POSITION_MS, currentPositionMs)
-        lastUpdateTime = p.getLong(LyricsOverlayManager.KEY_LAST_UPDATE, lastUpdateTime)
-        isPlaying = p.getBoolean(LyricsOverlayManager.KEY_IS_PLAYING, isPlaying)
+        return (nextTime - pos).coerceIn(MIN_DISPLAY_TICK_MS, MAX_DISPLAY_TICK_MS)
+    }
+
+    private fun isScreenInteractive(): Boolean {
+        val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+        return pm.isInteractive
+    }
+
+    /** 播放中按单调时钟外推当前位置（快照打点即校准基准） */
+    private fun extrapolatedPositionMs(): Long {
+        if (!isPlaying || baseClockMs <= 0) return basePositionMs
+        return basePositionMs + (SystemClock.elapsedRealtime() - baseClockMs).coerceAtLeast(0L)
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -345,12 +399,12 @@ class FloatingLyricsService : Service() {
         }
     }
 
-    /** 解析 LRC 文本（与 Flutter 端 LrcParser 一致的多时间戳语义） */
-    private fun parseAndSetLyrics(raw: String?) {
+    /** 解析 LRC 文本（与 Flutter 端 LrcParser 一致的多时间戳语义）；原文未变时不重复解析 */
+    private fun parseAndSetLyricsIfNeeded(raw: String?) {
+        if (raw == lastRawLyrics) return
         lastRawLyrics = raw
         if (raw.isNullOrBlank()) {
             lyricLines = emptyList()
-            Log.d(TAG, "Lyrics raw is empty")
             return
         }
         lyricLines = LrcParser.parse(raw)
@@ -361,29 +415,37 @@ class FloatingLyricsService : Service() {
         val line1 = lyricLine1 ?: return
         val line2 = lyricLine2
 
-        // 播放中按经过时间外推当前位置
-        var currentPos = currentPositionMs
-        if (isPlaying && lastUpdateTime > 0) {
-            currentPos += System.currentTimeMillis() - lastUpdateTime
-        }
-
+        // 播放中按单调时钟外推当前位置
+        val currentPos = extrapolatedPositionMs()
         val activeIdx = LrcParser.activeIndex(lyricLines, currentPos)
 
+        val text1: String
+        val text2: String
         if (lyricLines.isEmpty()) {
-            line1.text = ""
-            line2?.text = ""
+            text1 = ""
+            text2 = ""
         } else if (linesCount == 1) {
-            line1.text =
-                if (activeIdx >= 0) lyricLines[activeIdx].text else lyricLines[0].text
+            text1 = if (activeIdx >= 0) lyricLines[activeIdx].text else lyricLines[0].text
+            text2 = ""
         } else {
             if (activeIdx >= 0) {
-                line1.text = lyricLines[activeIdx].text
-                line2?.text =
+                text1 = lyricLines[activeIdx].text
+                text2 =
                     if (activeIdx + 1 < lyricLines.size) lyricLines[activeIdx + 1].text else ""
             } else {
-                line1.text = lyricLines[0].text
-                line2?.text = if (lyricLines.size > 1) lyricLines[1].text else ""
+                text1 = lyricLines[0].text
+                text2 = if (lyricLines.size > 1) lyricLines[1].text else ""
             }
+        }
+
+        // 显示去重：只有活动歌词行真正变化时才触发布局与绘制
+        if (text1 != lastRenderedLine1) {
+            lastRenderedLine1 = text1
+            line1.text = text1
+        }
+        if (text2 != lastRenderedLine2) {
+            lastRenderedLine2 = text2
+            line2?.text = text2
         }
     }
 
@@ -571,33 +633,10 @@ class FloatingLyricsService : Service() {
             .coerceIn(LyricsOverlayManager.MIN_FONT_SIZE, LyricsOverlayManager.MAX_FONT_SIZE)
         fontWeight = p.getInt(LyricsOverlayManager.KEY_FONT_WEIGHT, LyricsOverlayManager.DEFAULT_FONT_WEIGHT)
         linesCount = p.getInt(LyricsOverlayManager.KEY_LINES_COUNT, 2)
-        currentPositionMs = p.getLong(LyricsOverlayManager.KEY_POSITION_MS, 0L)
-        isPlaying = p.getBoolean(LyricsOverlayManager.KEY_IS_PLAYING, false)
-        lastUpdateTime = p.getLong(LyricsOverlayManager.KEY_LAST_UPDATE, 0L)
-    }
-
-    private fun loadLyricsFromPrefs() {
-        prefs().getString(LyricsOverlayManager.KEY_LYRICS_RAW, null)?.let { parseAndSetLyrics(it) }
-    }
-
-    private fun savePrefBool(key: String, value: Boolean) {
-        prefs().edit().putBoolean(key, value).apply()
     }
 
     private fun savePrefInt(key: String, value: Int) {
         prefs().edit().putInt(key, value).apply()
-    }
-
-    private fun savePrefFloat(key: String, value: Float) {
-        prefs().edit().putFloat(key, value).apply()
-    }
-
-    private fun savePrefLong(key: String, value: Long) {
-        prefs().edit().putLong(key, value).apply()
-    }
-
-    private fun savePrefString(key: String, value: String) {
-        prefs().edit().putString(key, value).apply()
     }
 
     private fun loadPrefInt(key: String, defaultVal: Int): Int = prefs().getInt(key, defaultVal)
@@ -606,7 +645,7 @@ class FloatingLyricsService : Service() {
         super.onDestroy()
         Log.d(TAG, "Service onDestroy")
         serviceScope.cancel()
-        handler.removeCallbacks(updateRunnable)
+        handler.removeCallbacks(displayTick)
         stateReceiver?.let {
             try {
                 unregisterReceiver(it)
@@ -628,7 +667,13 @@ class FloatingLyricsService : Service() {
 
     companion object {
         private const val TAG = "FloatingLyrics"
-        private const val UPDATE_INTERVAL_MS = 200L
+
+        /** 显示刷新的最短间隔（毫秒）：同刻多句歌词时的紧凑跟转 */
+        private const val MIN_DISPLAY_TICK_MS = 50L
+
+        /** 显示刷新的最长间隔（毫秒）：距下一句歌词尚远时的兜底唤醒 */
+        private const val MAX_DISPLAY_TICK_MS = 1000L
+
         private const val CLICK_MAX_DURATION_MS = 200L
 
         /** 读取历史坐标时的下限余量：y 至少留出这么多像素高度的可见区域 */
