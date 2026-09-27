@@ -51,6 +51,12 @@ internal class StrictHttpDataSource private constructor(private val client: OkHt
             val nextResponse = nextCall.execute()
             response = nextResponse
             if (nextResponse.code !in 200..299) throw IOException("远程音频返回 HTTP ${nextResponse.code}")
+            if (nextResponse.code == 206) {
+                val start = nextResponse.header("Content-Range")
+                    ?.let { Regex("bytes\\s+(\\d+)-\\d+/(?:\\d+|\\*)", RegexOption.IGNORE_CASE)
+                        .matchEntire(it.trim())?.groupValues?.get(1)?.toLongOrNull() }
+                if (start != position) throw IOException("服务器返回的音频范围与请求不一致")
+            }
             val body = nextResponse.body ?: throw IOException("远程音频响应为空")
             val stream = body.byteStream()
             input = stream
