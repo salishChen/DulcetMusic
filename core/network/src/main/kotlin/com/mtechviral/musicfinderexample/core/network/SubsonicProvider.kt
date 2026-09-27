@@ -14,7 +14,9 @@ class SubsonicProvider(override val source: RemoteSource) : RemoteMusicProvider 
         serverName = source.displayName,
     )
 
-    override suspend fun testConnection(): String = when (val result = SubsonicService.testConnection(config())) {
+    override suspend fun testConnection(): String = when (val result = SubsonicService.testConnection(
+        config(), includeEasyTier = SubsonicService.currentSourceId == source.id,
+    )) {
         is SubsonicService.ConnectionTestResult.Success -> "连接成功"
         is SubsonicService.ConnectionTestResult.AuthFailed -> throw IllegalStateException(result.message)
         is SubsonicService.ConnectionTestResult.InvalidUrl -> throw IllegalArgumentException(result.message)

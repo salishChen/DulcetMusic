@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
@@ -66,6 +67,7 @@ fun SubsonicConfigScreen() {
     var busy by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf("") }
+    var sameServerWithNewAddress by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         RemoteSessionManager.load()
@@ -88,7 +90,9 @@ fun SubsonicConfigScreen() {
         require(password.isNotBlank()) { "请填写密码" }
         val current = RemoteSessionManager.source.value
         val sameSource = current?.protocol == protocol && current.username == username.trim() &&
-            (protocol != RemoteProtocol.WEBDAV || current.rootPath == rootPath.trim())
+            (protocol != RemoteProtocol.WEBDAV || current.rootPath == rootPath.trim()) &&
+            ((current.intranetUrl == intranet.trim() && current.publicUrl == publicUrl.trim()) ||
+                sameServerWithNewAddress)
         return RemoteSource(
             id = if (sameSource) current!!.id else UUID.randomUUID().toString(),
             protocol = protocol,
@@ -137,6 +141,17 @@ fun SubsonicConfigScreen() {
                 password, { password = it }, "密码", "", Icons.Filled.Lock,
                 visualTransformation = PasswordVisualTransformation(),
             )
+            val current = RemoteSessionManager.source.value
+            if (current != null && current.protocol == protocol &&
+                current.username == username.trim() &&
+                (current.intranetUrl != intranet.trim() || current.publicUrl != publicUrl.trim())) {
+                Row {
+                    Checkbox(checked = sameServerWithNewAddress,
+                        onCheckedChange = { sameServerWithNewAddress = it })
+                    Text("仅修改同一台服务器的地址（保留原有歌曲和缓存归属）")
+                }
+                if (!sameServerWithNewAddress) Text("地址变化将作为新服务器，旧曲库记录保留但不显示。")
+            }
             if (result.isNotEmpty()) Text(result)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(enabled = !busy, onClick = {

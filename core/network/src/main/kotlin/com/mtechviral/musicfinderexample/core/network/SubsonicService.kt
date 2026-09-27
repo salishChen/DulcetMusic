@@ -5,7 +5,10 @@ import com.mtechviral.musicfinderexample.core.common.UrlSanitizer
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.model.SubsonicConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -95,6 +98,13 @@ object SubsonicService {
         activeBaseUrl = null
     }
 
+    fun deactivate() {
+        config = null
+        activeBaseUrl = null
+        easyTierBaseUrl = null
+        currentSourceId = null
+    }
+
     /** 清除缓存的连接（网络变化/播放失败时调用） */
     fun resetConnection() {
         activeBaseUrl = null
@@ -164,8 +174,9 @@ object SubsonicService {
      * EasyTier 本地转发（5s）在最前，内网（5s 超时）次之，公网（10s 超时）最后。
      * 未填写/未启用的地址直接跳过。
      */
-    private fun SubsonicConfig.resolvableBaseUrls(): List<Pair<String, OkHttpClient>> = listOfNotNull(
-        easyTierBaseUrl?.trim()?.takeIf { it.isNotEmpty() }?.let { it to intranetProbeClient },
+    private fun SubsonicConfig.resolvableBaseUrls(includeEasyTier: Boolean = true): List<Pair<String, OkHttpClient>> = listOfNotNull(
+        easyTierBaseUrl?.trim()?.takeIf { includeEasyTier && it.isNotEmpty() }
+            ?.let { it to intranetProbeClient },
         intranetUrl.trim().takeIf { it.isNotEmpty() }?.let { it to intranetProbeClient },
         publicUrl.trim().takeIf { it.isNotEmpty() }?.let { it to publicProbeClient },
     )
@@ -275,8 +286,9 @@ object SubsonicService {
      * 两个地址都填写时按「内网 → 公网」顺序探测，任一成功即成功；
      * 全部失败时返回最后一次失败的分类结果。
      */
-    suspend fun testConnection(testConfig: SubsonicConfig): ConnectionTestResult {
-        val candidates = testConfig.resolvableBaseUrls()
+    suspend fun testConnection(testConfig: SubsonicConfig,
+                               includeEasyTier: Boolean = false): ConnectionTestResult {
+        val candidates = testConfig.resolvableBaseUrls(includeEasyTier)
         if (candidates.isEmpty()) {
             return ConnectionTestResult.InvalidUrl("未填写服务器地址（内网或公网至少填写一个）")
         }
@@ -345,12 +357,15 @@ object SubsonicService {
      */
     suspend fun getAllSongs(): List<Song> {
         val allSongs = ArrayList<Song>()
+        var failures = 0
 
         val artistsResponse = request("getArtists")
-        val indexes = artistsResponse.optJSONObject("artists")?.optJSONArray("index")
-            ?: JSONArray()
+        val artists = artistsResponse.optJSONObject("artists")
+            ?: throw SubsonicException("服务器未返回艺术家列表")
+        val indexes = artists.optJSONArray("index") ?: JSONArray()
 
         for (i in 0 until indexes.length()) {
+            currentCoroutineContext().ensureActive()
             val index = indexes.optJSONObject(i) ?: continue
             val artists = index.optJSONArray("artist") ?: JSONArray()
             for (j in 0 until artists.length()) {
@@ -385,14 +400,19 @@ object SubsonicService {
                                 )
                             }
                         } catch (e: Exception) {
+                            if (e is CancellationException) throw e
+                            failures++
                             log("获取专辑 $albumName 歌曲失败: ${e.message}")
                         }
                     }
                 } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    failures++
                     log("获取艺术家 $artistName 专辑失败: ${e.message}")
                 }
             }
         }
+        if (failures > 0) throw SubsonicException("远程扫描有 $failures 个目录读取失败，请重试")
         return allSongs
     }
 

@@ -46,7 +46,7 @@ object RemoteSessionManager {
         val stored = DatabaseHelper.activeRemoteSource()
         val next = stored?.let(::newProvider)
         if (next is SubsonicProvider) next.activate()
-        else SubsonicService.currentSourceId = null
+        else SubsonicService.deactivate()
         provider = next
         _source.value = stored
         generation++
@@ -67,7 +67,7 @@ object RemoteSessionManager {
         next.testConnection()
         DatabaseHelper.activateRemoteSource(candidate)
         if (next is SubsonicProvider) next.activate()
-        else SubsonicService.currentSourceId = null
+        else SubsonicService.deactivate()
         provider = next
         _source.value = candidate
         generation++
@@ -81,7 +81,7 @@ object RemoteSessionManager {
         mutex.withLock {
         DatabaseHelper.deactivateRemoteSource()
         provider = null
-        SubsonicService.currentSourceId = null
+        SubsonicService.deactivate()
         _source.value = null
         generation++
         loaded = true
