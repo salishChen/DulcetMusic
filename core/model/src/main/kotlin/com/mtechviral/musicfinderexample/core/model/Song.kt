@@ -82,6 +82,9 @@ data class Song(
     /** 来源类型：'local'（本地）或 'subsonic'（远程） */
     val sourceType: String? = null,
 
+    /** Stable identity of the server this song belongs to; null for local or unbound legacy rows. */
+    val sourceId: String? = null,
+
     /** Subsonic 远程歌曲 ID */
     val remoteId: String? = null,
 
@@ -131,9 +134,10 @@ data class Song(
     val displayAlbum: String
         get() = if (album.isNullOrBlank()) "未知专辑" else album
 
-    /** 是否为远程 Subsonic 歌曲 */
+    /** A legacy remote row with no sourceId is still remote, never a local file. */
     val isRemote: Boolean
-        get() = sourceType == SOURCE_TYPE_SUBSONIC
+        get() = sourceType == SOURCE_TYPE_SUBSONIC ||
+            sourceType == SOURCE_TYPE_WEBDAV || sourceType == SOURCE_TYPE_EMBY
 
     /**
      * 是否为"空队列占位曲目"（第二十二轮需求 5）。
@@ -212,6 +216,8 @@ data class Song(
     companion object {
         const val SOURCE_TYPE_LOCAL = "local"
         const val SOURCE_TYPE_SUBSONIC = "subsonic"
+        const val SOURCE_TYPE_WEBDAV = "webdav"
+        const val SOURCE_TYPE_EMBY = "emby"
 
         /** 媒体库扫描来源标识 */
         const val SOURCE_MEDIA_LIBRARY = "media_library"

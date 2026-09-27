@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.mtechviral.musicfinderexample.core.common.RemoteLocator
+import java.util.UUID
 
 /**
  * SQLite 建库/迁移定义。
@@ -57,6 +58,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
               lyrics TEXT,
               source TEXT,
               sourceType TEXT DEFAULT 'local',
+              sourceId TEXT,
               remoteId TEXT,
               remoteStreamUrl TEXT,
               cachedPath TEXT,
@@ -94,6 +96,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         db.execSQL("CREATE INDEX idx_songs_remote_id ON songs(remoteId)")
         createArtistsMeta(db)
         createSubsonicConfig(db)
+        createRemoteSources(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -132,6 +135,11 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
             // 优化建议 01：清除已持久化的认证流地址（含 u/s/t 认证参数）——
             // 远程歌曲 path 改为稳定定位符，remoteStreamUrl 清空，播放时临时生成
             scrubRemoteAuthUrls(db)
+        }
+        if (oldVersion < 9) {
+            db.execSQL("ALTER TABLE songs ADD COLUMN sourceId TEXT")
+            createRemoteSources(db)
+            migrateLegacyRemoteSource(db)
         }
     }
 
@@ -205,9 +213,68 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         )
     }
 
+    private fun createRemoteSources(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS remote_sources (
+                id TEXT PRIMARY KEY NOT NULL,
+                protocol TEXT NOT NULL,
+                displayName TEXT NOT NULL,
+                intranetUrl TEXT NOT NULL DEFAULT '',
+                publicUrl TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT '',
+                password TEXT NOT NULL DEFAULT '',
+                rootPath TEXT NOT NULL DEFAULT '',
+                serverIdentity TEXT
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS remote_state (
+                singletonId INTEGER PRIMARY KEY CHECK(singletonId = 1),
+                activeSourceId TEXT REFERENCES remote_sources(id)
+            )
+        """.trimIndent())
+        db.execSQL("INSERT OR IGNORE INTO remote_state(singletonId, activeSourceId) VALUES (1, NULL)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_songs_source_id ON songs(sourceId)")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_songs_remote_source ON songs(sourceId, remoteId) WHERE sourceId IS NOT NULL AND remoteId IS NOT NULL")
+    }
+
+    /** Only attach legacy rows when their recorded source agrees with the configured server. */
+    private fun migrateLegacyRemoteSource(db: SQLiteDatabase) {
+        db.rawQuery("SELECT intranetUrl, publicUrl, username, password, serverName FROM subsonic_config WHERE isActive = 1 LIMIT 1", null).use { cursor ->
+            if (!cursor.moveToFirst()) return
+            val intranet = cursor.getString(0) ?: ""
+            val public = cursor.getString(1) ?: ""
+            val username = cursor.getString(2) ?: ""
+            val oldPassword = cursor.getString(3) ?: ""
+            val password = when {
+                CredentialCipher.isEncrypted(oldPassword) -> oldPassword
+                oldPassword.isEmpty() -> ""
+                else -> CredentialCipher.encrypt(oldPassword) ?: ""
+            }
+            val name = cursor.getString(4) ?: "Subsonic"
+            val sourceId = UUID.randomUUID().toString()
+            db.execSQL(
+                "INSERT INTO remote_sources(id, protocol, displayName, intranetUrl, publicUrl, username, password) VALUES (?, 'SUBSONIC', ?, ?, ?, ?, ?)",
+                arrayOf(sourceId, name, intranet, public, username, password),
+            )
+            db.execSQL("UPDATE remote_state SET activeSourceId = ? WHERE singletonId = 1", arrayOf(sourceId))
+            val host = intranet.trim().ifEmpty { public.trim() }
+            val sourceTag = "subsonic@${username.trim()}@$host"
+            // Duplicate legacy IDs are deliberately left unbound, so the unique index cannot
+            // destroy rows or their playlist references while resolving ambiguous history.
+            db.execSQL("""
+                UPDATE songs SET sourceId = ? WHERE id IN (
+                  SELECT MIN(id) FROM songs
+                  WHERE sourceType = 'subsonic' AND source = ? AND remoteId IS NOT NULL
+                  GROUP BY remoteId HAVING COUNT(*) = 1
+                )
+            """.trimIndent(), arrayOf(sourceId, sourceTag))
+        }
+    }
+
     companion object {
         const val DB_NAME = "music_player.db"
-        const val DB_VERSION = 8
+        const val DB_VERSION = 9
 
         // ---- songs 表列名 ----
         const val TABLE_SONGS = "songs"
@@ -231,6 +298,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         const val COL_LYRICS = "lyrics"
         const val COL_SOURCE = "source"
         const val COL_SOURCE_TYPE = "sourceType"
+        const val COL_SOURCE_ID = "sourceId"
         const val COL_REMOTE_ID = "remoteId"
         const val COL_REMOTE_STREAM_URL = "remoteStreamUrl"
         const val COL_CACHED_PATH = "cachedPath"

@@ -177,4 +177,26 @@ class SongDaoMergeTest {
         assertEquals("subsonic@user@host", rows[0].source)
         assertTrue(rows[0].isLiked)
     }
+
+    @Test
+    fun sameRemoteIdAndTagsOnDifferentSourcesStaySeparate() {
+        val first = song(
+            title = "Identical", path = "remote://source-a/b25l", sourceType = Song.SOURCE_TYPE_SUBSONIC,
+            remoteId = "one",
+        ).copy(sourceId = "source-a")
+        val second = first.copy(path = "remote://source-b/b25l", sourceId = "source-b")
+
+        songDao.insertSongs(listOf(first), "subsonic@a")
+        songDao.insertSongs(listOf(second), "subsonic@b")
+
+        val rows = songDao.queryAllSongs()
+        assertEquals(2, rows.size)
+        assertEquals("source-a", songDao.querySongByRemoteId("source-a", "one")?.sourceId)
+        assertEquals("source-b", songDao.querySongByRemoteId("source-b", "one")?.sourceId)
+
+        songDao.insertSongs(listOf(first.copy(duration = 1234L)), "subsonic@a")
+        assertEquals(2, songDao.queryAllSongs().size)
+        assertEquals(1234L, songDao.querySongByRemoteId("source-a", "one")?.duration)
+        assertEquals(null, songDao.querySongByRemoteId("source-b", "one")?.duration)
+    }
 }

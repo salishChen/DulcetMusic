@@ -19,6 +19,7 @@ import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.C
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_REMOTE_ID
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE_TYPE
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE_ID
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_TITLE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_TRACK_NUMBER
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.TABLE_SONGS
@@ -64,8 +65,14 @@ class SongDao(private val musicDatabase: MusicDatabase) {
             .use { c -> if (c.moveToFirst()) SongMapper.fromCursor(c) else null }
 
     /** 按远程 id 查询单曲 */
-    fun querySongByRemoteId(remoteId: String): Song? =
-        db.query(TABLE_SONGS, null, "$COL_REMOTE_ID = ?", arrayOf(remoteId), null, null, "1")
+    fun querySongByRemoteId(remoteId: String): Song? {
+        val sourceId = db.rawQuery("SELECT activeSourceId FROM remote_state WHERE singletonId = 1", null)
+            .use { if (it.moveToFirst()) it.getString(0) else null } ?: return null
+        return querySongByRemoteId(sourceId, remoteId)
+    }
+
+    fun querySongByRemoteId(sourceId: String, remoteId: String): Song? =
+        db.query(TABLE_SONGS, null, "$COL_SOURCE_ID = ? AND $COL_REMOTE_ID = ?", arrayOf(sourceId, remoteId), null, null, "1")
             .use { c -> if (c.moveToFirst()) SongMapper.fromCursor(c) else null }
 
     /**
@@ -137,13 +144,14 @@ class SongDao(private val musicDatabase: MusicDatabase) {
         val index = MatchIndex()
         db.query(
             TABLE_SONGS,
-            arrayOf(COL_ID, COL_PATH, COL_REMOTE_ID, COL_SOURCE, COL_TITLE, COL_ARTIST, COL_ALBUM),
+            arrayOf(COL_ID, COL_PATH, COL_REMOTE_ID, COL_SOURCE, COL_SOURCE_ID, COL_TITLE, COL_ARTIST, COL_ALBUM),
             null, null, null, null, null,
         ).use { c ->
             val idIdx = c.getColumnIndexOrThrow(COL_ID)
             val pIdx = c.getColumnIndexOrThrow(COL_PATH)
             val rIdx = c.getColumnIndexOrThrow(COL_REMOTE_ID)
             val sIdx = c.getColumnIndexOrThrow(COL_SOURCE)
+            val sourceIdIdx = c.getColumnIndexOrThrow(COL_SOURCE_ID)
             val tIdx = c.getColumnIndexOrThrow(COL_TITLE)
             val arIdx = c.getColumnIndexOrThrow(COL_ARTIST)
             val alIdx = c.getColumnIndexOrThrow(COL_ALBUM)
@@ -154,6 +162,7 @@ class SongDao(private val musicDatabase: MusicDatabase) {
                         path = if (c.isNull(pIdx)) "" else c.getString(pIdx),
                         remoteId = if (c.isNull(rIdx)) null else c.getString(rIdx),
                         source = if (c.isNull(sIdx)) null else c.getString(sIdx),
+                        sourceId = if (c.isNull(sourceIdIdx)) null else c.getString(sourceIdIdx),
                         identityKey = SongMapper.identityKeyOf(
                             if (c.isNull(tIdx)) null else c.getString(tIdx),
                             if (c.isNull(arIdx)) null else c.getString(arIdx),
@@ -173,6 +182,7 @@ class SongDao(private val musicDatabase: MusicDatabase) {
             var path: String,
             var remoteId: String?,
             var source: String?,
+            var sourceId: String?,
             var identityKey: String,
         )
 
@@ -182,33 +192,36 @@ class SongDao(private val musicDatabase: MusicDatabase) {
 
         fun add(entry: Entry) {
             if (entry.path.isNotEmpty()) byPath[entry.path] = entry
-            if (!entry.remoteId.isNullOrEmpty()) byRemote[remoteKey(entry.remoteId, entry.source)] = entry
-            byIdentity[entry.identityKey] = entry
+            val remoteId = entry.remoteId
+            val sourceId = entry.sourceId
+            if (!remoteId.isNullOrEmpty() && !sourceId.isNullOrEmpty()) {
+                byRemote[remoteKey(remoteId, sourceId)] = entry
+            }
+            if (entry.remoteId == null) byIdentity[entry.identityKey] = entry
         }
 
         private fun remove(entry: Entry) {
             if (byPath[entry.path] === entry) byPath.remove(entry.path)
-            if (!entry.remoteId.isNullOrEmpty()) {
-                val key = remoteKey(entry.remoteId, entry.source)
+            val remoteId = entry.remoteId
+            val sourceId = entry.sourceId
+            if (!remoteId.isNullOrEmpty() && !sourceId.isNullOrEmpty()) {
+                val key = remoteKey(remoteId, sourceId)
                 if (byRemote[key] === entry) byRemote.remove(key)
             }
-            if (byIdentity[entry.identityKey] === entry) byIdentity.remove(entry.identityKey)
+            if (entry.remoteId == null && byIdentity[entry.identityKey] === entry) byIdentity.remove(entry.identityKey)
         }
 
         fun findMatch(song: Song, source: String?): Entry? {
             val identity = song.identityKey
             val remoteId = song.remoteId
-            if (!remoteId.isNullOrEmpty()) {
-                // 1) 同一服务器的同一首远程歌（remoteId + 来源）
-                byRemote[remoteKey(remoteId, source)]?.let { return it }
-                // 1b) 旧库兼容：来源为旧标识 'subsonic' 的行，且身份键一致才合并
-                byRemote[remoteKey(remoteId, Song.SOURCE_TYPE_SUBSONIC)]
-                    ?.takeIf { it.source == Song.SOURCE_TYPE_SUBSONIC && it.identityKey == identity }
-                    ?.let { return it }
+            val sourceId = song.sourceId
+            if (song.isRemote) {
+                if (!remoteId.isNullOrEmpty() && !sourceId.isNullOrEmpty()) {
+                    byRemote[remoteKey(remoteId, sourceId)]?.let { return it }
+                }
+                return byPath[song.path]?.takeIf { it.sourceId == sourceId && it.remoteId == remoteId }
             }
-            // 2) 同一文件（本地路径）
-            if (song.path.isNotEmpty()) byPath[song.path]?.let { return it }
-            // 3) 身份键兜底（文件移动/改名、跨来源同曲）
+            if (song.path.isNotEmpty()) byPath[song.path]?.takeIf { it.remoteId == null }?.let { return it }
             return byIdentity[identity]
         }
 
@@ -219,6 +232,7 @@ class SongDao(private val musicDatabase: MusicDatabase) {
                     path = song.path,
                     remoteId = song.remoteId,
                     source = source,
+                    sourceId = song.sourceId,
                     identityKey = song.identityKey,
                 ),
             )
@@ -229,12 +243,13 @@ class SongDao(private val musicDatabase: MusicDatabase) {
             entry.path = song.path
             entry.remoteId = song.remoteId
             entry.source = source
+            entry.sourceId = song.sourceId
             entry.identityKey = song.identityKey
             add(entry)
         }
 
-        private fun remoteKey(remoteId: String?, source: String?): String =
-            "$remoteId|$source"
+        private fun remoteKey(remoteId: String, sourceId: String): String =
+            "$sourceId|$remoteId"
     }
 
     private fun valuesOf(song: Song, source: String?, includeId: Boolean = true): ContentValues =

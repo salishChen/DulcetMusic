@@ -29,6 +29,7 @@ import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.C
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SIZE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE_TYPE
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_SOURCE_ID
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_TITLE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_TRACK_NUMBER
 import com.mtechviral.musicfinderexample.core.model.Song
@@ -71,6 +72,7 @@ object SongMapper {
         lyrics = c.getStringOrNull(COL_LYRICS),
         source = c.getStringOrNull(COL_SOURCE),
         sourceType = c.getStringOrNull(COL_SOURCE_TYPE),
+        sourceId = c.getStringOrNull(COL_SOURCE_ID),
         remoteId = c.getStringOrNull(COL_REMOTE_ID),
         remoteStreamUrl = c.getStringOrNull(COL_REMOTE_STREAM_URL),
         cachedPath = c.getStringOrNull(COL_CACHED_PATH),
@@ -108,6 +110,7 @@ object SongMapper {
             put(COL_HAS_ARTWORK, if (song.hasArtwork) 1 else 0)
             put(COL_SOURCE, source)
             put(COL_SOURCE_TYPE, song.sourceType)
+            put(COL_SOURCE_ID, song.sourceId)
             put(COL_REMOTE_ID, song.remoteId)
             put(COL_REMOTE_STREAM_URL, song.remoteStreamUrl)
             put(COL_COVER_ART_ID, song.coverArtId)
@@ -141,6 +144,7 @@ object SongMapper {
             put(COL_LYRICS, song.lyrics)
             put(COL_SOURCE, song.source)
             put(COL_SOURCE_TYPE, song.sourceType)
+            put(COL_SOURCE_ID, song.sourceId)
             put(COL_REMOTE_ID, song.remoteId)
             put(COL_REMOTE_STREAM_URL, song.remoteStreamUrl)
             put(COL_CACHED_PATH, song.cachedPath)

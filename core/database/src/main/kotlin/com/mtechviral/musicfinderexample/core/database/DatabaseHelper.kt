@@ -8,12 +8,14 @@ import com.mtechviral.musicfinderexample.core.database.dao.PlayOverview
 import com.mtechviral.musicfinderexample.core.database.dao.PlaylistDao
 import com.mtechviral.musicfinderexample.core.database.dao.SongDao
 import com.mtechviral.musicfinderexample.core.database.dao.SubsonicConfigDao
+import com.mtechviral.musicfinderexample.core.database.dao.RemoteSourceDao
 import com.mtechviral.musicfinderexample.core.model.Album
 import com.mtechviral.musicfinderexample.core.model.Artist
 import com.mtechviral.musicfinderexample.core.model.ArtistMeta
 import com.mtechviral.musicfinderexample.core.model.Playlist
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.model.SubsonicConfig
+import com.mtechviral.musicfinderexample.core.model.RemoteSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -43,6 +45,8 @@ object DatabaseHelper {
         private set
     lateinit var subsonicConfigDao: SubsonicConfigDao
         private set
+    lateinit var remoteSourceDao: RemoteSourceDao
+        private set
     lateinit var artistMetaDao: ArtistMetaDao
         private set
 
@@ -65,6 +69,7 @@ object DatabaseHelper {
         artistDao = ArtistDao(musicDatabase)
         playlistDao = PlaylistDao(musicDatabase)
         subsonicConfigDao = SubsonicConfigDao(musicDatabase)
+        remoteSourceDao = RemoteSourceDao(musicDatabase)
         artistMetaDao = ArtistMetaDao(musicDatabase)
     }
 
@@ -96,6 +101,19 @@ object DatabaseHelper {
 
     suspend fun querySongByRemoteId(remoteId: String): Song? =
         io { songDao.querySongByRemoteId(remoteId) }
+
+    suspend fun querySongByRemoteId(sourceId: String, remoteId: String): Song? =
+        io { songDao.querySongByRemoteId(sourceId, remoteId) }
+
+    suspend fun activeRemoteSource(): RemoteSource? = io { remoteSourceDao.activeSource() }
+
+    suspend fun activateRemoteSource(source: RemoteSource) = writeMutex.withLock {
+        io { remoteSourceDao.activate(source); invalidateCache() }
+    }
+
+    suspend fun deactivateRemoteSource() = writeMutex.withLock {
+        io { remoteSourceDao.deactivate(); invalidateCache() }
+    }
 
     /** 事务批量插入/更新歌曲，返回实际新增/覆盖的数量 */
     suspend fun insertSongs(songs: List<Song>, source: String?): Int =

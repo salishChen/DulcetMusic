@@ -84,7 +84,9 @@ class SubsonicConfigDao(private val musicDatabase: MusicDatabase) {
      */
     fun saveSubsonicConfig(config: SubsonicConfig) {
         val existing = querySubsonicConfig()
-        val storedPassword = CredentialCipher.encrypt(config.password) ?: config.password
+        val storedPassword = if (config.password.isEmpty()) "" else
+            CredentialCipher.encrypt(config.password)
+                ?: throw IllegalStateException("无法安全保存 Subsonic 密码")
         val values = ContentValues().apply {
             put("intranetUrl", config.intranetUrl)
             put("publicUrl", config.publicUrl)

@@ -26,6 +26,14 @@ object RemoteLocator {
     /** 是否为远程定位符（而非本地文件路径） */
     fun isLocator(path: String): Boolean = path.startsWith(PREFIX)
 
+    /** New protocol-neutral locator. Old subsonic:// paths remain readable. */
+    fun forSource(sourceId: String, remoteId: String): String {
+        require(sourceId.isNotBlank() && remoteId.isNotBlank())
+        val encoded = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(remoteId.toByteArray(Charsets.UTF_8))
+        return "remote://$sourceId/$encoded"
+    }
+
     /** SHA-256 十六进制 */
     fun sha256Hex(input: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
