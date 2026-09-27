@@ -3,6 +3,8 @@ package com.mtechviral.musicfinderexample.core.database.dao
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase
+import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
+import com.mtechviral.musicfinderexample.core.model.RemoteSource
 import com.mtechviral.musicfinderexample.core.model.Song
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -67,5 +69,24 @@ class ActiveSourceScopeTest {
         assertEquals(3, db.rawQuery("SELECT COUNT(*) FROM songs", null).use {
             it.moveToFirst(); it.getInt(0)
         })
+    }
+
+    @Test
+    fun inactiveSourceCredentialsAreRemovedOnSwitchAndDeactivate() {
+        val db = database.writableDatabase
+        db.execSQL("INSERT INTO remote_sources(id, protocol, displayName, password) VALUES ('old', 'WEBDAV', 'Old', 'stale-password')")
+        val dao = RemoteSourceDao(database)
+        dao.activate(RemoteSource(id = "new", protocol = RemoteProtocol.EMBY,
+            displayName = "New", password = ""))
+        db.rawQuery("SELECT password FROM remote_sources WHERE id = 'old'", null).use {
+            it.moveToFirst()
+            assertEquals("", it.getString(0))
+        }
+        db.execSQL("UPDATE remote_sources SET password = 'temporary' WHERE id = 'new'")
+        dao.deactivate()
+        db.rawQuery("SELECT COUNT(*) FROM remote_sources WHERE password != ''", null).use {
+            it.moveToFirst()
+            assertEquals(0, it.getInt(0))
+        }
     }
 }

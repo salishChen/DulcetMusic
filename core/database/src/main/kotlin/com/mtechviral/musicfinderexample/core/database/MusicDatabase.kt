@@ -146,6 +146,10 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         if (oldVersion in 9..10) {
             db.execSQL("ALTER TABLE remote_sources ADD COLUMN libraryId TEXT NOT NULL DEFAULT ''")
         }
+        if (oldVersion < 11) {
+            db.execSQL("""UPDATE remote_sources SET password = ''
+                WHERE id != COALESCE((SELECT activeSourceId FROM remote_state WHERE singletonId = 1), '')""")
+        }
     }
 
     /**

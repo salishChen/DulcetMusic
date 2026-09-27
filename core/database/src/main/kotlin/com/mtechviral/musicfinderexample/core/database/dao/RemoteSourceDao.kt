@@ -57,6 +57,7 @@ class RemoteSourceDao(private val database: MusicDatabase) {
                 db.insertOrThrow("remote_sources", null, values)
             }
             db.execSQL("UPDATE remote_state SET activeSourceId = ? WHERE singletonId = 1", arrayOf(source.id))
+            db.execSQL("UPDATE remote_sources SET password = '' WHERE id != ?", arrayOf(source.id))
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -64,6 +65,13 @@ class RemoteSourceDao(private val database: MusicDatabase) {
     }
 
     fun deactivate() {
-        db.execSQL("UPDATE remote_state SET activeSourceId = NULL WHERE singletonId = 1")
+        db.beginTransaction()
+        try {
+            db.execSQL("UPDATE remote_state SET activeSourceId = NULL WHERE singletonId = 1")
+            db.execSQL("UPDATE remote_sources SET password = ''")
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 }

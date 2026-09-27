@@ -100,13 +100,20 @@ class RemoteSourceMigrationTest {
                 username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '',
                 rootPath TEXT NOT NULL DEFAULT '', serverIdentity TEXT
             )""")
-            old.execSQL("INSERT INTO remote_sources(id, protocol, displayName) VALUES ('source', 'NAVIDROME', 'Music')")
+            old.execSQL("CREATE TABLE remote_state(singletonId INTEGER PRIMARY KEY, activeSourceId TEXT)")
+            old.execSQL("INSERT INTO remote_state(singletonId, activeSourceId) VALUES (1, 'source')")
+            old.execSQL("INSERT INTO remote_sources(id, protocol, displayName, password) VALUES ('source', 'NAVIDROME', 'Music', 'active-pass')")
+            old.execSQL("INSERT INTO remote_sources(id, protocol, displayName, password) VALUES ('inactive', 'EMBY', 'Old', 'old-pass')")
             old.version = 10
         }
         MusicDatabase(context).use { helper ->
             val db = helper.readableDatabase
             assertEquals(11, db.version)
             db.rawQuery("SELECT libraryId FROM remote_sources WHERE id = 'source'", null).use {
+                assertTrue(it.moveToFirst())
+                assertEquals("", it.getString(0))
+            }
+            db.rawQuery("SELECT password FROM remote_sources WHERE id = 'inactive'", null).use {
                 assertTrue(it.moveToFirst())
                 assertEquals("", it.getString(0))
             }
