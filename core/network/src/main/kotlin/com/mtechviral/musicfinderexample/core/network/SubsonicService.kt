@@ -7,11 +7,11 @@ import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.model.SubsonicConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
@@ -178,41 +178,27 @@ object SubsonicService {
         easyTierBaseUrl?.trim()?.takeIf { it.isNotEmpty() }
             ?: intranetUrl.trim().ifEmpty { publicUrl.trim() }
 
-    /**
-     * 构建 API URL。
-     *
-     * [endpoint] 可以是纯端点名（如 `getArtists`）或带参数的（如 `getArtist&id=123`）：
-     * 当包含 `&` 时，第一段作为端点名，其余作为查询参数与认证参数合并。
-     */
-    private fun buildUrl(baseUrl: String, endpoint: String): String =
-        buildUrl(baseUrl, endpoint, requireConfig())
+    private fun buildUrl(baseUrl: String, endpoint: String,
+                         parameters: List<Pair<String, String>> = emptyList()): String =
+        buildUrl(baseUrl, endpoint, requireConfig(), parameters)
 
     /** 以指定配置构建 API URL（连接测试用，不读取/修改全局 [config]） */
-    private fun buildUrl(baseUrl: String, endpoint: String, cfg: SubsonicConfig): String {
-        val base = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-        val params = buildAuthParams(cfg)
-
-        val parts = endpoint.split("&")
-        val endpointName = parts[0]
-        val extraParams = if (parts.size > 1) parts.drop(1).joinToString("&") else null
-
-        return if (extraParams != null) {
-            "$base/rest/$endpointName?$extraParams&$params"
-        } else {
-            "$base/rest/$endpointName?$params"
-        }
-    }
-
-    /** 构建认证参数：u / s（盐）/ t（md5(password+salt)）/ v / c / f */
-    private fun buildAuthParams(cfg: SubsonicConfig): String {
+    private fun buildUrl(baseUrl: String, endpoint: String, cfg: SubsonicConfig,
+                         parameters: List<Pair<String, String>> = emptyList()): String {
+        require(endpoint.isNotBlank() && endpoint.all { it.isLetterOrDigit() })
+        val base = baseUrl.trim().toHttpUrlOrNull()
+            ?: throw IllegalArgumentException("服务器地址格式错误")
+        val builder = base.newBuilder().addPathSegment("rest").addPathSegment(endpoint)
+        parameters.forEach { (key, value) -> builder.addQueryParameter(key, value) }
         val salt = generateSalt(16)
         val token = md5Hex(cfg.password + salt)
-        return "u=${encode(cfg.username)}" +
-            "&s=$salt" +
-            "&t=$token" +
-            "&v=$API_VERSION" +
-            "&c=$CLIENT_NAME" +
-            "&f=json"
+        builder.addQueryParameter("u", cfg.username)
+            .addQueryParameter("s", salt)
+            .addQueryParameter("t", token)
+            .addQueryParameter("v", API_VERSION)
+            .addQueryParameter("c", CLIENT_NAME)
+            .addQueryParameter("f", "json")
+        return builder.build().toString()
     }
 
     /** 生成随机盐值 */
@@ -220,8 +206,6 @@ object SubsonicService {
         buildString(length) {
             repeat(length) { append(SALT_CHARS[secureRandom.nextInt(SALT_CHARS.length)]) }
         }
-
-    private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     private fun md5Hex(input: String): String {
         val digest = MessageDigest.getInstance("MD5").digest(input.toByteArray(Charsets.UTF_8))
@@ -239,9 +223,10 @@ object SubsonicService {
         }
 
     /** 发送 API 请求并校验 `subsonic-response.status` */
-    private suspend fun request(endpoint: String): JSONObject {
+    private suspend fun request(endpoint: String,
+                                parameters: List<Pair<String, String>> = emptyList()): JSONObject {
         val baseUrl = resolveBaseUrl()
-        val url = buildUrl(baseUrl, endpoint)
+        val url = buildUrl(baseUrl, endpoint, parameters)
         val body = httpGet(url, apiClient)
             ?: throw SubsonicException("HTTP 请求失败: ${redactSensitive(url)}")
         val json = JSONObject(body)
@@ -374,7 +359,7 @@ object SubsonicService {
                 val artistName = artist.optString("name").ifEmpty { "未知艺术家" }
 
                 try {
-                    val albumResponse = request("getArtist&id=$artistId")
+                    val albumResponse = request("getArtist", listOf("id" to artistId))
                     val albums = albumResponse.optJSONObject("artist")?.optJSONArray("album")
                         ?: JSONArray()
                     for (k in 0 until albums.length()) {
@@ -387,7 +372,7 @@ object SubsonicService {
                         val albumCoverArt = album.optString("coverArt").ifEmpty { null }
 
                         try {
-                            val songResponse = request("getAlbum&id=$albumId")
+                            val songResponse = request("getAlbum", listOf("id" to albumId))
                             val songs = songResponse.optJSONObject("album")?.optJSONArray("song")
                                 ?: JSONArray()
                             for (m in 0 until songs.length()) {
@@ -430,20 +415,24 @@ object SubsonicService {
 
         // 优化建议 01：path 只存稳定定位符，不持久化带认证参数的流地址；
         // 播放/下载时由 getStreamUrl / buildStreamUrlSync 临时生成
-        val identityKey = "${title.trim().lowercase()}|${artistName.trim().lowercase()}|" +
+        val songArtist = song.optString("artist").ifBlank { artistName }
+        val albumArtist = song.optString("albumArtist").takeIf { it.isNotBlank() }
+        val identityKey = "${title.trim().lowercase()}|${songArtist.trim().lowercase()}|" +
             albumName.trim().lowercase()
         val locator = RemoteLocator.subsonic(id, importSourceTag(), identityKey)
 
         return Song(
             title = title,
             path = locator,
-            artist = artistName,
+            artist = songArtist,
             album = albumName,
+            albumArtist = albumArtist,
             trackNumber = track,
             duration = durationSeconds?.let { it * 1000L },
             size = size,
             format = suffix,
             codec = contentType,
+            bitrate = bitRate?.times(1000),
             sourceType = Song.SOURCE_TYPE_SUBSONIC,
             remoteId = id,
             remoteStreamUrl = null,
@@ -460,7 +449,7 @@ object SubsonicService {
         } catch (_: Exception) {
             cfg.preferredBaseUrl()
         }
-        return buildUrl(baseUrl, "stream&id=$songId")
+        return buildUrl(baseUrl, "stream", listOf("id" to songId))
     }
 
     /**
@@ -474,7 +463,7 @@ object SubsonicService {
         val cfg = config ?: return null
         val baseUrl = activeBaseUrl ?: cfg.preferredBaseUrl()
         if (baseUrl.isEmpty()) return null
-        return buildUrl(baseUrl, "stream&id=$remoteId", cfg)
+        return buildUrl(baseUrl, "stream", cfg, listOf("id" to remoteId))
     }
 
     // ===================== 歌单 =====================
@@ -494,7 +483,7 @@ object SubsonicService {
 
     /** 获取歌单详情（包含歌曲列表） */
     suspend fun getPlaylistDetail(playlistId: String): RemotePlaylistDetail {
-        val response = request("getPlaylist&id=$playlistId")
+        val response = request("getPlaylist", listOf("id" to playlistId))
         val playlist = response.optJSONObject("playlist") ?: JSONObject()
         val entries = playlist.optJSONArray("entry") ?: JSONArray()
         val songs = (0 until entries.length()).mapNotNull { i ->
@@ -522,10 +511,8 @@ object SubsonicService {
 
     /** 创建远程歌单，返回新歌单 id */
     suspend fun createPlaylist(name: String, songIds: List<String>): String? = try {
-        val songIdParams = songIds.joinToString("&") { "songId=$it" }
-        val endpoint = "createPlaylist&name=${encode(name)}" +
-            if (songIdParams.isNotEmpty()) "&$songIdParams" else ""
-        val response = request(endpoint)
+        val parameters = listOf("name" to name) + songIds.map { "songId" to it }
+        val response = request("createPlaylist", parameters)
         response.optJSONObject("playlist")?.opt("id")?.toString()
     } catch (e: Exception) {
         log("创建歌单失败: ${e.message}")
@@ -612,7 +599,7 @@ object SubsonicService {
      */
     suspend fun getCoverArt(coverArtId: String): ByteArray? = try {
         val baseUrl = resolveBaseUrl()
-        val url = buildUrl(baseUrl, "getCoverArt&id=$coverArtId")
+        val url = buildUrl(baseUrl, "getCoverArt", listOf("id" to coverArtId))
         withContext(Dispatchers.IO) {
             apiClient.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
                 val bytes = response.body?.bytes()
@@ -634,9 +621,7 @@ object SubsonicService {
 
     /** 获取歌词文本（LRC），失败返回 null */
     suspend fun getLyrics(artist: String, title: String): String? = try {
-        val response = request(
-            "getLyrics&artist=${encode(artist)}&title=${encode(title)}",
-        )
+        val response = request("getLyrics", listOf("artist" to artist, "title" to title))
         val lyrics = response.optJSONObject("lyrics")?.optString("value")
         if (!lyrics.isNullOrBlank()) {
             log("成功获取歌词 - $artist - $title")
