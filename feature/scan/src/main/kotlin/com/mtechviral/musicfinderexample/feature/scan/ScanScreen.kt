@@ -65,6 +65,8 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -146,6 +148,9 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
     var manualPathDialogVisible by remember { mutableStateOf(false) }
     var manualPath by remember { mutableStateOf("") }
     var showClearConfirm by remember { mutableStateOf(false) }
+    val remoteScan by RemoteSessionManager.scanState.collectAsState()
+    val remoteScanning = remoteScan.phase == RemoteSessionManager.ScanPhase.RUNNING &&
+        remoteScan.sourceId == RemoteSessionManager.activeSourceId
 
     val onProgress: ScanProgress = { p, t, f ->
         processed = p
@@ -159,7 +164,7 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
             // 查询所有有 coverArtId 但没有缓存封面的远程歌曲
             val allSongs = DatabaseHelper.queryAllSongs()
             val pendingSongs = allSongs.filter { song ->
-                song.sourceType == Song.SOURCE_TYPE_SUBSONIC &&
+                song.isRemote &&
                     song.coverArtId != null &&
                     song.cachedArtworkPath == null
             }
@@ -194,6 +199,21 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
         }
     }
 
+    LaunchedEffect(remoteScan.phase, remoteScan.sourceId) {
+        if (remoteScan.sourceId != RemoteSessionManager.activeSourceId) return@LaunchedEffect
+        when (remoteScan.phase) {
+            RemoteSessionManager.ScanPhase.SUCCEEDED -> {
+                lastResult = ScanResult(added = remoteScan.imported, total = remoteScan.total)
+                cacheRemoteArtwork()
+            }
+            RemoteSessionManager.ScanPhase.FAILED -> {
+                lastResult = ScanResult(failed = 1)
+                snackbarHostState.showSnackbar("扫描失败: ${remoteScan.error ?: "未知错误"}")
+            }
+            else -> Unit
+        }
+    }
+
     /** 从 Subsonic 导入全部歌曲并入库（对应 Dart `_scanRemote`） */
     fun runRemoteScan() {
         if (!RemoteSessionManager.isConfigured) {
@@ -210,7 +230,6 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
             return
         }
 
-        scanning = true
         processed = 0
         total = 0
         failed = 0
@@ -220,20 +239,14 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
 
         scope.launch {
             try {
-                val added = RemoteSessionManager.scan { done, count ->
-                    processed = done
-                    total = count
+                if (!RemoteSessionManager.startScan()) {
+                    snackbarHostState.showSnackbar("远程扫描已在进行中")
                 }
-                lastResult = ScanResult(added = added, failed = 0, total = total)
             } catch (e: Exception) {
                 Log.w(TAG, "远程扫描失败: ${e.message}")
                 lastResult = ScanResult(total = 0, added = 0, failed = 1)
                 snackbarHostState.showSnackbar("扫描失败: ${e.message}")
-            } finally {
-                scanning = false
             }
-            // 后台下载封面
-            cacheRemoteArtwork()
         }
     }
 
@@ -309,7 +322,7 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
                 title = "扫描安卓媒体库",
                 subtitle = "扫描系统媒体库中的所有音乐并入库",
                 colors = listOf(BrandPurple, BrandPurpleLight),
-                enabled = !scanning,
+                enabled = !scanning && !remoteScanning,
                 onClick = {
                     val permission = mediaAudioPermission()
                     if (ContextCompat.checkSelfPermission(context, permission) ==
@@ -328,7 +341,7 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
                 title = "扫描指定文件夹",
                 subtitle = "选择文件夹，递归扫描其中所有音乐",
                 colors = listOf(BrandCyan, BrandPurple),
-                enabled = !scanning,
+                enabled = !scanning && !remoteScanning,
                 onClick = { folderPickerLauncher.launch(null) },
             )
             Spacer(modifier = Modifier.height(12.dp))
@@ -342,12 +355,16 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
                     "请先在\"远程配置\"中配置服务器"
                 },
                 colors = listOf(RemoteRed, RemoteOrange),
-                enabled = !scanning,
+                enabled = !scanning && !remoteScanning,
                 onClick = { runRemoteScan() },
             )
 
-            if (scanning) {
-                ScanProgressView(processed = processed, total = total, failed = failed)
+            if (scanning || remoteScanning) {
+                ScanProgressView(
+                    processed = if (remoteScanning) remoteScan.processed else processed,
+                    total = if (remoteScanning) remoteScan.total else total,
+                    failed = if (remoteScanning) 0 else failed,
+                )
             }
             lastResult?.let { result -> ScanResultView(result = result) }
             if (artworkTotal > 0) {
@@ -364,7 +381,7 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
             // 清空按钮
             OutlinedButton(
                 onClick = { showClearConfirm = true },
-                enabled = !scanning,
+                enabled = !scanning && !remoteScanning,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, DangerRed),
