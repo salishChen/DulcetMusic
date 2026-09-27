@@ -2,6 +2,7 @@ package com.mtechviral.musicfinderexample.core.network
 
 import com.mtechviral.musicfinderexample.core.common.RemoteLocator
 import com.mtechviral.musicfinderexample.core.model.RemoteSource
+import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.model.SubsonicConfig
 
@@ -28,10 +29,12 @@ class SubsonicProvider(override val source: RemoteSource) : RemoteMusicProvider 
         SubsonicService.currentSourceId = source.id
     }
 
-    override suspend fun getAllSongs(): List<Song> = SubsonicService.getAllSongs().map { song ->
-        val id = requireNotNull(song.remoteId) { "Subsonic song has no id" }
-        song.copy(sourceId = source.id, path = RemoteLocator.forSource(source.id, id))
-    }
+    override suspend fun getAllSongs(): List<Song> =
+        (if (source.protocol == RemoteProtocol.NAVIDROME) SubsonicService.getAllSongsPaged()
+            else SubsonicService.getAllSongs()).map { song ->
+            val id = requireNotNull(song.remoteId) { "Subsonic song has no id" }
+            song.copy(sourceId = source.id, path = RemoteLocator.forSource(source.id, id))
+        }
 
     override suspend fun stream(song: Song): RemoteRequest =
         RemoteRequest(SubsonicService.getStreamUrl(requireNotNull(song.remoteId)))

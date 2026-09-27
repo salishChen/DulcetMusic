@@ -351,6 +351,51 @@ object SubsonicService {
 
     // ===================== 曲库 =====================
 
+    /** Navidrome supports tag-based, offset-paginated album listing. */
+    suspend fun getAllSongsPaged(pageSize: Int = 500): List<Song> {
+        require(pageSize in 1..500)
+        val allSongs = ArrayList<Song>()
+        val seenAlbumIds = HashSet<String>()
+        var offset = 0
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val response = request("getAlbumList2", listOf(
+                "type" to "alphabeticalByName", "size" to pageSize.toString(),
+                "offset" to offset.toString(),
+            ))
+            val listing = response.optJSONObject("albumList2")
+                ?: throw SubsonicException("服务器未返回分页专辑列表")
+            val albums = listing.optJSONArray("album") ?: JSONArray()
+            if (albums.length() == 0) break
+            for (i in 0 until albums.length()) {
+                currentCoroutineContext().ensureActive()
+                val album = albums.optJSONObject(i) ?: continue
+                val albumId = album.opt("id")?.toString()?.takeIf { it.isNotBlank() }
+                    ?: throw SubsonicException("专辑缺少 ID")
+                if (!seenAlbumIds.add(albumId)) {
+                    throw SubsonicException("分页专辑列表重复，请检查服务器分页实现")
+                }
+                val albumResponse = request("getAlbum", listOf("id" to albumId))
+                val detail = albumResponse.optJSONObject("album")
+                    ?: throw SubsonicException("专辑 $albumId 详情为空")
+                val songs = detail.optJSONArray("song") ?: JSONArray()
+                val artist = album.optString("artist").ifBlank { "未知艺术家" }
+                val name = album.optString("name").ifBlank {
+                    album.optString("title").ifBlank { "未知专辑" }
+                }
+                val coverArt = album.optString("coverArt").takeIf { it.isNotBlank() }
+                for (songIndex in 0 until songs.length()) {
+                    songs.optJSONObject(songIndex)?.let {
+                        allSongs += parseSong(it, artist, name, coverArt ?: albumId)
+                    }
+                }
+            }
+            offset += albums.length()
+            if (albums.length() < pageSize) break
+        }
+        return allSongs
+    }
+
     /**
      * 获取所有歌曲（getArtists -> getArtist -> getAlbum 三级遍历）。
      * 与 Dart 端一致：单个艺术家/专辑失败时跳过继续，不影响整体。
@@ -423,7 +468,8 @@ object SubsonicService {
         albumName: String,
         albumCoverArtFallback: String?,
     ): Song {
-        val id = song.opt("id")?.toString() ?: ""
+        val id = song.opt("id")?.toString()?.takeIf { it.isNotBlank() }
+            ?: throw SubsonicException("歌曲缺少 ID")
         val title = song.optString("title").ifEmpty { "未知歌曲" }
         val durationSeconds = song.optInt("duration", -1).takeIf { it >= 0 }
         val track = song.optInt("track", -1).takeIf { it >= 0 }
