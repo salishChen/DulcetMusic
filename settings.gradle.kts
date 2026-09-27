@@ -28,6 +28,7 @@ include(":core:model")        // 数据实体：Song / Album / Artist / Playlist
 include(":core:common")       // 通用工具：LRC 解析、格式化、偏好设置、主题偏好
 include(":core:database")     // SQLite（music_player.db）：建表/迁移/全部查询
 include(":core:network")      // Subsonic REST 客户端（内网优先 + 认证 + 歌单同步）
+include(":core:remote")       // 单活动远程源会话与曲库同步
 include(":core:easytier")     // EasyTier 去中心化组网（无 TUN 端口转发，见 doc/EasyTier集成方案.md）
 include(":core:media")        // 媒体库/文件夹扫描、元数据解析、内嵌封面读取
 include(":core:cache")        // Subsonic 缓存池：下载、LRU 淘汰、封面缓存

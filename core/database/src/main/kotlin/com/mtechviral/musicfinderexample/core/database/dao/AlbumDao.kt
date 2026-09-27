@@ -5,6 +5,7 @@ import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.C
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ALBUM_ARTIST
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ARTIST
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.TABLE_SONGS
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.VIEW_VISIBLE_SONGS
 import com.mtechviral.musicfinderexample.core.database.intOrNull
 import com.mtechviral.musicfinderexample.core.database.longOrNull
 import com.mtechviral.musicfinderexample.core.database.mapAll
@@ -36,7 +37,7 @@ class AlbumDao(private val musicDatabase: MusicDatabase) {
                MAX(cachedArtworkPath) AS coverArtworkPath,
                MAX(coverArtId) AS coverArtId,
                COUNT(*) AS songCount
-        FROM songs
+        FROM visible_songs
         WHERE album IS NOT NULL AND album != ''
         GROUP BY album, COALESCE(albumArtist, artist)
         ORDER BY album COLLATE NOCASE ASC, artist COLLATE NOCASE ASC
@@ -51,7 +52,7 @@ class AlbumDao(private val musicDatabase: MusicDatabase) {
                MAX(cachedArtworkPath) AS coverArtworkPath,
                MAX(coverArtId) AS coverArtId,
                COUNT(*) AS songCount
-        FROM songs
+        FROM visible_songs
         WHERE (artist = ? OR albumArtist = ?) AND album IS NOT NULL AND album != ''
         GROUP BY album, COALESCE(albumArtist, artist)
         ORDER BY album COLLATE NOCASE ASC, artist COLLATE NOCASE ASC
@@ -72,7 +73,7 @@ class AlbumDao(private val musicDatabase: MusicDatabase) {
         }
         val args = if (artist == null) arrayOf(album) else arrayOf(album, artist)
         return musicDatabase.readableDatabase.query(
-            TABLE_SONGS, null, where, args, null, null,
+            VIEW_VISIBLE_SONGS, null, where, args, null, null,
             "trackNumber ASC, title COLLATE NOCASE ASC",
         ).use { c ->
             c.mapAll { com.mtechviral.musicfinderexample.core.database.SongMapper.fromCursor(it) }

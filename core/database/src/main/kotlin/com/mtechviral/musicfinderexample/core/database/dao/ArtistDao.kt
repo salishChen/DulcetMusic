@@ -3,6 +3,7 @@ package com.mtechviral.musicfinderexample.core.database.dao
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_ARTIST
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.TABLE_SONGS
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.VIEW_VISIBLE_SONGS
 import com.mtechviral.musicfinderexample.core.database.SongMapper
 import com.mtechviral.musicfinderexample.core.database.intOrNull
 import com.mtechviral.musicfinderexample.core.database.mapAll
@@ -26,7 +27,7 @@ class ArtistDao(private val musicDatabase: MusicDatabase) {
                MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
                MAX(cachedArtworkPath) AS coverArtworkPath,
                MAX(coverArtId) AS coverArtId
-        FROM songs
+        FROM visible_songs
         WHERE artist IS NOT NULL AND artist != ''
         GROUP BY artist
         ORDER BY artist COLLATE NOCASE ASC
@@ -35,7 +36,7 @@ class ArtistDao(private val musicDatabase: MusicDatabase) {
     /** 艺术家全部歌曲（专辑升序 + 音轨号升序） */
     fun querySongsByArtist(artist: String): List<Song> =
         musicDatabase.readableDatabase.query(
-            TABLE_SONGS, null, "$COL_ARTIST = ?", arrayOf(artist), null, null,
+            VIEW_VISIBLE_SONGS, null, "$COL_ARTIST = ?", arrayOf(artist), null, null,
             "album COLLATE NOCASE ASC, trackNumber ASC",
         ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
 

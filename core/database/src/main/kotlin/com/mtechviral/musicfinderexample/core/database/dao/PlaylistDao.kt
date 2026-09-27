@@ -27,9 +27,10 @@ class PlaylistDao(private val musicDatabase: MusicDatabase) {
     fun queryPlaylists(): List<Playlist> =
         musicDatabase.readableDatabase.rawQuery(
             """
-            SELECT p.id, p.name, COUNT(ps.songId) AS songCount
+            SELECT p.id, p.name, COUNT(s.id) AS songCount
             FROM playlists p
             LEFT JOIN playlist_songs ps ON ps.playlistId = p.id
+            LEFT JOIN visible_songs s ON s.id = ps.songId
             GROUP BY p.id
             ORDER BY p.id ASC
             """.trimIndent(),
@@ -64,7 +65,7 @@ class PlaylistDao(private val musicDatabase: MusicDatabase) {
     fun querySongsInPlaylist(playlistId: Long): List<Song> =
         musicDatabase.readableDatabase.rawQuery(
             """
-            SELECT s.* FROM songs s
+            SELECT s.* FROM visible_songs s
             INNER JOIN playlist_songs ps ON ps.songId = s.id
             WHERE ps.playlistId = ?
             ORDER BY ps.position ASC

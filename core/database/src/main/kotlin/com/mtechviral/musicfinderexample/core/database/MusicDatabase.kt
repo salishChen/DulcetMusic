@@ -97,6 +97,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         createArtistsMeta(db)
         createSubsonicConfig(db)
         createRemoteSources(db)
+        createVisibleSongsView(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -141,6 +142,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
             createRemoteSources(db)
             migrateLegacyRemoteSource(db)
         }
+        if (oldVersion < 10) createVisibleSongsView(db)
     }
 
     /**
@@ -238,6 +240,17 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_songs_remote_source ON songs(sourceId, remoteId) WHERE sourceId IS NOT NULL AND remoteId IS NOT NULL")
     }
 
+    private fun createVisibleSongsView(db: SQLiteDatabase) {
+        db.execSQL("DROP VIEW IF EXISTS visible_songs")
+        db.execSQL("""
+            CREATE VIEW visible_songs AS
+            SELECT s.* FROM songs s
+            WHERE s.sourceType IS NULL OR s.sourceType = 'local'
+               OR (s.sourceId IS NOT NULL AND s.sourceId =
+                   (SELECT activeSourceId FROM remote_state WHERE singletonId = 1))
+        """.trimIndent())
+    }
+
     /** Only attach legacy rows when their recorded source agrees with the configured server. */
     private fun migrateLegacyRemoteSource(db: SQLiteDatabase) {
         db.rawQuery("SELECT intranetUrl, publicUrl, username, password, serverName FROM subsonic_config WHERE isActive = 1 LIMIT 1", null).use { cursor ->
@@ -274,10 +287,11 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         const val DB_NAME = "music_player.db"
-        const val DB_VERSION = 9
+        const val DB_VERSION = 10
 
         // ---- songs 表列名 ----
         const val TABLE_SONGS = "songs"
+        const val VIEW_VISIBLE_SONGS = "visible_songs"
         const val COL_ID = "id"
         const val COL_TITLE = "title"
         const val COL_PATH = "path"

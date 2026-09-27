@@ -23,6 +23,7 @@ import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.C
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_TITLE
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.COL_TRACK_NUMBER
 import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.TABLE_SONGS
+import com.mtechviral.musicfinderexample.core.database.MusicDatabase.Companion.VIEW_VISIBLE_SONGS
 import com.mtechviral.musicfinderexample.core.database.SongMapper
 import com.mtechviral.musicfinderexample.core.database.mapAll
 import com.mtechviral.musicfinderexample.core.model.Song
@@ -51,7 +52,7 @@ class SongDao(private val musicDatabase: MusicDatabase) {
 
     /** 查询全部歌曲（按标题排序，忽略大小写） */
     fun queryAllSongs(): List<Song> =
-        db.query(TABLE_SONGS, null, null, null, null, null, "title COLLATE NOCASE ASC")
+        db.query(VIEW_VISIBLE_SONGS, null, null, null, null, null, "title COLLATE NOCASE ASC")
             .use { c -> c.mapAll { SongMapper.fromCursor(it) } }
 
     /** 按 id 查询单曲 */
@@ -61,7 +62,7 @@ class SongDao(private val musicDatabase: MusicDatabase) {
 
     /** 按 path 查询单曲（用于播放列表持久化恢复） */
     fun querySongByPath(path: String): Song? =
-        db.query(TABLE_SONGS, null, "$COL_PATH = ?", arrayOf(path), null, null, null)
+        db.query(VIEW_VISIBLE_SONGS, null, "$COL_PATH = ?", arrayOf(path), null, null, null)
             .use { c -> if (c.moveToFirst()) SongMapper.fromCursor(c) else null }
 
     /** 按远程 id 查询单曲 */
@@ -271,7 +272,7 @@ class SongDao(private val musicDatabase: MusicDatabase) {
      */
     fun querySongsByArtistOrAlbumArtist(artist: String): List<Song> =
         db.query(
-            TABLE_SONGS, null,
+            VIEW_VISIBLE_SONGS, null,
             "($COL_ARTIST = ? OR $COL_ALBUM_ARTIST = ?)",
             arrayOf(artist, artist),
             null, null,
@@ -434,14 +435,14 @@ class SongDao(private val musicDatabase: MusicDatabase) {
     /** 查询最常播放的歌曲（Top N） */
     fun queryTopPlayed(limit: Int = 20): List<Song> =
         db.query(
-            TABLE_SONGS, null, "$COL_PLAY_COUNT > 0", null, null, null,
+            VIEW_VISIBLE_SONGS, null, "$COL_PLAY_COUNT > 0", null, null, null,
             "$COL_PLAY_COUNT DESC", limit.toString(),
         ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
 
     /** 查询最近播放的歌曲 */
     fun queryRecentlyPlayed(limit: Int = 50): List<Song> =
         db.query(
-            TABLE_SONGS, null, "$COL_LAST_PLAYED IS NOT NULL", null, null, null,
+            VIEW_VISIBLE_SONGS, null, "$COL_LAST_PLAYED IS NOT NULL", null, null, null,
             "$COL_LAST_PLAYED DESC", limit.toString(),
         ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
 
@@ -456,20 +457,20 @@ class SongDao(private val musicDatabase: MusicDatabase) {
      */
     fun queryPlayOverview(recentSince: Long?): PlayOverview {
         val totalPlays = db.rawQuery(
-            "SELECT IFNULL(SUM($COL_PLAY_COUNT), 0) FROM $TABLE_SONGS", null,
+            "SELECT IFNULL(SUM($COL_PLAY_COUNT), 0) FROM $VIEW_VISIBLE_SONGS", null,
         ).use { c -> if (c.moveToFirst()) c.getLong(0) else 0L }
 
         val playedSongs = db.rawQuery(
-            "SELECT COUNT(*) FROM $TABLE_SONGS WHERE $COL_PLAY_COUNT > 0", null,
+            "SELECT COUNT(*) FROM $VIEW_VISIBLE_SONGS WHERE $COL_PLAY_COUNT > 0", null,
         ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
 
         val recentPlayed = if (recentSince == null) {
             db.rawQuery(
-                "SELECT COUNT(*) FROM $TABLE_SONGS WHERE $COL_LAST_PLAYED IS NOT NULL", null,
+                "SELECT COUNT(*) FROM $VIEW_VISIBLE_SONGS WHERE $COL_LAST_PLAYED IS NOT NULL", null,
             ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
         } else {
             db.rawQuery(
-                "SELECT COUNT(*) FROM $TABLE_SONGS WHERE $COL_LAST_PLAYED >= ?",
+                "SELECT COUNT(*) FROM $VIEW_VISIBLE_SONGS WHERE $COL_LAST_PLAYED >= ?",
                 arrayOf(recentSince.toString()),
             ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
         }
@@ -495,12 +496,12 @@ class SongDao(private val musicDatabase: MusicDatabase) {
     /** 查询喜欢的歌曲 */
     fun queryLikedSongs(): List<Song> =
         db.query(
-            TABLE_SONGS, null, "$COL_IS_LIKED = 1", null, null, null,
+            VIEW_VISIBLE_SONGS, null, "$COL_IS_LIKED = 1", null, null, null,
             "title COLLATE NOCASE ASC",
         ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
 
     /** 查询喜欢的歌曲数量（轻量一致性检查用） */
     fun queryLikedSongCount(): Int =
-        db.rawQuery("SELECT COUNT(*) AS c FROM $TABLE_SONGS WHERE $COL_IS_LIKED = 1", null)
+        db.rawQuery("SELECT COUNT(*) AS c FROM $VIEW_VISIBLE_SONGS WHERE $COL_IS_LIKED = 1", null)
             .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
 }

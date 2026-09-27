@@ -145,7 +145,9 @@ class SongDaoMergeTest {
             "subsonic@user@hostB",
         )
 
-        assertEquals(2, songDao.queryAllSongs().size)
+        assertEquals(2, db.readableDatabase.rawQuery("SELECT COUNT(*) FROM songs", null).use {
+            it.moveToFirst(); it.getInt(0)
+        })
     }
 
     @Test
@@ -158,8 +160,10 @@ class SongDaoMergeTest {
             ),
             "subsonic",
         )
-        val row = songDao.querySongByPath("/music/a.mp3")!!
-        songDao.toggleLikeSong(row.id!!)
+        val rowId = db.readableDatabase.rawQuery("SELECT id FROM songs WHERE remoteId = '9'", null).use {
+            it.moveToFirst(); it.getLong(0)
+        }
+        songDao.toggleLikeSong(rowId)
 
         // 新来源标识重扫同一首歌（身份一致）：合并并迁移来源
         songDao.insertSongs(
@@ -171,11 +175,10 @@ class SongDaoMergeTest {
             "subsonic@user@host",
         )
 
-        val rows = songDao.queryAllSongs()
-        assertEquals(1, rows.size)
-        assertEquals(row.id, rows[0].id)
-        assertEquals("subsonic@user@host", rows[0].source)
-        assertTrue(rows[0].isLiked)
+        val migrated = songDao.querySongById(rowId)!!
+        assertEquals(rowId, migrated.id)
+        assertEquals("subsonic@user@host", migrated.source)
+        assertTrue(migrated.isLiked)
     }
 
     @Test
@@ -189,13 +192,16 @@ class SongDaoMergeTest {
         songDao.insertSongs(listOf(first), "subsonic@a")
         songDao.insertSongs(listOf(second), "subsonic@b")
 
-        val rows = songDao.queryAllSongs()
-        assertEquals(2, rows.size)
+        assertEquals(2, db.readableDatabase.rawQuery("SELECT COUNT(*) FROM songs", null).use {
+            it.moveToFirst(); it.getInt(0)
+        })
         assertEquals("source-a", songDao.querySongByRemoteId("source-a", "one")?.sourceId)
         assertEquals("source-b", songDao.querySongByRemoteId("source-b", "one")?.sourceId)
 
         songDao.insertSongs(listOf(first.copy(duration = 1234L)), "subsonic@a")
-        assertEquals(2, songDao.queryAllSongs().size)
+        assertEquals(2, db.readableDatabase.rawQuery("SELECT COUNT(*) FROM songs", null).use {
+            it.moveToFirst(); it.getInt(0)
+        })
         assertEquals(1234L, songDao.querySongByRemoteId("source-a", "one")?.duration)
         assertEquals(null, songDao.querySongByRemoteId("source-b", "one")?.duration)
     }
