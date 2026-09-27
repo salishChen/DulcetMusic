@@ -88,6 +88,12 @@ object SubsonicService {
         activeBaseUrl = null
     }
 
+    /** Switch the active source without writing the legacy single-Subsonic configuration. */
+    fun activate(newConfig: SubsonicConfig) {
+        config = newConfig
+        activeBaseUrl = null
+    }
+
     /** 清除缓存的连接（网络变化/播放失败时调用） */
     fun resetConnection() {
         activeBaseUrl = null
