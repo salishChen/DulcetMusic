@@ -18,9 +18,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,6 +42,7 @@ object RemoteSessionManager {
     )
 
     private val mutex = Mutex()
+    private val transitionMutex = Mutex()
     private val scanScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val _scanState = MutableStateFlow(ScanState())
     val scanState: StateFlow<ScanState> = _scanState
@@ -49,6 +52,7 @@ object RemoteSessionManager {
     @Volatile private var generation = 0L
     private var loaded = false
     private var scanJob: Job? = null
+    private var switching = false
 
     val isConfigured: Boolean get() = _source.value != null
     val activeSourceId: String? get() = _source.value?.id
@@ -72,14 +76,27 @@ object RemoteSessionManager {
         loaded = true
     }
 
-    suspend fun test(candidate: RemoteSource): String {
-        scanJob?.cancelAndJoin()
-        return mutex.withLock { newProvider(candidate).testConnection() }
+    private suspend fun <T> transition(block: suspend () -> T): T = transitionMutex.withLock {
+        val running = mutex.withLock {
+            switching = true
+            scanJob
+        }
+        try {
+            running?.cancelAndJoin()
+            block()
+        } finally {
+            withContext(NonCancellable) {
+                mutex.withLock { switching = false }
+            }
+        }
     }
 
-    suspend fun libraries(candidate: RemoteSource): List<RemoteLibrary> {
-        scanJob?.cancelAndJoin()
-        return mutex.withLock {
+    suspend fun test(candidate: RemoteSource): String = transition {
+        mutex.withLock { newProvider(candidate).testConnection() }
+    }
+
+    suspend fun libraries(candidate: RemoteSource): List<RemoteLibrary> = transition {
+        mutex.withLock {
             val temporary = newProvider(candidate)
             temporary.testConnection()
             temporary.libraries()
@@ -88,6 +105,7 @@ object RemoteSessionManager {
 
     /** The scan belongs to the active source, not to the lifetime of the scan screen. */
     suspend fun startScan(): Boolean = mutex.withLock {
+        if (switching) throw IllegalStateException("正在切换远程音乐源")
         if (scanJob != null) return@withLock false
         val sourceId = activeSourceId ?: throw IllegalStateException("请先配置远程音乐源")
         val task = scanScope.launch(start = CoroutineStart.LAZY) {
@@ -118,35 +136,33 @@ object RemoteSessionManager {
     }
 
     /** Caller must stop old remote playback, scanning and cache work before invoking this. */
-    suspend fun activate(candidate: RemoteSource) {
-        scanJob?.cancelAndJoin()
+    suspend fun activate(candidate: RemoteSource) = transition {
         mutex.withLock {
-        if (_source.value?.id != candidate.id) SubsonicService.easyTierBaseUrl = null
-        val next = newProvider(candidate)
-        next.testConnection()
-        val verified = if (next is EmbyProvider) candidate.copy(serverIdentity = next.serverIdentity)
-            else candidate
-        DatabaseHelper.activateRemoteSource(verified)
-        if (next is SubsonicProvider) next.activate()
-        else SubsonicService.deactivate()
-        provider = next
-        _source.value = verified
-        generation++
-        loaded = true
-        MusicLibrary.reload()
+            val next = newProvider(candidate)
+            next.testConnection()
+            val verified = if (next is EmbyProvider) candidate.copy(serverIdentity = next.serverIdentity)
+                else candidate
+            DatabaseHelper.activateRemoteSource(verified)
+            if (_source.value?.id != candidate.id) SubsonicService.easyTierBaseUrl = null
+            if (next is SubsonicProvider) next.activate()
+            else SubsonicService.deactivate()
+            provider = next
+            _source.value = verified
+            generation++
+            loaded = true
+            MusicLibrary.reload()
         }
     }
 
-    suspend fun deactivate() {
-        scanJob?.cancelAndJoin()
+    suspend fun deactivate() = transition {
         mutex.withLock {
-        DatabaseHelper.deactivateRemoteSource()
-        provider = null
-        SubsonicService.deactivate()
-        _source.value = null
-        generation++
-        loaded = true
-        MusicLibrary.reload()
+            DatabaseHelper.deactivateRemoteSource()
+            provider = null
+            SubsonicService.deactivate()
+            _source.value = null
+            generation++
+            loaded = true
+            MusicLibrary.reload()
         }
     }
 
@@ -182,6 +198,7 @@ object RemoteSessionManager {
     suspend fun scan(onProgress: (Int, Int) -> Unit = { _, _ -> }): Int {
         val job = coroutineContext[Job] ?: error("扫描需要协程")
         val (current, key) = mutex.withLock {
+            if (switching) throw IllegalStateException("正在切换远程音乐源")
             if (scanJob != null && scanJob !== job) throw IllegalStateException("已有远程扫描任务")
             val current = provider ?: throw IllegalStateException("请先配置远程音乐源")
             scanJob = job
