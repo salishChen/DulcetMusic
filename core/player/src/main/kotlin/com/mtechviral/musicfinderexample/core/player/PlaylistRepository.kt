@@ -5,6 +5,7 @@ import com.mtechviral.musicfinderexample.core.common.AppPreferences
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.model.PlayMode
 import com.mtechviral.musicfinderexample.core.model.Song
+import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -405,12 +406,13 @@ object PlaylistRepository {
             if (trimmed.startsWith("{")) {
                 // v2：queue + original + currentIndex
                 val obj = JSONObject(trimmed)
-                val queue = resolveEntries(obj.optJSONArray("queue"))
+                val resolvedQueue = resolveEntriesIndexed(obj.optJSONArray("queue"))
+                val queue = resolvedQueue.map { it.second }
                 if (queue.isEmpty()) return 0
                 val savedOriginal = resolveEntries(obj.optJSONArray("original"))
                 originalOrder = if (savedOriginal.isNotEmpty()) savedOriginal else queue.toList()
                 val savedIndex = obj.optInt("currentIndex", -1)
-                currentIndex = if (savedIndex in queue.indices) savedIndex else -1
+                currentIndex = resolvedQueue.indexOfFirst { it.first == savedIndex }
                 currentPath = currentIndex.takeIf { it >= 0 }?.let { queue[it].path }
                 // 恢复的就是当时的实际播放顺序，不再重新随机
                 notify(queue)
@@ -439,9 +441,12 @@ object PlaylistRepository {
     }
 
     /** 逐条解析持久化条目并回查数据库（id 优先，path 兜底），跳过已删除的歌曲 */
-    private suspend fun resolveEntries(array: JSONArray?): List<Song> {
+    private suspend fun resolveEntries(array: JSONArray?): List<Song> =
+        resolveEntriesIndexed(array).map { it.second }
+
+    private suspend fun resolveEntriesIndexed(array: JSONArray?): List<Pair<Int, Song>> {
         if (array == null) return emptyList()
-        val restored = ArrayList<Song>(array.length())
+        val restored = ArrayList<Pair<Int, Song>>(array.length())
         for (i in 0 until array.length()) {
             val obj = array.optJSONObject(i) ?: continue
             val id = if (obj.isNull("id")) null else obj.optLong("id")
@@ -450,7 +455,9 @@ object PlaylistRepository {
             var song: Song? = null
             if (id != null) song = DatabaseHelper.querySongById(id)
             if (song == null && path != null) song = DatabaseHelper.querySongByPath(path)
-            if (song != null) restored.add(song)
+            if (song != null && (!song.isRemote || song.sourceId == RemoteSessionManager.activeSourceId)) {
+                restored.add(i to song)
+            }
         }
         return restored
     }

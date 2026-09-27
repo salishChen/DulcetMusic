@@ -94,6 +94,8 @@ import com.mtechviral.musicfinderexample.core.designsystem.theme.ytTextSecondary
 import com.mtechviral.musicfinderexample.core.model.Playlist
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.network.SubsonicService
+import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
+import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
 import com.mtechviral.musicfinderexample.feature.home.LocalOpenSidebar
 import kotlinx.coroutines.launch
 
@@ -119,7 +121,7 @@ fun PlaylistsScreen(onOpenPlaylist: (Long) -> Unit = {}) {
     var deleteTarget by remember { mutableStateOf<Playlist?>(null) }
     var actionTarget by remember { mutableStateOf<Playlist?>(null) }
     var busyMessage by remember { mutableStateOf<String?>(null) }
-    var subsonicConfigured by remember { mutableStateOf(SubsonicService.isConfigured) }
+    var subsonicConfigured by remember { mutableStateOf(false) }
 
     val toast: (String, Boolean) -> Unit = { message, long ->
         Toast.makeText(context, message, if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
@@ -127,8 +129,8 @@ fun PlaylistsScreen(onOpenPlaylist: (Long) -> Unit = {}) {
 
     // Dart 中 Subsonic 配置在应用启动时加载；此处兜底读一次，保证"推送到远程"菜单项的显示准确
     LaunchedEffect(Unit) {
-        SubsonicService.loadConfig()
-        subsonicConfigured = SubsonicService.isConfigured
+        subsonicConfigured = RemoteSessionManager.source.value?.protocol in
+            setOf(RemoteProtocol.SUBSONIC, RemoteProtocol.NAVIDROME)
     }
 
     // 对应 Dart `_load()`：查询全部歌单（含歌曲数），并取歌单内第一首含封面歌曲作为卡片封面
@@ -144,7 +146,7 @@ fun PlaylistsScreen(onOpenPlaylist: (Long) -> Unit = {}) {
 
     // 对应 Dart `_syncFromSubsonic()`
     val syncFromSubsonic: () -> Unit = {
-        if (!SubsonicService.isConfigured) {
+        if (!subsonicConfigured) {
             toast("请先在“远程配置”页面配置 Subsonic 服务器", false)
         } else {
             scope.launch {
@@ -164,7 +166,7 @@ fun PlaylistsScreen(onOpenPlaylist: (Long) -> Unit = {}) {
 
     // 对应 Dart `_pushToRemote(pl)`
     val pushToRemote: (Playlist) -> Unit = { playlist ->
-        if (!SubsonicService.isConfigured) {
+        if (!subsonicConfigured) {
             toast("请先在“远程配置”页面配置 Subsonic 服务器", false)
         } else {
             scope.launch {
@@ -172,6 +174,7 @@ fun PlaylistsScreen(onOpenPlaylist: (Long) -> Unit = {}) {
                 if (playlistId != null) {
                     // 获取歌单内的远程歌曲
                     val remoteSongIds = DatabaseHelper.querySongsInPlaylist(playlistId)
+                        .filter { it.sourceId == RemoteSessionManager.activeSourceId }
                         .mapNotNull { it.remoteId }
                     if (remoteSongIds.isEmpty()) {
                         toast("歌单内没有远程歌曲，无法推送到 Subsonic", false)

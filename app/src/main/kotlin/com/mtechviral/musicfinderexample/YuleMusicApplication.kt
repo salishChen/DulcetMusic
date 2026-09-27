@@ -70,7 +70,15 @@ class YuleMusicApplication : Application() {
             // 空闲 15 分钟自动休眠；本地转发地址经回调注入 SubsonicService
             com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.init(this@YuleMusicApplication)
             com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.onActiveBaseUrlChanged = { base ->
-                SubsonicService.easyTierBaseUrl = base
+                val active = RemoteSessionManager.source.value
+                val bound = com.mtechviral.musicfinderexample.core.easytier.EasyTierConfigStore
+                    .boundSourceId(this@YuleMusicApplication)
+                SubsonicService.easyTierBaseUrl = base.takeIf {
+                    active?.id == bound && active?.protocol in setOf(
+                        com.mtechviral.musicfinderexample.core.model.RemoteProtocol.SUBSONIC,
+                        com.mtechviral.musicfinderexample.core.model.RemoteProtocol.NAVIDROME,
+                    )
+                }
                 SubsonicService.resetConnection()
             }
 

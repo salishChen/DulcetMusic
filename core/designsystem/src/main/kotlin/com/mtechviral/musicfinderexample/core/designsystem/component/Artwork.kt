@@ -119,10 +119,8 @@ fun ArtworkImage(
                     val song = DatabaseHelper.querySongById(songId)
                     if (song != null) CacheService.cacheArtwork(song) else null
                 } else {
-                    // 无 songId（如艺术家封面）：直接按 coverArtId 缓存封面文件
-                    CacheService.cacheArtwork(
-                        Song(title = "", path = path ?: "", coverArtId = coverArtId),
-                    )
+                    // Resolve a real visible song so artwork requests retain their source identity.
+                    path?.let { DatabaseHelper.querySongByPath(it) }?.let { CacheService.cacheArtwork(it) }
                 }
             } catch (_: Exception) {
                 null

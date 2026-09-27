@@ -26,6 +26,7 @@ dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:database"))
     implementation(project(":core:network"))
+    implementation(project(":core:remote"))
     implementation(project(":core:media"))
     implementation(project(":core:cache"))
     // EasyTier 组网活跃度维护（远程播放期间阻止空闲休眠）

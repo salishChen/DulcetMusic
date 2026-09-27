@@ -38,6 +38,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.mtechviral.musicfinderexample.core.designsystem.component.PrimaryAppBar
+import com.mtechviral.musicfinderexample.core.cache.CacheService
+import com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine
 import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
 import com.mtechviral.musicfinderexample.core.model.RemoteSource
 import com.mtechviral.musicfinderexample.core.player.PlayerController
@@ -151,6 +153,11 @@ fun SubsonicConfigScreen() {
                         try {
                             val next = candidate()
                             val previousId = RemoteSessionManager.activeSourceId
+                            if (previousId != null) {
+                                PlayerController.stopRemoteForSourceSwitch()
+                                CacheService.cancelPending()
+                                if (previousId != next.id) EasyTierEngine.stop()
+                            }
                             RemoteSessionManager.activate(next)
                             if (previousId != null && previousId != next.id) {
                                 val old = PlaylistRepository.current.filter { it.sourceId == previousId }.map { it.path }
@@ -173,6 +180,11 @@ fun SubsonicConfigScreen() {
                     scope.launch {
                         busy = true
                         val previousId = RemoteSessionManager.activeSourceId
+                        if (previousId != null) {
+                            PlayerController.stopRemoteForSourceSwitch()
+                            CacheService.cancelPending()
+                            EasyTierEngine.stop()
+                        }
                         RemoteSessionManager.deactivate()
                         if (previousId != null) {
                             val old = PlaylistRepository.current.filter { it.sourceId == previousId }.map { it.path }

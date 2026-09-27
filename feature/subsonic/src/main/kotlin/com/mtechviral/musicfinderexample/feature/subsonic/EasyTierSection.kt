@@ -314,6 +314,13 @@ fun EasyTierSection(
                     config = snapshot
                     connecting = true
                     scope.launch {
+                        val activeSourceId = com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager.activeSourceId
+                        if (activeSourceId == null) {
+                            connecting = false
+                            onMessage("请先保存远程音乐源")
+                            return@launch
+                        }
+                        EasyTierConfigStore.bindToSource(context, activeSourceId)
                         EasyTierConfigStore.save(context, snapshot)
                         val ok = EasyTierEngine.start(context, snapshot)
                         connecting = false

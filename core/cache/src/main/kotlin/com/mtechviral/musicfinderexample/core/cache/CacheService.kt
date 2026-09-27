@@ -8,6 +8,9 @@ import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.network.SubsonicService
+import com.mtechviral.musicfinderexample.core.network.RemoteRequest
+import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
+import com.mtechviral.musicfinderexample.core.common.RemoteLocator
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +19,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -51,6 +56,12 @@ object CacheService {
     /** 在途缓存任务注册表（remoteId -> Deferred）：同一首歌并发触发时复用同一任务 */
     private val inFlight = HashMap<String, CompletableDeferred<String?>>()
     private val mutex = Mutex()
+
+    /** Called before switching the only active remote source. */
+    fun cancelPending() {
+        httpClient.dispatcher.cancelAll()
+        scope.coroutineContext[Job]?.children?.forEach { it.cancel() }
+    }
 
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -201,16 +212,19 @@ object CacheService {
      */
     suspend fun cacheSong(song: Song): String? {
         val remoteId = song.remoteId ?: return null
+        val sourceId = song.sourceId ?: return null
+        if (RemoteSessionManager.activeSourceId != sourceId) return null
+        val taskKey = "$sourceId|$remoteId"
 
         var deferred: CompletableDeferred<String?>? = null
         var owner = false
         mutex.withLock {
-            val existing = inFlight[remoteId]
+            val existing = inFlight[taskKey]
             if (existing != null) {
                 deferred = existing
             } else {
                 val created = CompletableDeferred<String?>()
-                inFlight[remoteId] = created
+                inFlight[taskKey] = created
                 deferred = created
                 owner = true
             }
@@ -229,7 +243,7 @@ object CacheService {
         } finally {
             // 任务仍是自己时才移除（防止 ABA）：新任务已被注册则保留
             mutex.withLock {
-                if (inFlight[remoteId] === task) inFlight.remove(remoteId)
+                if (inFlight[taskKey] === task) inFlight.remove(taskKey)
             }
             // 无论成功/失败/取消都先完成任务，唤醒所有等待者
             task.complete(result)
@@ -241,9 +255,11 @@ object CacheService {
 
     private suspend fun doCacheSong(song: Song): String? = withContext(Dispatchers.IO) {
         val remoteId = song.remoteId ?: return@withContext null
+        val sourceId = song.sourceId ?: return@withContext null
+        if (RemoteSessionManager.activeSourceId != sourceId) return@withContext null
         try {
             val dir = getCacheDir()
-            val cachePath = File(dir, "$remoteId.cache")
+            val cachePath = File(dir, "${RemoteLocator.sha256Hex("$sourceId|$remoteId")}.cache")
 
             // 检查是否已缓存
             if (cachePath.exists()) {
@@ -257,8 +273,12 @@ object CacheService {
             // 下载歌曲：**流式写入磁盘**，不把整首歌读进内存。
             // 之前用 `ResponseBody.bytes()`，缓存几十 MB 的远程音频会直接
             // java.lang.OutOfMemoryError（真机实测 85MB 文件崩溃在 okio readByteArray）。
-            val streamUrl = SubsonicService.getStreamUrl(remoteId)
-            if (!downloadToFile(streamUrl, cachePath)) return@withContext null
+            val request = RemoteSessionManager.stream(song)
+            if (!downloadToFile(request, cachePath)) return@withContext null
+            if (RemoteSessionManager.activeSourceId != sourceId) {
+                cachePath.delete()
+                return@withContext null
+            }
 
             // 更新数据库
             song.id?.let { DatabaseHelper.updateSongCache(it, cachePath.absolutePath) }
@@ -321,12 +341,14 @@ object CacheService {
     /** 缓存歌曲封面到本地，返回缓存后的文件路径，失败返回 null */
     suspend fun cacheArtwork(song: Song): String? = withContext(Dispatchers.IO) {
         val coverArtId = song.coverArtId ?: return@withContext null
+        val sourceId = song.sourceId ?: return@withContext null
+        if (RemoteSessionManager.activeSourceId != sourceId) return@withContext null
 
         try {
             val dir = getCacheDir()
             val artworkDir = File(dir, ARTWORK_DIR_NAME)
             if (!artworkDir.exists()) artworkDir.mkdirs()
-            val cachePath = File(artworkDir, "$coverArtId.jpg")
+            val cachePath = File(artworkDir, "${RemoteLocator.sha256Hex("$sourceId|$coverArtId")}.jpg")
 
             // 检查是否已缓存
             if (cachePath.exists()) {
@@ -337,8 +359,9 @@ object CacheService {
             }
 
             // 下载封面
-            val bytes = SubsonicService.getCoverArt(coverArtId)
+            val bytes = RemoteSessionManager.artwork(song)
             if (bytes == null || bytes.isEmpty()) return@withContext null
+            if (RemoteSessionManager.activeSourceId != sourceId) return@withContext null
 
             // 写入缓存文件
             cachePath.writeBytes(bytes)
@@ -403,14 +426,17 @@ object CacheService {
      *
      * 先写 `.tmp` 再重命名，避免下载中断留下半个"已缓存"文件被当成缓存命中。
      */
-    private fun downloadToFile(url: String, target: File): Boolean {
+    private fun downloadToFile(request: RemoteRequest, target: File): Boolean {
         val tmp = File(target.parentFile, target.name + ".tmp")
         return try {
-            httpClient.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+            val httpRequest = Request.Builder().url(request.url).get().apply {
+                request.headers.forEach { (key, value) -> header(key, value) }
+            }.build()
+            httpClient.newCall(httpRequest).execute().use { response ->
                 val body = response.body
                 if (!response.isSuccessful || body == null) {
                     // 日志脱敏：流地址含认证参数（u/s/t），不得进入日志（优化建议 01）
-                    Log.w(TAG, "下载失败 ${response.code} ${UrlSanitizer.redact(url)}")
+                    Log.w(TAG, "下载失败 ${response.code} ${UrlSanitizer.redact(request.url)}")
                     false
                 } else {
                     body.byteStream().use { input ->
@@ -427,7 +453,7 @@ object CacheService {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "下载失败 ${UrlSanitizer.redact(url)}: ${e.message}")
+            Log.w(TAG, "下载失败 ${UrlSanitizer.redact(request.url)}: ${e.message}")
             runCatching { tmp.delete() }
             false
         }

@@ -35,6 +35,7 @@ object SubsonicService {
 
     private var config: SubsonicConfig? = null
     private var activeBaseUrl: String? = null
+    @Volatile var currentSourceId: String? = null
 
     /**
      * EasyTier 组网的本地转发地址（如 `http://127.0.0.1:18080`，由 core:easytier 注入）。
@@ -538,6 +539,7 @@ object SubsonicService {
      * 去重后入库并追加到歌单末尾。
      */
     suspend fun syncPlaylistsToLocalStorage(): Int {
+        val sourceId = currentSourceId ?: throw SubsonicException("远程来源未绑定")
         val remotePlaylists = getPlaylists()
         var synced = 0
 
@@ -546,9 +548,10 @@ object SubsonicService {
             val remoteId = remote.id
 
             // 检查本地是否已存在同名歌单
-            val existing = DatabaseHelper.findPlaylistByName(remoteName)
+            val localName = "远程·$remoteName (${sourceId.take(8)})"
+            val existing = DatabaseHelper.findPlaylistByName(localName)
             val localPlaylistId: Long = existing?.id
-                ?: DatabaseHelper.createPlaylist(remoteName)
+                ?: DatabaseHelper.createPlaylist(localName)
                 ?: continue
 
             try {
@@ -559,10 +562,10 @@ object SubsonicService {
                     val identityKey = "${song.title.trim().lowercase()}|" +
                         "${(song.artist ?: "").trim().lowercase()}|" +
                         (song.album ?: "").trim().lowercase()
-                    val locator = RemoteLocator.subsonic(songId, importSourceTag(), identityKey)
+                    val locator = RemoteLocator.forSource(sourceId, songId)
 
                     // 检查本地是否已有该远程歌曲
-                    val existingSong = DatabaseHelper.querySongByRemoteId(songId)
+                    val existingSong = DatabaseHelper.querySongByRemoteId(sourceId, songId)
                     val existingSongId = existingSong?.id
                     val localSongId: Long
                     if (existingSongId != null) {
@@ -580,6 +583,7 @@ object SubsonicService {
                             format = song.suffix,
                             codec = song.contentType,
                             sourceType = Song.SOURCE_TYPE_SUBSONIC,
+                            sourceId = sourceId,
                             remoteId = songId,
                             remoteStreamUrl = null,
                             dateAdded = System.currentTimeMillis(),
@@ -587,7 +591,7 @@ object SubsonicService {
                         val affected = DatabaseHelper.insertSongs(listOf(newSong), importSourceTag())
                         if (affected == 0) continue
                         // 重新查询获取 id
-                        localSongId = DatabaseHelper.querySongByRemoteId(songId)?.id ?: continue
+                        localSongId = DatabaseHelper.querySongByRemoteId(sourceId, songId)?.id ?: continue
                     }
 
                     DatabaseHelper.addSongToPlaylist(localPlaylistId, localSongId)

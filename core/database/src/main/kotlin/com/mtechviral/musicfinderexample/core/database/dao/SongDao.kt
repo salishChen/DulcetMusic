@@ -314,8 +314,8 @@ class SongDao(private val musicDatabase: MusicDatabase) {
     fun queryCachedSongs(): List<Song> =
         db.query(
             TABLE_SONGS, null,
-            "$COL_CACHED_PATH IS NOT NULL AND $COL_SOURCE_TYPE = ?",
-            arrayOf(Song.SOURCE_TYPE_SUBSONIC), null, null, "$COL_CACHE_TIMESTAMP DESC",
+            "$COL_CACHED_PATH IS NOT NULL AND $COL_SOURCE_TYPE IN (?, ?, ?)",
+            arrayOf(Song.SOURCE_TYPE_SUBSONIC, Song.SOURCE_TYPE_WEBDAV, Song.SOURCE_TYPE_EMBY), null, null, "$COL_CACHE_TIMESTAMP DESC",
         ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
 
     /** 清除歌曲的缓存记录 */
@@ -373,8 +373,8 @@ class SongDao(private val musicDatabase: MusicDatabase) {
     fun queryOldestCachedSong(): Song? =
         db.query(
             TABLE_SONGS, null,
-            "$COL_CACHED_PATH IS NOT NULL AND $COL_SOURCE_TYPE = ?",
-            arrayOf(Song.SOURCE_TYPE_SUBSONIC), null, null, "$COL_CACHE_TIMESTAMP ASC", "1",
+            "$COL_CACHED_PATH IS NOT NULL AND $COL_SOURCE_TYPE IN (?, ?, ?)",
+            arrayOf(Song.SOURCE_TYPE_SUBSONIC, Song.SOURCE_TYPE_WEBDAV, Song.SOURCE_TYPE_EMBY), null, null, "$COL_CACHE_TIMESTAMP ASC", "1",
         ).use { c -> if (c.moveToFirst()) SongMapper.fromCursor(c) else null }
 
     /** 更新歌曲的封面缓存路径 */
@@ -415,10 +415,10 @@ class SongDao(private val musicDatabase: MusicDatabase) {
     /** 查询封面尚未缓存的远程歌曲（coverArtId 有值但 cachedArtworkPath 为空） */
     fun querySongsNeedingArtworkCache(): List<Song> =
         db.query(
-            TABLE_SONGS, null,
-            "$COL_SOURCE_TYPE = ? AND $COL_COVER_ART_ID IS NOT NULL " +
+            VIEW_VISIBLE_SONGS, null,
+            "$COL_SOURCE_TYPE IN (?, ?, ?) AND $COL_COVER_ART_ID IS NOT NULL " +
                 "AND ($COL_CACHED_ARTWORK_PATH IS NULL OR $COL_CACHED_ARTWORK_PATH = ?)",
-            arrayOf(Song.SOURCE_TYPE_SUBSONIC, ""), null, null, "$COL_ID ASC",
+            arrayOf(Song.SOURCE_TYPE_SUBSONIC, Song.SOURCE_TYPE_WEBDAV, Song.SOURCE_TYPE_EMBY, ""), null, null, "$COL_ID ASC",
         ).use { c -> c.mapAll { SongMapper.fromCursor(it) } }
 
     // ======================== 播放统计 ========================

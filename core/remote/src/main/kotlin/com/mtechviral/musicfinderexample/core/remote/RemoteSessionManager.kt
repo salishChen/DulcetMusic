@@ -10,6 +10,7 @@ import com.mtechviral.musicfinderexample.core.network.EmbyProvider
 import com.mtechviral.musicfinderexample.core.network.RemoteMusicProvider
 import com.mtechviral.musicfinderexample.core.network.RemoteRequest
 import com.mtechviral.musicfinderexample.core.network.SubsonicProvider
+import com.mtechviral.musicfinderexample.core.network.SubsonicService
 import com.mtechviral.musicfinderexample.core.network.WebDavProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -25,8 +26,8 @@ object RemoteSessionManager {
     private val mutex = Mutex()
     private val _source = MutableStateFlow<RemoteSource?>(null)
     val source: StateFlow<RemoteSource?> = _source
-    private var provider: RemoteMusicProvider? = null
-    private var generation = 0L
+    @Volatile private var provider: RemoteMusicProvider? = null
+    @Volatile private var generation = 0L
     private var scanJob: Job? = null
 
     val isConfigured: Boolean get() = _source.value != null
@@ -42,6 +43,7 @@ object RemoteSessionManager {
         val stored = DatabaseHelper.activeRemoteSource()
         val next = stored?.let(::newProvider)
         if (next is SubsonicProvider) next.activate()
+        else SubsonicService.currentSourceId = null
         provider = next
         _source.value = stored
         generation++
@@ -55,10 +57,12 @@ object RemoteSessionManager {
     suspend fun activate(candidate: RemoteSource) {
         scanJob?.cancelAndJoin()
         mutex.withLock {
+        if (_source.value?.id != candidate.id) SubsonicService.easyTierBaseUrl = null
         val next = newProvider(candidate)
         next.testConnection()
         DatabaseHelper.activateRemoteSource(candidate)
         if (next is SubsonicProvider) next.activate()
+        else SubsonicService.currentSourceId = null
         provider = next
         _source.value = candidate
         generation++
@@ -71,6 +75,7 @@ object RemoteSessionManager {
         mutex.withLock {
         DatabaseHelper.deactivateRemoteSource()
         provider = null
+        SubsonicService.currentSourceId = null
         _source.value = null
         generation++
         MusicLibrary.reload()
@@ -85,9 +90,26 @@ object RemoteSessionManager {
         return active
     }
 
-    suspend fun stream(song: Song): RemoteRequest = requireCurrent(song).stream(song)
-    suspend fun artwork(song: Song): ByteArray? = requireCurrent(song).artwork(song)
-    suspend fun lyrics(song: Song): String? = requireCurrent(song).lyrics(song)
+    suspend fun stream(song: Song): RemoteRequest {
+        val active = requireCurrent(song)
+        val request = active.stream(song)
+        if (provider !== active) throw CancellationException("远程音乐源已切换")
+        return request
+    }
+
+    suspend fun artwork(song: Song): ByteArray? {
+        val active = requireCurrent(song)
+        val result = active.artwork(song)
+        if (provider !== active) throw CancellationException("远程音乐源已切换")
+        return result
+    }
+
+    suspend fun lyrics(song: Song): String? {
+        val active = requireCurrent(song)
+        val result = active.lyrics(song)
+        if (provider !== active) throw CancellationException("远程音乐源已切换")
+        return result
+    }
 
     suspend fun scan(onProgress: (Int, Int) -> Unit = { _, _ -> }): Int {
         val job = coroutineContext[Job] ?: error("扫描需要协程")

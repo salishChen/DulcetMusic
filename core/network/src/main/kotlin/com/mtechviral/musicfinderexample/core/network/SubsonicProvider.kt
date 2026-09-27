@@ -21,7 +21,10 @@ class SubsonicProvider(override val source: RemoteSource) : RemoteMusicProvider 
         is SubsonicService.ConnectionTestResult.Unreachable -> throw IllegalStateException(result.message)
     }
 
-    suspend fun activate() = SubsonicService.activate(config())
+    suspend fun activate() {
+        SubsonicService.activate(config())
+        SubsonicService.currentSourceId = source.id
+    }
 
     override suspend fun getAllSongs(): List<Song> = SubsonicService.getAllSongs().map { song ->
         val id = requireNotNull(song.remoteId) { "Subsonic song has no id" }

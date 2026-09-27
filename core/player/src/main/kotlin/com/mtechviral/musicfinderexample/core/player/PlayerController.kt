@@ -19,6 +19,7 @@ import com.mtechviral.musicfinderexample.core.media.ArtworkCache
 import com.mtechviral.musicfinderexample.core.model.PlayMode
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.network.SubsonicService
+import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -257,6 +258,7 @@ object PlayerController {
         val songs = PlaylistRepository.current
         if (index < 0 || index >= songs.size) return false
         val song = songs[index]
+        if (song.isRemote && song.sourceId != RemoteSessionManager.activeSourceId) return false
 
         val p = awaitPlayer() ?: return false
 
@@ -414,6 +416,15 @@ object PlayerController {
     suspend fun pause() {
         val p = awaitPlayer()
         p?.pause()
+        _isPlaying.value = false
+        publishCurrentState()
+    }
+
+    /** Close an old remote stream before probing a replacement source. */
+    suspend fun stopRemoteForSourceSwitch() {
+        if (_currentSong.value?.isRemote != true) return
+        val p = awaitPlayer()
+        p?.stop()
         _isPlaying.value = false
         publishCurrentState()
     }
@@ -849,11 +860,10 @@ object PlayerController {
      * 初次从在线列表播放的歌曲尚未入库（id 为 null）时同样可获取。
      */
     private fun fetchLyricsInBackground(song: Song) {
-        val artist = song.artist
-        if (artist.isNullOrBlank() || song.title.isBlank()) return
+        if (song.title.isBlank()) return
         ioScope.launch {
             try {
-                val lyrics = SubsonicService.getLyrics(artist, song.title)
+                val lyrics = RemoteSessionManager.lyrics(song)
                 if (!lyrics.isNullOrEmpty()) {
                     song.id?.let { DatabaseHelper.updateSongLyrics(it, lyrics) }
                     val cur = _currentSong.value
@@ -1142,15 +1152,7 @@ object PlayerController {
             song.id?.let { DatabaseHelper.touchSongCache(it) }
             return cachedPath
         }
-        val remoteId = song.remoteId
-        if (song.isRemote && remoteId != null) {
-            return try {
-                SubsonicService.getStreamUrl(remoteId)
-            } catch (e: Exception) {
-                Log.w(TAG, "解析远程地址失败，回退同步解析: ${e.message}")
-                resolveUriSync(song)
-            }
-        }
+        if (song.isRemote) return song.path
         return song.path
     }
 
@@ -1161,10 +1163,7 @@ object PlayerController {
     private fun resolveUriSync(song: Song): String {
         val cached = song.cachedPath
         if (song.isCached && cached != null) return cached
-        val remoteId = song.remoteId
-        if (song.isRemote && !remoteId.isNullOrEmpty()) {
-            SubsonicService.buildStreamUrlSync(remoteId)?.let { return it }
-        }
+        if (song.isRemote) return song.path
         return song.path
     }
 
@@ -1172,7 +1171,8 @@ object PlayerController {
     private suspend fun resolveCachedState(song: Song): Song {
         val remoteId = song.remoteId
         if (!song.isRemote || song.isCached || remoteId == null) return song
-        val dbSong = DatabaseHelper.querySongByRemoteId(remoteId) ?: return song
+        val sourceId = song.sourceId ?: return song
+        val dbSong = DatabaseHelper.querySongByRemoteId(sourceId, remoteId) ?: return song
         val cached = dbSong.cachedPath
         if (dbSong.isCached && cached != null && withContextIo { File(cached).exists() }) {
             // 命中缓存同样刷新「最近使用」时间（优化建议 05）
