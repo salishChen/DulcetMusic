@@ -38,4 +38,7 @@ dependencies {
 
     api(libs.androidx.media3.exoplayer)
     api(libs.androidx.media3.session)
+    implementation(libs.okhttp)
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
 }

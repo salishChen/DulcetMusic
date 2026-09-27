@@ -27,6 +27,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -64,6 +65,8 @@ object CacheService {
     }
 
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
+        .followRedirects(false)
+        .followSslRedirects(false)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
@@ -170,8 +173,9 @@ object CacheService {
     private suspend fun cleanupTempFiles() {
         withContext(Dispatchers.IO) {
             val dir = getCacheDir()
+            val staleBefore = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(6)
             dir.walkTopDown()
-                .filter { it.isFile && it.name.endsWith(".tmp") }
+                .filter { it.isFile && it.name.endsWith(".tmp") && it.lastModified() < staleBefore }
                 .forEach { runCatching { it.delete() } }
         }
     }
@@ -277,10 +281,12 @@ object CacheService {
             // 之前用 `ResponseBody.bytes()`，缓存几十 MB 的远程音频会直接
             // java.lang.OutOfMemoryError（真机实测 85MB 文件崩溃在 okio readByteArray）。
             val request = RemoteSessionManager.stream(song)
-            if (!downloadToFile(request, cachePath)) return@withContext null
+            if (!downloadToFile(request, cachePath) {
+                    RemoteSessionManager.activeSourceId == sourceId &&
+                        RemoteSessionManager.sessionRevision == revision
+                }) return@withContext null
             if (RemoteSessionManager.activeSourceId != sourceId ||
                 RemoteSessionManager.sessionRevision != revision) {
-                cachePath.delete()
                 return@withContext null
             }
 
@@ -433,8 +439,9 @@ object CacheService {
      *
      * 先写 `.tmp` 再重命名，避免下载中断留下半个"已缓存"文件被当成缓存命中。
      */
-    private fun downloadToFile(request: RemoteRequest, target: File): Boolean {
-        val tmp = File(target.parentFile, target.name + ".tmp")
+    private fun downloadToFile(request: RemoteRequest, target: File,
+                               isCurrent: () -> Boolean): Boolean {
+        val tmp = File(target.parentFile, target.name + ".${UUID.randomUUID()}.tmp")
         return try {
             val httpRequest = Request.Builder().url(request.url).get().apply {
                 request.headers.forEach { (key, value) -> header(key, value) }
@@ -451,7 +458,10 @@ object CacheService {
                             input.copyTo(output, DOWNLOAD_BUFFER_SIZE)
                         }
                     }
-                    if (tmp.renameTo(target)) {
+                    if (!isCurrent()) {
+                        tmp.delete()
+                        false
+                    } else if (tmp.renameTo(target)) {
                         true
                     } else {
                         tmp.delete()

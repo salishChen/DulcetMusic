@@ -3,7 +3,6 @@ package com.mtechviral.musicfinderexample.core.player
 import android.content.Context
 import android.net.Uri
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
@@ -13,7 +12,7 @@ import kotlinx.coroutines.withTimeout
 /** Media3 invokes this on its loader thread, including for automatic next-track playback. */
 internal object RemotePlaybackDataSource {
     fun factory(context: Context): ResolvingDataSource.Factory {
-        val upstream = DefaultDataSource.Factory(context, DefaultHttpDataSource.Factory())
+        val upstream = DefaultDataSource.Factory(context, StrictHttpDataSource.Factory())
         return ResolvingDataSource.Factory(upstream) { dataSpec ->
             val path = dataSpec.uri.toString()
             if (!path.startsWith("remote://") && !path.startsWith("subsonic://")) {
