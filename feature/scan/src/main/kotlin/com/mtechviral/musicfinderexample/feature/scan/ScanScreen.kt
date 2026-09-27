@@ -95,6 +95,7 @@ import com.mtechviral.musicfinderexample.core.media.ScanProgress
 import com.mtechviral.musicfinderexample.core.media.ScanResult
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.network.SubsonicService
+import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
 import com.mtechviral.musicfinderexample.core.player.PlayerController
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 import com.mtechviral.musicfinderexample.feature.home.LocalOpenSidebar
@@ -195,12 +196,12 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
 
     /** 从 Subsonic 导入全部歌曲并入库（对应 Dart `_scanRemote`） */
     fun runRemoteScan() {
-        if (!SubsonicService.isConfigured) {
+        if (!RemoteSessionManager.isConfigured) {
             // Dart：SnackBar('请先在"远程配置"页面配置 Subsonic 服务器')；
             // 原生端补充"去配置"动作直接跳转配置页
             scope.launch {
                 val result = snackbarHostState.showSnackbar(
-                    message = "请先在\"远程配置\"页面配置 Subsonic 服务器",
+                    message = "请先在远程配置页面选择服务器",
                     actionLabel = "去配置",
                     duration = SnackbarDuration.Short,
                 )
@@ -219,35 +220,11 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
 
         scope.launch {
             try {
-                val songs = SubsonicService.getAllSongs()
-                total = songs.size
-
-                var added = 0
-                var failedCount = 0
-                var i = 0
-                while (i < songs.size) {
-                    val end = (i + REMOTE_BATCH_SIZE).coerceAtMost(songs.size)
-                    val batch = songs.subList(i, end)
-                    try {
-                        // 第二十六轮需求 3：入库前剔除排除列表中的音乐
-                        // （被排除的单曲，或被整位排除的歌手的全部歌曲）。
-                        added += DatabaseHelper.insertSongs(
-                            ExclusionFilter.filter(batch),
-                            // 按服务器区分来源（优化建议 03）：换服务器不与旧记录误合并
-                            SubsonicService.importSourceTag(),
-                        )
-                    } catch (e: Exception) {
-                        failedCount += batch.size
-                        Log.w(TAG, "远程扫描批次失败: ${e.message}")
-                    }
-                    processed = end
-                    failed = failedCount
-                    i = end
+                val added = RemoteSessionManager.scan { done, count ->
+                    processed = done
+                    total = count
                 }
-
-                // 刷新全局歌曲列表（此时封面缓存尚未完成）
-                MusicLibrary.reload()
-                lastResult = ScanResult(added = added, failed = failedCount, total = songs.size)
+                lastResult = ScanResult(added = added, failed = 0, total = total)
             } catch (e: Exception) {
                 Log.w(TAG, "远程扫描失败: ${e.message}")
                 lastResult = ScanResult(total = 0, added = 0, failed = 1)
@@ -359,7 +336,7 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
             SourceCard(
                 icon = Icons.Filled.CloudDownload,
                 title = "扫描远程音乐",
-                subtitle = if (SubsonicService.isConfigured) {
+                subtitle = if (RemoteSessionManager.isConfigured) {
                     "从 Subsonic 服务器扫描音乐并入库"
                 } else {
                     "请先在\"远程配置\"中配置服务器"

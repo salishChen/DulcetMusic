@@ -9,6 +9,7 @@ import com.mtechviral.musicfinderexample.core.common.ThemePreference
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.network.SubsonicService
+import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
 import com.mtechviral.musicfinderexample.core.player.LyricsOverlayManager
 import com.mtechviral.musicfinderexample.core.player.PlayerController
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
@@ -52,18 +53,16 @@ class YuleMusicApplication : Application() {
 
         // 5. 后台初始化数据
         appScope.launch {
+            try {
+                RemoteSessionManager.load()
+            } catch (e: Exception) {
+                Log.w(TAG, "加载远程配置失败: ${e.message}")
+            }
             // 曲库（不再直接查询安卓媒体库；曲库由「扫描音乐」页面扫描入库）
             try {
                 MusicLibrary.load()
             } catch (e: Exception) {
                 Log.w(TAG, "加载曲库失败: ${e.message}")
-            }
-
-            // 启动时加载 Subsonic 配置，确保重启后无需先进入配置页即可播放远程歌曲
-            try {
-                SubsonicService.loadConfig()
-            } catch (e: Exception) {
-                Log.w(TAG, "加载 Subsonic 配置失败: ${e.message}")
             }
 
             // EasyTier 组网（省电策略，耗电优化）：
