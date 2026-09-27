@@ -51,6 +51,7 @@ class EmbyProviderTest {
                     val body = when {
                         path.endsWith("/Users/AuthenticateByName") ->
                             """{"AccessToken":"token","User":{"Id":"user"}}"""
+                        path.endsWith("/System/Info/Public") -> """{"Id":"server-1"}"""
                         path.contains("StartIndex=0") ->
                             """{"TotalRecordCount":2,"Items":[{"Id":"item/1","Name":"Song","RunTimeTicks":123450000,"Artists":["Singer"],"MediaSources":[{"Id":"first","Name":"FLAC","Container":"flac","Bitrate":900000},{"Id":"second","Name":"MP3","Container":"mp3","Bitrate":320000}]}]}"""
                         path.contains("StartIndex=1") ->
@@ -83,6 +84,7 @@ class EmbyProviderTest {
             username = "user", password = "pass",
         ))
         assertEquals("Emby 登录成功", provider.testConnection())
+        assertEquals("server-1", provider.serverIdentity)
         assertTrue(requestBodies.first().contains("\"Pw\":\"pass\""))
         val songs = provider.getAllSongs()
         assertEquals(3, songs.size)
@@ -95,5 +97,16 @@ class EmbyProviderTest {
         assertEquals("first", url.queryParameter("MediaSourceId"))
         assertEquals("true", url.queryParameter("static"))
         assertEquals("token", stream.headers["X-Emby-Token"])
+    }
+
+    @Test
+    fun knownServerIdentityRejectsAnAddressPointingElsewhere() = runBlocking {
+        val provider = EmbyProvider(RemoteSource(
+            id = "emby", protocol = RemoteProtocol.EMBY, displayName = "Emby",
+            intranetUrl = "http://127.0.0.1:${server.localPort}/emby/",
+            username = "user", password = "pass", serverIdentity = "another-server",
+        ))
+        val error = runCatching { provider.testConnection() }.exceptionOrNull()
+        assertTrue(error?.message?.contains("服务器身份") == true)
     }
 }

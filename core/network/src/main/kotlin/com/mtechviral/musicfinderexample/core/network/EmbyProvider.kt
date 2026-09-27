@@ -22,6 +22,8 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
     private var baseUrl: HttpUrl? = null
     private var token: String? = null
     private var userId: String? = null
+    var serverIdentity: String? = null
+        private set
     private val deviceId = "DulcetMusic-${source.id}"
 
     override suspend fun testConnection(): String = withContext(Dispatchers.IO) {
@@ -29,6 +31,10 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
         for (base in listOf(source.intranetUrl, source.publicUrl).filter { it.isNotBlank() }) {
             val url = base.trim().toHttpUrlOrNull() ?: continue
             try {
+                token = null
+                userId = null
+                serverIdentity = null
+                baseUrl = null
                 val body = JSONObject(call(url.newBuilder().addPathSegments("Users/AuthenticateByName").build(),
                     JSONObject().put("Username", source.username).put("Pw", source.password)
                         .toString().toRequestBody("application/json".toMediaType())))
@@ -37,6 +43,18 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
                 if (authToken.isBlank() || accountId.isBlank()) throw IllegalStateException("Emby 未返回登录凭据")
                 token = authToken
                 userId = accountId
+                val identity = try {
+                    JSONObject(call(url.newBuilder().addPathSegments("System/Info/Public").build()))
+                        .optString("Id").takeIf { it.isNotBlank() }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+                if (source.serverIdentity != null && source.serverIdentity != identity) {
+                    throw IllegalStateException("Emby 服务器身份与当前来源不一致，请作为新服务器保存")
+                }
+                serverIdentity = identity
                 baseUrl = url
                 return@withContext "Emby 登录成功"
             } catch (e: Exception) {

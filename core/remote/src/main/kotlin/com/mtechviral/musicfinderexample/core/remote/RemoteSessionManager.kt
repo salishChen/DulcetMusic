@@ -114,11 +114,13 @@ object RemoteSessionManager {
         if (_source.value?.id != candidate.id) SubsonicService.easyTierBaseUrl = null
         val next = newProvider(candidate)
         next.testConnection()
-        DatabaseHelper.activateRemoteSource(candidate)
+        val verified = if (next is EmbyProvider) candidate.copy(serverIdentity = next.serverIdentity)
+            else candidate
+        DatabaseHelper.activateRemoteSource(verified)
         if (next is SubsonicProvider) next.activate()
         else SubsonicService.deactivate()
         provider = next
-        _source.value = candidate
+        _source.value = verified
         generation++
         loaded = true
         MusicLibrary.reload()

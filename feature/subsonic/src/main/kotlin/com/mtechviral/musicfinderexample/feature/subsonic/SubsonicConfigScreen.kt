@@ -102,6 +102,7 @@ fun SubsonicConfigScreen() {
             username = username.trim(),
             password = password,
             rootPath = rootPath.trim(),
+            serverIdentity = if (sameSource) current?.serverIdentity else null,
         )
     }
 
