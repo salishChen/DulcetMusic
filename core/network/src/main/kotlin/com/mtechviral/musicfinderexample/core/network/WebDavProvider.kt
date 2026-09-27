@@ -3,7 +3,10 @@ package com.mtechviral.musicfinderexample.core.network
 import com.mtechviral.musicfinderexample.core.common.RemoteLocator
 import com.mtechviral.musicfinderexample.core.model.RemoteSource
 import com.mtechviral.musicfinderexample.core.model.Song
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.Credentials
 import okhttp3.HttpUrl
@@ -13,7 +16,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.w3c.dom.Element
-import java.net.URLDecoder
 import java.util.ArrayDeque
 import java.util.concurrent.TimeUnit
 import javax.xml.parsers.DocumentBuilderFactory
@@ -37,7 +39,10 @@ class WebDavProvider(override val source: RemoteSource) : RemoteMusicProvider {
 
     private fun root(base: HttpUrl): HttpUrl {
         val segments = source.rootPath.trim().trim('/')
-        return if (segments.isEmpty()) base else base.newBuilder().addPathSegments(segments).build()
+        require(segments.split('/').none { it == "." || it == ".." }) { "无效的 WebDAV 目录" }
+        val selected = if (segments.isEmpty()) base else base.newBuilder().addPathSegments(segments).build()
+        return if (selected.encodedPath.endsWith('/')) selected
+            else selected.newBuilder().addPathSegment("").build()
     }
 
     override suspend fun testConnection(): String = withContext(Dispatchers.IO) {
@@ -51,6 +56,7 @@ class WebDavProvider(override val source: RemoteSource) : RemoteMusicProvider {
                     return@withContext "WebDAV 目录可读取"
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 last = e
             }
         }
@@ -64,9 +70,11 @@ class WebDavProvider(override val source: RemoteSource) : RemoteMusicProvider {
         val result = ArrayList<Song>()
         pending.add(root)
         while (pending.isNotEmpty()) {
+            currentCoroutineContext().ensureActive()
             val directory = pending.removeFirst()
             if (!visited.add(directory.encodedPath.trimEnd('/'))) continue
             for (entry in propfind(directory, "1")) {
+                currentCoroutineContext().ensureActive()
                 val path = entry.url.encodedPath
                 if (path.trimEnd('/') == directory.encodedPath.trimEnd('/')) continue
                 if (!withinRoot(root, entry.url)) continue
@@ -101,7 +109,9 @@ class WebDavProvider(override val source: RemoteSource) : RemoteMusicProvider {
     override suspend fun stream(song: Song): RemoteRequest {
         val root = rootUrl ?: run { testConnection(); requireNotNull(rootUrl) }
         val id = requireNotNull(song.remoteId)
-        require(!id.startsWith('/') && !id.contains("..")) { "无效的 WebDAV 路径" }
+        require(!id.startsWith('/') && id.split('/').none { it == "." || it == ".." }) {
+            "无效的 WebDAV 路径"
+        }
         val url = root.newBuilder().encodedPath(root.encodedPath.trimEnd('/') + "/" + id).build()
         require(withinRoot(root, url))
         return RemoteRequest(url.toString(), headers)
@@ -143,15 +153,19 @@ class WebDavProvider(override val source: RemoteSource) : RemoteMusicProvider {
                 val item = url.resolve(href) ?: continue
                 // Properties can fail independently inside a 207 response.
                 val statuses = element.getElementsByTagNameNS("DAV:", "propstat")
+                var valid = false
+                var collection = false
+                var size: Long? = null
                 for (j in 0 until statuses.length) {
                     val propstat = statuses.item(j) as? Element ?: continue
                     val status = propstat.getElementsByTagNameNS("DAV:", "status").item(0)?.textContent.orEmpty()
                     if (!status.contains(" 200 ")) continue
-                    val collection = propstat.getElementsByTagNameNS("DAV:", "collection").length > 0
-                    val size = propstat.getElementsByTagNameNS("DAV:", "getcontentlength")
-                        .item(0)?.textContent?.toLongOrNull()
-                    entries += DavEntry(item, collection, size)
+                    valid = true
+                    collection = collection || propstat.getElementsByTagNameNS("DAV:", "collection").length > 0
+                    size = propstat.getElementsByTagNameNS("DAV:", "getcontentlength")
+                        .item(0)?.textContent?.toLongOrNull() ?: size
                 }
+                if (valid) entries += DavEntry(item, collection, size)
             }
             return entries
         }
