@@ -668,7 +668,7 @@ object SubsonicService {
         val url = buildUrl(baseUrl, "getCoverArt", listOf("id" to coverArtId))
         withContext(Dispatchers.IO) {
             apiClient.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-                val bytes = response.body?.bytes()
+                val bytes = response.body?.readArtworkBytes()
                 if (response.isSuccessful && bytes != null && bytes.size > 100) {
                     bytes
                 } else {

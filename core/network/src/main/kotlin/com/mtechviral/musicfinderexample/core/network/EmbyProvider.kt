@@ -139,8 +139,7 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return@withContext null
             val body = response.body ?: return@withContext null
-            if (body.contentLength() > 4_000_000) return@withContext null
-            body.bytes().takeIf { it.size <= 4_000_000 }
+            body.readArtworkBytes()
         }
     }
 
