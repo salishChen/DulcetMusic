@@ -3,6 +3,7 @@ package com.mtechviral.musicfinderexample.core.network
 import com.mtechviral.musicfinderexample.core.common.RemoteLocator
 import com.mtechviral.musicfinderexample.core.model.RemoteSource
 import com.mtechviral.musicfinderexample.core.model.Song
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
@@ -39,6 +40,7 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
                 baseUrl = url
                 return@withContext "Emby 登录成功"
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 last = e
             }
         }
@@ -51,7 +53,7 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
         val songs = ArrayList<Song>()
         var start = 0
         do {
-            val url = base.newBuilder().addPathSegments("Users/$user/Items")
+            val url = base.newBuilder().addPathSegment("Users").addPathSegment(user).addPathSegment("Items")
                 .addQueryParameter("Recursive", "true")
                 .addQueryParameter("IncludeItemTypes", "Audio")
                 .addQueryParameter("StartIndex", start.toString())
@@ -65,19 +67,34 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
                 val artists = item.optJSONArray("Artists")
                 val artist = artists?.optString(0)?.takeIf { it.isNotBlank() }
                     ?: item.optString("Artist").takeIf { it.isNotBlank() }
-                songs += Song(
-                    title = item.optString("Name").ifBlank { "未知歌曲" },
-                    path = RemoteLocator.forSource(source.id, id),
-                    artist = artist,
-                    album = item.optString("Album").takeIf { it.isNotBlank() },
-                    albumArtist = item.optString("AlbumArtist").takeIf { it.isNotBlank() },
-                    trackNumber = item.optInt("IndexNumber", -1).takeIf { it >= 0 },
-                    duration = item.optLong("RunTimeTicks", 0).takeIf { it > 0 }?.div(10_000),
-                    sourceType = Song.SOURCE_TYPE_EMBY,
-                    sourceId = source.id,
-                    remoteId = id,
-                    coverArtId = id.takeIf { item.optJSONObject("ImageTags")?.has("Primary") == true },
-                )
+                val mediaSources = item.optJSONArray("MediaSources")
+                val versions = if (mediaSources == null || mediaSources.length() == 0) {
+                    listOf(id to null)
+                } else (0 until mediaSources.length()).mapNotNull { versionIndex ->
+                    val media = mediaSources.optJSONObject(versionIndex) ?: return@mapNotNull null
+                    val mediaId = media.optString("Id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    mediaId to media
+                }
+                for ((mediaId, media) in versions) {
+                    val resourceId = resourceKey(id, mediaId)
+                    val title = item.optString("Name").ifBlank { "未知歌曲" }
+                    val versionName = media?.optString("Name")?.takeIf { it.isNotBlank() }
+                    songs += Song(
+                        title = if (versions.size > 1) "$title (${versionName ?: mediaId})" else title,
+                        path = RemoteLocator.forSource(source.id, resourceId),
+                        artist = artist,
+                        album = item.optString("Album").takeIf { it.isNotBlank() },
+                        albumArtist = item.optString("AlbumArtist").takeIf { it.isNotBlank() },
+                        trackNumber = item.optInt("IndexNumber", -1).takeIf { it >= 0 },
+                        duration = item.optLong("RunTimeTicks", 0).takeIf { it > 0 }?.div(10_000),
+                        bitrate = media?.optInt("Bitrate", -1)?.takeIf { it > 0 },
+                        format = media?.optString("Container")?.takeIf { it.isNotBlank() },
+                        sourceType = Song.SOURCE_TYPE_EMBY,
+                        sourceId = source.id,
+                        remoteId = resourceId,
+                        coverArtId = id.takeIf { item.optJSONObject("ImageTags")?.has("Primary") == true },
+                    )
+                }
             }
             start += items.length()
             if (items.length() == 0 || start >= response.optInt("TotalRecordCount", start)) break
@@ -87,8 +104,10 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
 
     override suspend fun stream(song: Song): RemoteRequest {
         val base = baseUrl ?: run { testConnection(); requireNotNull(baseUrl) }
-        val id = requireNotNull(song.remoteId)
-        val url = base.newBuilder().addPathSegments("Audio/$id/stream")
+        val (itemId, mediaId) = parseResourceKey(requireNotNull(song.remoteId))
+        val url = base.newBuilder().addPathSegment("Audio").addPathSegment(itemId)
+            .addPathSegment("stream")
+            .addQueryParameter("MediaSourceId", mediaId)
             .addQueryParameter("static", "true").build()
         return RemoteRequest(url.toString(), authHeaders())
     }
@@ -96,7 +115,8 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
     override suspend fun artwork(song: Song): ByteArray? = withContext(Dispatchers.IO) {
         val id = song.coverArtId ?: return@withContext null
         val base = baseUrl ?: run { testConnection(); requireNotNull(baseUrl) }
-        val url = base.newBuilder().addPathSegments("Items/$id/Images/Primary").build()
+        val url = base.newBuilder().addPathSegment("Items").addPathSegment(id)
+            .addPathSegment("Images").addPathSegment("Primary").build()
         val request = Request.Builder().url(url).apply { authHeaders().forEach { (k, v) -> header(k, v) } }.build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return@withContext null
@@ -107,6 +127,21 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
     }
 
     override suspend fun lyrics(song: Song): String? = null
+
+    private fun resourceKey(itemId: String, mediaSourceId: String): String =
+        "${itemId.length}:$itemId$mediaSourceId"
+
+    private fun parseResourceKey(key: String): Pair<String, String> {
+        val divider = key.indexOf(':')
+        val itemLength = key.substring(0, divider.coerceAtLeast(0)).toIntOrNull()
+        if (divider <= 0 || itemLength == null || itemLength <= 0 ||
+            key.length <= divider + 1 + itemLength) {
+            // Reads songs imported by the initial Emby implementation.
+            return key to key
+        }
+        return key.substring(divider + 1, divider + 1 + itemLength) to
+            key.substring(divider + 1 + itemLength)
+    }
 
     private fun authHeaders(): Map<String, String> = mapOf(
         "X-Emby-Token" to requireNotNull(token),
