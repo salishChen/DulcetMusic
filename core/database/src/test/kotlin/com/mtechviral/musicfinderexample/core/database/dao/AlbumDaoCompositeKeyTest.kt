@@ -75,4 +75,23 @@ class AlbumDaoCompositeKeyTest {
         assertEquals("Various", albums[0].artist)
         assertEquals(1, albumDao.querySongsByAlbum("Comp", "Various").size)
     }
+
+    @Test
+    fun coverFieldsComeFromOneRepresentativeSong() {
+        songDao.insertSongs(
+            listOf(
+                Song(title = "First", path = "/z.mp3", artist = "Singer", album = "Record",
+                    hasArtwork = true),
+                Song(title = "Second", path = "/a.mp3", artist = "Singer", album = "Record",
+                    cachedArtworkPath = "/cover.jpg", coverArtId = "remote-cover"),
+            ),
+            "media_library",
+        )
+
+        val album = albumDao.queryAlbums().single()
+        val representative = songDao.querySongById(album.coverSongId!!)!!
+        assertEquals(representative.path, album.coverSongPath)
+        assertEquals(representative.cachedArtworkPath, album.coverArtworkPath)
+        assertEquals(representative.coverArtId, album.coverArtId)
+    }
 }

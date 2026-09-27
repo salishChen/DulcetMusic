@@ -30,32 +30,38 @@ class AlbumDao(private val musicDatabase: MusicDatabase) {
      * 封面优先取「含内嵌封面的歌曲」，其次取缓存的远程封面。
      */
     fun queryAlbums(): List<Album> = query("""
-        SELECT album AS title,
-               COALESCE(albumArtist, artist) AS artist,
-               MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
-               MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
-               MAX(cachedArtworkPath) AS coverArtworkPath,
-               MAX(coverArtId) AS coverArtId,
-               COUNT(*) AS songCount
-        FROM visible_songs
-        WHERE album IS NOT NULL AND album != ''
-        GROUP BY album, COALESCE(albumArtist, artist)
-        ORDER BY album COLLATE NOCASE ASC, artist COLLATE NOCASE ASC
+        SELECT grouped.title, grouped.artist, grouped.coverSongId,
+               cover.path AS coverSongPath, cover.cachedArtworkPath AS coverArtworkPath,
+               cover.coverArtId, grouped.songCount
+        FROM (
+            SELECT album AS title, COALESCE(albumArtist, artist) AS artist,
+                   COALESCE(MAX(CASE WHEN hasArtwork = 1 THEN id END),
+                            MAX(CASE WHEN cachedArtworkPath IS NOT NULL THEN id END),
+                            MAX(CASE WHEN coverArtId IS NOT NULL THEN id END), MAX(id)) AS coverSongId,
+                   COUNT(*) AS songCount
+            FROM visible_songs
+            WHERE album IS NOT NULL AND album != ''
+            GROUP BY album, COALESCE(albumArtist, artist)
+        ) grouped JOIN songs cover ON cover.id = grouped.coverSongId
+        ORDER BY grouped.title COLLATE NOCASE ASC, grouped.artist COLLATE NOCASE ASC
     """.trimIndent())
 
     /** 指定艺术家的专辑列表（含其担任专辑艺术家的合辑） */
     fun queryAlbumsByArtist(artist: String): List<Album> = query("""
-        SELECT album AS title,
-               COALESCE(albumArtist, artist) AS artist,
-               MAX(CASE WHEN hasArtwork = 1 THEN id END) AS coverSongId,
-               MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
-               MAX(cachedArtworkPath) AS coverArtworkPath,
-               MAX(coverArtId) AS coverArtId,
-               COUNT(*) AS songCount
-        FROM visible_songs
-        WHERE (artist = ? OR albumArtist = ?) AND album IS NOT NULL AND album != ''
-        GROUP BY album, COALESCE(albumArtist, artist)
-        ORDER BY album COLLATE NOCASE ASC, artist COLLATE NOCASE ASC
+        SELECT grouped.title, grouped.artist, grouped.coverSongId,
+               cover.path AS coverSongPath, cover.cachedArtworkPath AS coverArtworkPath,
+               cover.coverArtId, grouped.songCount
+        FROM (
+            SELECT album AS title, COALESCE(albumArtist, artist) AS artist,
+                   COALESCE(MAX(CASE WHEN hasArtwork = 1 THEN id END),
+                            MAX(CASE WHEN cachedArtworkPath IS NOT NULL THEN id END),
+                            MAX(CASE WHEN coverArtId IS NOT NULL THEN id END), MAX(id)) AS coverSongId,
+                   COUNT(*) AS songCount
+            FROM visible_songs
+            WHERE (artist = ? OR albumArtist = ?) AND album IS NOT NULL AND album != ''
+            GROUP BY album, COALESCE(albumArtist, artist)
+        ) grouped JOIN songs cover ON cover.id = grouped.coverSongId
+        ORDER BY grouped.title COLLATE NOCASE ASC, grouped.artist COLLATE NOCASE ASC
     """.trimIndent(), arrayOf(artist, artist))
 
     /**

@@ -21,16 +21,20 @@ import com.mtechviral.musicfinderexample.core.model.Song
 class ArtistDao(private val musicDatabase: MusicDatabase) {
 
     fun queryArtists(): List<Artist> = query("""
-        SELECT artist AS name,
-               COUNT(*) AS songCount,
-               COUNT(DISTINCT album) AS albumCount,
-               MAX(CASE WHEN hasArtwork = 1 THEN path END) AS coverSongPath,
-               MAX(cachedArtworkPath) AS coverArtworkPath,
-               MAX(coverArtId) AS coverArtId
-        FROM visible_songs
-        WHERE artist IS NOT NULL AND artist != ''
-        GROUP BY artist
-        ORDER BY artist COLLATE NOCASE ASC
+        SELECT grouped.name, grouped.songCount, grouped.albumCount,
+               cover.path AS coverSongPath, cover.cachedArtworkPath AS coverArtworkPath,
+               cover.coverArtId
+        FROM (
+            SELECT artist AS name, COUNT(*) AS songCount,
+                   COUNT(DISTINCT album) AS albumCount,
+                   COALESCE(MAX(CASE WHEN hasArtwork = 1 THEN id END),
+                            MAX(CASE WHEN cachedArtworkPath IS NOT NULL THEN id END),
+                            MAX(CASE WHEN coverArtId IS NOT NULL THEN id END), MAX(id)) AS coverSongId
+            FROM visible_songs
+            WHERE artist IS NOT NULL AND artist != ''
+            GROUP BY artist
+        ) grouped JOIN songs cover ON cover.id = grouped.coverSongId
+        ORDER BY grouped.name COLLATE NOCASE ASC
     """.trimIndent())
 
     /** 艺术家全部歌曲（专辑升序 + 音轨号升序） */

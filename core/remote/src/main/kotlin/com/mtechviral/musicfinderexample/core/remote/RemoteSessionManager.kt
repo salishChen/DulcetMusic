@@ -28,10 +28,12 @@ object RemoteSessionManager {
     val source: StateFlow<RemoteSource?> = _source
     @Volatile private var provider: RemoteMusicProvider? = null
     @Volatile private var generation = 0L
+    private var loaded = false
     private var scanJob: Job? = null
 
     val isConfigured: Boolean get() = _source.value != null
     val activeSourceId: String? get() = _source.value?.id
+    val sessionRevision: Long get() = generation
 
     private fun newProvider(source: RemoteSource): RemoteMusicProvider = when (source.protocol) {
         RemoteProtocol.SUBSONIC, RemoteProtocol.NAVIDROME -> SubsonicProvider(source)
@@ -40,6 +42,7 @@ object RemoteSessionManager {
     }
 
     suspend fun load() = mutex.withLock {
+        if (loaded) return@withLock
         val stored = DatabaseHelper.activeRemoteSource()
         val next = stored?.let(::newProvider)
         if (next is SubsonicProvider) next.activate()
@@ -47,10 +50,12 @@ object RemoteSessionManager {
         provider = next
         _source.value = stored
         generation++
+        loaded = true
     }
 
-    suspend fun test(candidate: RemoteSource): String = mutex.withLock {
-        newProvider(candidate).testConnection()
+    suspend fun test(candidate: RemoteSource): String {
+        scanJob?.cancelAndJoin()
+        return mutex.withLock { newProvider(candidate).testConnection() }
     }
 
     /** Caller must stop old remote playback, scanning and cache work before invoking this. */
@@ -66,6 +71,7 @@ object RemoteSessionManager {
         provider = next
         _source.value = candidate
         generation++
+        loaded = true
         MusicLibrary.reload()
         }
     }
@@ -78,6 +84,7 @@ object RemoteSessionManager {
         SubsonicService.currentSourceId = null
         _source.value = null
         generation++
+        loaded = true
         MusicLibrary.reload()
         }
     }

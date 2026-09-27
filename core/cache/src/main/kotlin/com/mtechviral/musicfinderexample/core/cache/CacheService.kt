@@ -214,7 +214,8 @@ object CacheService {
         val remoteId = song.remoteId ?: return null
         val sourceId = song.sourceId ?: return null
         if (RemoteSessionManager.activeSourceId != sourceId) return null
-        val taskKey = "$sourceId|$remoteId"
+        val revision = RemoteSessionManager.sessionRevision
+        val taskKey = "$revision|$sourceId|$remoteId"
 
         var deferred: CompletableDeferred<String?>? = null
         var owner = false
@@ -235,7 +236,7 @@ object CacheService {
         var result: String? = null
         var cancelled: Throwable? = null
         try {
-            result = doCacheSong(song)
+            result = doCacheSong(song, revision)
         } catch (e: kotlinx.coroutines.CancellationException) {
             cancelled = e
         } catch (e: Exception) {
@@ -253,16 +254,18 @@ object CacheService {
         return result
     }
 
-    private suspend fun doCacheSong(song: Song): String? = withContext(Dispatchers.IO) {
+    private suspend fun doCacheSong(song: Song, revision: Long): String? = withContext(Dispatchers.IO) {
         val remoteId = song.remoteId ?: return@withContext null
         val sourceId = song.sourceId ?: return@withContext null
-        if (RemoteSessionManager.activeSourceId != sourceId) return@withContext null
+        if (RemoteSessionManager.activeSourceId != sourceId ||
+            RemoteSessionManager.sessionRevision != revision) return@withContext null
         try {
             val dir = getCacheDir()
             val cachePath = File(dir, "${RemoteLocator.sha256Hex("$sourceId|$remoteId")}.cache")
 
             // 检查是否已缓存
             if (cachePath.exists()) {
+                if (RemoteSessionManager.sessionRevision != revision) return@withContext null
                 song.id?.let { DatabaseHelper.updateSongCache(it, cachePath.absolutePath) }
                 return@withContext cachePath.absolutePath
             }
@@ -275,7 +278,8 @@ object CacheService {
             // java.lang.OutOfMemoryError（真机实测 85MB 文件崩溃在 okio readByteArray）。
             val request = RemoteSessionManager.stream(song)
             if (!downloadToFile(request, cachePath)) return@withContext null
-            if (RemoteSessionManager.activeSourceId != sourceId) {
+            if (RemoteSessionManager.activeSourceId != sourceId ||
+                RemoteSessionManager.sessionRevision != revision) {
                 cachePath.delete()
                 return@withContext null
             }
@@ -343,6 +347,7 @@ object CacheService {
         val coverArtId = song.coverArtId ?: return@withContext null
         val sourceId = song.sourceId ?: return@withContext null
         if (RemoteSessionManager.activeSourceId != sourceId) return@withContext null
+        val revision = RemoteSessionManager.sessionRevision
 
         try {
             val dir = getCacheDir()
@@ -352,6 +357,7 @@ object CacheService {
 
             // 检查是否已缓存
             if (cachePath.exists()) {
+                if (RemoteSessionManager.sessionRevision != revision) return@withContext null
                 // 命中也刷新「最近使用」时间，供封面淘汰按 LRU 进行（优化建议 05）
                 cachePath.setLastModified(System.currentTimeMillis())
                 song.id?.let { DatabaseHelper.updateArtworkCache(it, cachePath.absolutePath) }
@@ -361,7 +367,8 @@ object CacheService {
             // 下载封面
             val bytes = RemoteSessionManager.artwork(song)
             if (bytes == null || bytes.isEmpty()) return@withContext null
-            if (RemoteSessionManager.activeSourceId != sourceId) return@withContext null
+            if (RemoteSessionManager.activeSourceId != sourceId ||
+                RemoteSessionManager.sessionRevision != revision) return@withContext null
 
             // 写入缓存文件
             cachePath.writeBytes(bytes)

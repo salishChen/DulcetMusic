@@ -142,7 +142,14 @@ fun SubsonicConfigScreen() {
                 OutlinedButton(enabled = !busy, onClick = {
                     scope.launch {
                         busy = true
-                        result = try { RemoteSessionManager.test(candidate()) }
+                        result = try {
+                            val next = candidate()
+                            if (RemoteSessionManager.activeSourceId != null) {
+                                PlayerController.stopRemoteForSourceSwitch()
+                                CacheService.cancelPending()
+                            }
+                            RemoteSessionManager.test(next)
+                        }
                         catch (e: Exception) { "连接失败：${e.message ?: "未知错误"}" }
                         busy = false
                     }

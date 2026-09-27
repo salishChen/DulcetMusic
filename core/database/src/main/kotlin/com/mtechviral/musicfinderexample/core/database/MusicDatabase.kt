@@ -264,6 +264,13 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
                 oldPassword.isEmpty() -> ""
                 else -> CredentialCipher.encrypt(oldPassword) ?: ""
             }
+            if (oldPassword.isNotEmpty() && !CredentialCipher.isEncrypted(oldPassword)) {
+                // The old table stays for compatibility, so remove its plaintext copy as well.
+                db.execSQL(
+                    "UPDATE subsonic_config SET password = ? WHERE isActive = 1",
+                    arrayOf(password),
+                )
+            }
             val name = cursor.getString(4) ?: "Subsonic"
             val sourceId = UUID.randomUUID().toString()
             db.execSQL(
