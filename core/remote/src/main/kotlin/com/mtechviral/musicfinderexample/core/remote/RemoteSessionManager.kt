@@ -143,7 +143,9 @@ object RemoteSessionManager {
             val verified = if (next is EmbyProvider) candidate.copy(serverIdentity = next.serverIdentity)
                 else candidate
             DatabaseHelper.activateRemoteSource(verified)
-            if (_source.value?.id != candidate.id) SubsonicService.easyTierBaseUrl = null
+            // 组网与数据源解耦：转发地址由引擎持有，激活后重新注入
+            //（"先组网、后配数据源"时旧逻辑会把转发地址清空且不再恢复）
+            SubsonicService.refreshEasyTierForward()
             if (next is SubsonicProvider) next.activate()
             else SubsonicService.deactivate()
             provider = next

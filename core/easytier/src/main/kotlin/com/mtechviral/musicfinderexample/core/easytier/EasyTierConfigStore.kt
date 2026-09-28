@@ -29,13 +29,6 @@ object EasyTierConfigStore {
     private const val KEY_SOCKS5_ENABLED = "socks5_enabled"
     private const val KEY_SOCKS5_PORT = "socks5_port"
     private const val KEY_POWERSAVER = "powersaver"
-    private const val KEY_BOUND_SOURCE_ID = "bound_source_id"
-
-    fun boundSourceId(context: Context): String? = prefs(context).getString(KEY_BOUND_SOURCE_ID, null)
-
-    fun bindToSource(context: Context, sourceId: String) {
-        prefs(context).edit().putString(KEY_BOUND_SOURCE_ID, sourceId).apply()
-    }
 
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

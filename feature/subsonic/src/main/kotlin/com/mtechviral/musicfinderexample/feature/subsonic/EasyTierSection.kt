@@ -81,6 +81,7 @@ fun EasyTierSection(
     var obscureSecret by remember { mutableStateOf(true) }
     var connecting by remember { mutableStateOf(false) }
     var showLog by remember { mutableStateOf(false) }
+    var serverPortText by remember { mutableStateOf(config.serverPort.toString()) }
     val engineState by EasyTierEngine.state.collectAsStateWithLifecycle()
 
     Column(
@@ -210,6 +211,18 @@ fun EasyTierSection(
             leadingIcon = Icons.Filled.Public,
             isError = false,
         )
+        // 先组网后配数据源：没有「内网地址」可推导端口时，手动填写转发端口
+        if (intranetUrl.isBlank()) {
+            Spacer(Modifier.height(12.dp))
+            ConfigTextField(
+                value = serverPortText,
+                onValueChange = { input -> serverPortText = input.filter { it.isDigit() }.take(5) },
+                label = "转发目标端口（虚拟网内音乐服务端口）",
+                hint = "如 4533",
+                leadingIcon = Icons.Filled.Public,
+                isError = false,
+            )
+        }
         Spacer(Modifier.height(12.dp))
         Row {
             Box(modifier = Modifier.weight(1f)) {
@@ -244,8 +257,8 @@ fun EasyTierSection(
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "转发端口自动取「内网地址」里的端口，本地回环端口自动使用 " +
-                config.localPort + "，无需单独设置。",
+            text = "转发端口自动取「内网地址」里的端口（未配置数据源时用上方「转发目标端口」），" +
+                "本地回环端口自动使用 " + config.localPort + "，无需单独设置。",
             fontSize = 11.sp,
             color = MaterialTheme.ytTextSecondary.copy(alpha = 0.6f),
             lineHeight = 16.sp,
@@ -299,14 +312,25 @@ fun EasyTierSection(
                         onMessage("网络名 / 网络密码 必填")
                         return@Button
                     }
-                    // 转发目标自动解析（优化：端口始终取内网地址端口，不再单独设置）：
+                    // 先组网后配数据源：没有「内网地址」可推导端口时，取手动「转发目标端口」
+                    val manualPort = serverPortText.toIntOrNull()?.takeIf { it in 1..65535 }
+                    val effective = if (intranetUrl.isBlank() && manualPort != null) {
+                        config.copy(serverPort = manualPort)
+                    } else {
+                        config
+                    }
+                    // 转发目标自动解析（优化：端口优先取内网地址端口）：
                     // 主机优先手动「转发目标 IP」，留空取内网地址主机
-                    val target = config.resolveForwardTarget(intranetUrl)
+                    val target = effective.resolveForwardTarget(intranetUrl)
                     if (target == null) {
-                        onMessage("无法推导转发目标：请先填写「内网地址」")
+                        onMessage(
+                            "无法推导转发目标：请填写「转发目标 IP" +
+                                (if (intranetUrl.isBlank()) "」和「转发目标端口" else "」") +
+                                "，或在数据源中填写「内网地址」",
+                        )
                         return@Button
                     }
-                    val snapshot = config.copy(
+                    val snapshot = effective.copy(
                         enabled = true,
                         serverVirtualIp = target.first,
                         serverPort = target.second,
@@ -314,13 +338,7 @@ fun EasyTierSection(
                     config = snapshot
                     connecting = true
                     scope.launch {
-                        val activeSourceId = com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager.activeSourceId
-                        if (activeSourceId == null) {
-                            connecting = false
-                            onMessage("请先保存远程音乐源")
-                            return@launch
-                        }
-                        EasyTierConfigStore.bindToSource(context, activeSourceId)
+                        // 组网与数据源解耦：无需先保存数据源，也不绑定特定数据源
                         EasyTierConfigStore.save(context, snapshot)
                         val ok = EasyTierEngine.start(context, snapshot)
                         connecting = false

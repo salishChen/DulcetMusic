@@ -9,7 +9,6 @@ import com.mtechviral.musicfinderexample.core.common.ExclusionList
 import com.mtechviral.musicfinderexample.core.common.ThemePreference
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
-import com.mtechviral.musicfinderexample.core.easytier.EasyTierConfigStore
 import com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine
 import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
 import com.mtechviral.musicfinderexample.core.network.SubsonicService
@@ -71,12 +70,13 @@ class YuleMusicApplication : Application() {
             }
 
             // EasyTier 组网（省电策略，耗电优化，doc/耗电分析报告.md §4）：
-            // 不在启动时拉起 —— 仅"绑定组网的数据源"按需唤醒，实际隧道流量
-            // 经租约保活，空闲 15 分钟自动休眠；直连数据源不启动/不保活引擎
+            // 不在启动时拉起 —— 组网与数据源**解耦**（可先配组网再配数据源），
+            // Subsonic/Navidrome 数据源按需唤醒，实际隧道流量经租约保活，
+            // 空闲 15 分钟自动休眠；直连数据源不启动/不保活引擎
             EasyTierEngine.init(this@YuleMusicApplication)
-            SubsonicService.tunnelEligible = { easyTierBoundToActiveSource() }
+            SubsonicService.tunnelEligible = { easyTierEligibleForActiveSource() }
             EasyTierEngine.onActiveBaseUrlChanged = { base ->
-                SubsonicService.easyTierBaseUrl = base.takeIf { easyTierBoundToActiveSource() }
+                SubsonicService.easyTierBaseUrl = base.takeIf { easyTierEligibleForActiveSource() }
                 SubsonicService.resetConnection()
             }
 
@@ -93,17 +93,17 @@ class YuleMusicApplication : Application() {
     }
 
     /**
-     * 当前远程源是否绑定 EasyTier 组网（Subsonic/Navidrome 才经隧道转发）。
+     * 组网隧道是否可用于当前数据源（**组网与数据源解耦**：先组网、后配数据源同样生效）。
      *
-     * 组网唤醒与保活都以此为前提（报告 §4.2）：
-     * 非绑定源的直连请求不会启动引擎，也不会刷新其保活时间。
+     * 只要是 Subsonic/Navidrome 源即允许走隧道（探测顺序 EasyTier → 内网 → 公网，
+     * 不可达自动回退），不再要求"数据源先于组网存在"的绑定关系。
+     * 引擎唤醒与保活以此为前提（报告 §4.2）：其余协议的数据源不启动/不保活引擎。
      */
-    private fun easyTierBoundToActiveSource(): Boolean {
-        val active = RemoteSessionManager.source.value ?: return false
-        val bound = EasyTierConfigStore.boundSourceId(this)
-        return active.id == bound &&
-            active.protocol in setOf(RemoteProtocol.SUBSONIC, RemoteProtocol.NAVIDROME)
-    }
+    private fun easyTierEligibleForActiveSource(): Boolean =
+        RemoteSessionManager.source.value?.protocol in setOf(
+            RemoteProtocol.SUBSONIC,
+            RemoteProtocol.NAVIDROME,
+        )
 
     /**
      * 检查并缓存未完成的封面（coverArtId 有值但 cachedArtworkPath 为空的歌曲）。

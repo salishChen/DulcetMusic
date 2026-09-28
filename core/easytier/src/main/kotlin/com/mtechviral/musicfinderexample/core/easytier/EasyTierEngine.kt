@@ -116,6 +116,12 @@ object EasyTierEngine {
     }
 
     /**
+     * 引擎当前的本地转发地址（未运行/未配置转发时为 null）。
+     * 供网络层在**数据源激活后重新注入**（组网可先于数据源配置）。
+     */
+    fun currentForwardBaseUrl(): String? = forwardPrefix
+
+    /**
      * 申请隧道传输租约（流请求打开时调用）。
      *
      * 返回 null 表示当前没有活跃转发（未走隧道），调用方无须释放；

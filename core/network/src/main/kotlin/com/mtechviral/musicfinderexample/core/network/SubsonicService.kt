@@ -119,6 +119,18 @@ object SubsonicService {
         activeBaseUrl = null
     }
 
+    /**
+     * 从引擎当前状态重新同步组网转发地址（数据源激活/切换后调用）。
+     *
+     * 组网与数据源**解耦**（可先配组网再配数据源）：转发地址由引擎持有，
+     * 任何数据源激活后都应重新注入 —— 否则"先组网、后配数据源"时
+     * 转发地址会被清空且不再恢复，隧道永远不生效。
+     */
+    fun refreshEasyTierForward() {
+        easyTierBaseUrl =
+            com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine.currentForwardBaseUrl()
+    }
+
     /** 取当前配置，未配置时抛出 [SubsonicException] */
     private fun requireConfig(): SubsonicConfig =
         config ?: throw SubsonicException("Subsonic 未配置")
