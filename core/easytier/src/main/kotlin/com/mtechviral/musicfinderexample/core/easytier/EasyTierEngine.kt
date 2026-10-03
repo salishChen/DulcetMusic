@@ -127,6 +127,19 @@ object EasyTierEngine {
      */
     fun currentForwardBaseUrl(): String? = forwardPrefix
 
+    /** Wake and use a forward only when it targets the requested server, never another saved source. */
+    suspend fun forwardBaseUrlFor(intranetUrl: String): String? {
+        val target = EasyTierConfig.parseHostPort(intranetUrl) ?: return null
+        if (target != EasyTierConfig.parseHostPort(intranetUrlProvider?.invoke().orEmpty())) return null
+        if (!awaitRunning()) return null
+        return synchronized(this) {
+            val running = startedConfig
+            forwardPrefix.takeIf {
+                running != null && running.serverVirtualIp == target.first && running.serverPort == target.second
+            }
+        }
+    }
+
     /** Refresh the forwarding process only if EasyTier was enabled before this change. */
     suspend fun <T> withRemoteConfigurationUpdate(changed: Boolean, update: suspend () -> T): T {
         val ctx = appContext

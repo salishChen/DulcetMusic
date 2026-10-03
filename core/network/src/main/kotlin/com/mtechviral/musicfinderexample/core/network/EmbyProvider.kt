@@ -1,6 +1,7 @@
 package com.mtechviral.musicfinderexample.core.network
 
 import com.mtechviral.musicfinderexample.core.common.RemoteLocator
+import com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine
 import com.mtechviral.musicfinderexample.core.model.RemoteSource
 import com.mtechviral.musicfinderexample.core.model.Song
 import kotlinx.coroutines.CancellationException
@@ -16,10 +17,14 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /** Music-only Emby API client. Tokens are scoped to this provider instance. */
-class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
+class EmbyProvider(
+    override val source: RemoteSource,
+    private val tunnelBaseUrl: suspend (String) -> String? = { EasyTierEngine.forwardBaseUrlFor(it) },
+) : RemoteMusicProvider {
     private val client = OkHttpClient.Builder().followRedirects(false)
         .connectTimeout(10, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     private var baseUrl: HttpUrl? = null
+    private var usingTunnel = false
     private var token: String? = null
     private var userId: String? = null
     var serverIdentity: String? = null
@@ -28,13 +33,16 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
 
     override suspend fun testConnection(): String = withContext(Dispatchers.IO) {
         var last: Exception? = null
-        for (base in listOf(source.intranetUrl, source.publicUrl).filter { it.isNotBlank() }) {
-            val url = base.trim().toHttpUrlOrNull() ?: continue
+        val intranet = source.intranetUrl.trim().toHttpUrlOrNull()
+        val forwarded = intranet?.let { forwardedUrl(it) }
+        val candidates = listOfNotNull(forwarded, intranet, source.publicUrl.trim().toHttpUrlOrNull()).distinct()
+        for (url in candidates) {
             try {
                 token = null
                 userId = null
                 serverIdentity = null
                 baseUrl = null
+                usingTunnel = false
                 val body = JSONObject(call(url.newBuilder().addPathSegments("Users/AuthenticateByName").build(),
                     JSONObject().put("Username", source.username).put("Pw", source.password)
                         .toString().toRequestBody("application/json".toMediaType())))
@@ -56,6 +64,7 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
                 }
                 serverIdentity = identity
                 baseUrl = url
+                usingTunnel = url == forwarded
                 return@withContext "Emby 登录成功"
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -66,7 +75,7 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
     }
 
     override suspend fun getAllSongs(): List<Song> = withContext(Dispatchers.IO) {
-        val base = baseUrl ?: run { testConnection(); requireNotNull(baseUrl) }
+        val base = connectedBaseUrl()
         val user = requireNotNull(userId)
         val songs = ArrayList<Song>()
         var start = 0
@@ -74,6 +83,7 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
             val builder = base.newBuilder().addPathSegment("Users").addPathSegment(user).addPathSegment("Items")
                 .addQueryParameter("Recursive", "true")
                 .addQueryParameter("IncludeItemTypes", "Audio")
+                .addQueryParameter("Fields", "MediaSources")
                 .addQueryParameter("StartIndex", start.toString())
                 .addQueryParameter("Limit", "200")
             if (source.libraryId.isNotBlank()) builder.addQueryParameter("ParentId", source.libraryId)
@@ -122,7 +132,7 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
     }
 
     override suspend fun libraries(): List<RemoteLibrary> = withContext(Dispatchers.IO) {
-        val base = baseUrl ?: run { testConnection(); requireNotNull(baseUrl) }
+        val base = connectedBaseUrl()
         val user = requireNotNull(userId)
         val url = base.newBuilder().addPathSegment("Users").addPathSegment(user)
             .addPathSegment("Views")
@@ -138,30 +148,61 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
         }
     }
 
-    override suspend fun stream(song: Song): RemoteRequest {
-        val base = baseUrl ?: run { testConnection(); requireNotNull(baseUrl) }
+    override suspend fun stream(song: Song): RemoteRequest = withContext(Dispatchers.IO) {
+        val base = connectedBaseUrl()
         val (itemId, mediaId) = parseResourceKey(requireNotNull(song.remoteId))
+        // Earlier imports used the item ID when the list omitted MediaSources.
+        val resolvedMediaId = if (mediaId == itemId) {
+            val itemUrl = base.newBuilder().addPathSegment("Users").addPathSegment(requireNotNull(userId))
+                .addPathSegment("Items").addPathSegment(itemId)
+                .addQueryParameter("Fields", "MediaSources").build()
+            val item = JSONObject(call(itemUrl))
+            item.optJSONArray("MediaSources")?.optJSONObject(0)?.optString("Id")
+                ?.takeIf { it.isNotBlank() }
+                ?: throw IllegalStateException("Emby 未返回音频媒体来源，请重新扫描音乐")
+        } else mediaId
         val url = base.newBuilder().addPathSegment("Audio").addPathSegment(itemId)
             .addPathSegment("stream")
-            .addQueryParameter("MediaSourceId", mediaId)
+            .addQueryParameter("MediaSourceId", resolvedMediaId)
             .addQueryParameter("static", "true").build()
-        return RemoteRequest(url.toString(), authHeaders())
+        RemoteRequest(url.toString(), authHeaders())
     }
 
     override suspend fun artwork(song: Song): ByteArray? = withContext(Dispatchers.IO) {
         val id = song.coverArtId ?: return@withContext null
-        val base = baseUrl ?: run { testConnection(); requireNotNull(baseUrl) }
+        val base = connectedBaseUrl()
         val url = base.newBuilder().addPathSegment("Items").addPathSegment(id)
             .addPathSegment("Images").addPathSegment("Primary").build()
         val request = Request.Builder().url(url).apply { authHeaders().forEach { (k, v) -> header(k, v) } }.build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return@withContext null
-            val body = response.body ?: return@withContext null
-            body.readArtworkBytes()
+        val lease = if (EasyTierEngine.isTunnelUrl(url.toString())) EasyTierEngine.acquireTunnelLease() else null
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body ?: return@withContext null
+                body.readArtworkBytes()
+            }
+        } finally {
+            lease?.close()
         }
     }
 
     override suspend fun lyrics(song: Song): String? = null
+
+    private suspend fun forwardedUrl(intranet: HttpUrl): HttpUrl? {
+        val local = tunnelBaseUrl(source.intranetUrl)?.toHttpUrlOrNull() ?: return null
+        // Port forwarding changes the destination only; preserve proxy paths and HTTPS.
+        return intranet.newBuilder().host(local.host).port(local.port).build()
+    }
+
+    private suspend fun connectedBaseUrl(): HttpUrl {
+        val current = baseUrl
+        if (current == null || (usingTunnel && forwardedUrl(requireNotNull(source.intranetUrl.trim().toHttpUrlOrNull())) != current)) {
+            testConnection()
+        }
+        return requireNotNull(baseUrl).also {
+            if (EasyTierEngine.isTunnelUrl(it.toString())) EasyTierEngine.touch()
+        }
+    }
 
     private fun resourceKey(itemId: String, mediaSourceId: String): String =
         "${itemId.length}:$itemId$mediaSourceId"
@@ -189,10 +230,15 @@ class EmbyProvider(override val source: RemoteSource) : RemoteMusicProvider {
             token?.let { header("X-Emby-Token", it) }
             if (post != null) post(post)
         }.build()
-        client.newCall(request).execute().use { response ->
-            if (response.code == 401) throw IllegalStateException("Emby 认证已失效")
-            if (!response.isSuccessful) throw IllegalStateException("Emby 返回 HTTP ${response.code}")
-            return response.body?.string() ?: throw IllegalStateException("Emby 响应为空")
+        val lease = if (EasyTierEngine.isTunnelUrl(url.toString())) EasyTierEngine.acquireTunnelLease() else null
+        try {
+            client.newCall(request).execute().use { response ->
+                if (response.code == 401) throw IllegalStateException("Emby 认证已失效")
+                if (!response.isSuccessful) throw IllegalStateException("Emby 返回 HTTP ${response.code}")
+                return response.body?.string() ?: throw IllegalStateException("Emby 响应为空")
+            }
+        } finally {
+            lease?.close()
         }
     }
 }

@@ -33,8 +33,8 @@ android {
         applicationId = "com.mtechviral.musicfinderexample"
         minSdk = 24
         targetSdk = 36
-        versionCode = 8
-        versionName = "2.1.5"
+        versionCode = 9
+        versionName = "2.1.6"
     }
 
     signingConfigs {
