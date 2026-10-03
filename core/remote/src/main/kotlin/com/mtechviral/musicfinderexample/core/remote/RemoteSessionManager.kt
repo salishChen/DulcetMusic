@@ -144,17 +144,21 @@ object RemoteSessionManager {
             val verified = if (next is EmbyProvider && next.serverIdentity != null)
                 candidate.copy(serverIdentity = next.serverIdentity)
                 else candidate
-            DatabaseHelper.activateRemoteSource(verified)
-            // 同一数据源的内网地址可能已修改；下次访问时按新目标重建端口转发。
-            if (_source.value?.intranetUrl != verified.intranetUrl) EasyTierEngine.stop()
-            // 激活后重新注入当前引擎的转发地址。
+            EasyTierEngine.withRemoteConfigurationUpdate(changed = _source.value != verified) {
+                // Keep persisted configuration and in-memory target in sync if the screen closes.
+                withContext(NonCancellable) {
+                    DatabaseHelper.activateRemoteSource(verified)
+                    if (next is SubsonicProvider) next.activate()
+                    else SubsonicService.deactivate()
+                    provider = next
+                    // Publish the new target before restarting EasyTier: its URL provider reads this flow.
+                    _source.value = verified
+                    generation++
+                    loaded = true
+                }
+            }
+            // Include the restarted forwarding address in the newly activated provider.
             SubsonicService.refreshEasyTierForward()
-            if (next is SubsonicProvider) next.activate()
-            else SubsonicService.deactivate()
-            provider = next
-            _source.value = verified
-            generation++
-            loaded = true
             MusicLibrary.reload()
         }
     }

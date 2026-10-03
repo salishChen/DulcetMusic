@@ -80,7 +80,6 @@ fun SubsonicConfigScreen() {
     var step by remember { mutableStateOf(ConfigStep.SELECT) }
     var protocol by remember { mutableStateOf(RemoteProtocol.SUBSONIC) }
     var sourceId by remember { mutableStateOf<String?>(null) }
-    var name by remember { mutableStateOf("") }
     var intranet by remember { mutableStateOf("") }
     var publicUrl by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }
@@ -99,7 +98,6 @@ fun SubsonicConfigScreen() {
         protocol = option
         savedSource = stored
         sourceId = stored?.id
-        name = draft?.displayName.orEmpty()
         intranet = draft?.intranetUrl.orEmpty()
         publicUrl = draft?.publicUrl.orEmpty()
         username = draft?.username.orEmpty()
@@ -112,7 +110,7 @@ fun SubsonicConfigScreen() {
 
     fun rememberDraft() {
         drafts[protocol] = RemoteSource(
-            id = sourceId.orEmpty(), protocol = protocol, displayName = name,
+            id = sourceId.orEmpty(), protocol = protocol, displayName = protocol.label,
             intranetUrl = intranet, publicUrl = publicUrl, username = username,
             password = password, rootPath = rootPath, libraryId = libraryId,
         )
@@ -141,7 +139,7 @@ fun SubsonicConfigScreen() {
         return RemoteSource(
             id = if (sameSource) current!!.id else UUID.randomUUID().toString(),
             protocol = protocol,
-            displayName = name.trim().ifEmpty { protocol.label },
+            displayName = protocol.label,
             intranetUrl = intranet.trim(),
             publicUrl = publicUrl.trim(),
             username = username.trim(),
@@ -161,7 +159,6 @@ fun SubsonicConfigScreen() {
                 if (previousId != null) {
                     PlayerController.stopRemoteForSourceSwitch()
                     CacheService.cancelPending()
-                    if (previousId != next.id) EasyTierEngine.stop()
                 }
                 RemoteSessionManager.activate(next, verifyConnection = false)
                 if (previousId != null && previousId != next.id) {
@@ -217,7 +214,6 @@ fun SubsonicConfigScreen() {
                 Spacer(Modifier.weight(1f))
                 TextButton(enabled = !busy, onClick = { rememberDraft(); step = ConfigStep.SELECT }) { Text("更换类型") }
             }
-            ConfigTextField(name, { name = it }, "服务器名称", "例如：家里的音乐服务器", Icons.Filled.Dns)
             ConfigTextField(intranet, { intranet = it }, "内网地址", "http://192.168.1.2:4533", Icons.Filled.Home)
             ConfigTextField(publicUrl, { publicUrl = it }, "公网地址", "https://music.example.com", Icons.Filled.Public)
             Text("内网和公网地址填一个即可；都填写时优先连接内网。")

@@ -83,6 +83,9 @@ object EasyTierEngine {
     private var process: Process? = null
     private var startedConfig: EasyTierConfig? = null
 
+    /** Suppress automatic starts until the new remote target has been committed. */
+    private var configurationUpdating = false
+
     @Volatile
     private var appContext: Context? = null
 
@@ -123,6 +126,35 @@ object EasyTierEngine {
      * 供网络层在**数据源激活后重新注入**（组网可先于数据源配置）。
      */
     fun currentForwardBaseUrl(): String? = forwardPrefix
+
+    /** Refresh the forwarding process only if EasyTier was enabled before this change. */
+    suspend fun <T> withRemoteConfigurationUpdate(changed: Boolean, update: suspend () -> T): T {
+        val ctx = appContext
+        val enabled = changed && ctx != null && EasyTierConfigStore.load(ctx).enabled
+        return updateTunnelConfiguration(
+            enabled = enabled,
+            changed = changed,
+            stop = {
+                withContext(Dispatchers.IO) {
+                    synchronized(this@EasyTierEngine) {
+                        configurationUpdating = true
+                        stop()
+                    }
+                }
+            },
+            start = {
+                val context = requireNotNull(ctx)
+                val latestConfig = try {
+                    EasyTierConfigStore.load(context)
+                } finally {
+                    synchronized(this@EasyTierEngine) { configurationUpdating = false }
+                }
+                // A user may have disabled the switch while the save was in progress.
+                if (latestConfig.enabled) start(context, latestConfig)
+            },
+            update = update,
+        )
+    }
 
     /**
      * 申请隧道传输租约（流请求打开时调用）。
@@ -178,6 +210,7 @@ object EasyTierEngine {
         val ctx = appContext ?: return
         touch()
         synchronized(this) {
+            if (configurationUpdating) return
             if (process?.isAlive == true) return
             if (_state.value is State.Starting) return
         }
@@ -223,6 +256,7 @@ object EasyTierEngine {
 
     /** 实际启动逻辑（持有 [EasyTierEngine] 锁调用；全程阻塞 IO，运行在 IO 调度器上） */
     private fun startLocked(context: Context, config: EasyTierConfig): Boolean {
+        if (configurationUpdating) return false
         if (!config.isComplete) {
             _state.value = State.Error("配置不完整：网络名 / 网络密码 必填")
             return false
