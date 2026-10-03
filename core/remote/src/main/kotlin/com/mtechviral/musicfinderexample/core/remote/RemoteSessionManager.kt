@@ -2,6 +2,7 @@ package com.mtechviral.musicfinderexample.core.remote
 
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
+import com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine
 import com.mtechviral.musicfinderexample.core.media.ExclusionFilter
 import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
 import com.mtechviral.musicfinderexample.core.model.RemoteSource
@@ -136,15 +137,17 @@ object RemoteSessionManager {
     }
 
     /** Caller must stop old remote playback, scanning and cache work before invoking this. */
-    suspend fun activate(candidate: RemoteSource) = transition {
+    suspend fun activate(candidate: RemoteSource, verifyConnection: Boolean = true) = transition {
         mutex.withLock {
             val next = newProvider(candidate)
-            next.testConnection()
-            val verified = if (next is EmbyProvider) candidate.copy(serverIdentity = next.serverIdentity)
+            if (verifyConnection) next.testConnection()
+            val verified = if (next is EmbyProvider && next.serverIdentity != null)
+                candidate.copy(serverIdentity = next.serverIdentity)
                 else candidate
             DatabaseHelper.activateRemoteSource(verified)
-            // 组网与数据源解耦：转发地址由引擎持有，激活后重新注入
-            //（"先组网、后配数据源"时旧逻辑会把转发地址清空且不再恢复）
+            // 同一数据源的内网地址可能已修改；下次访问时按新目标重建端口转发。
+            if (_source.value?.intranetUrl != verified.intranetUrl) EasyTierEngine.stop()
+            // 激活后重新注入当前引擎的转发地址。
             SubsonicService.refreshEasyTierForward()
             if (next is SubsonicProvider) next.activate()
             else SubsonicService.deactivate()
@@ -166,6 +169,12 @@ object RemoteSessionManager {
             loaded = true
             MusicLibrary.reload()
         }
+    }
+
+    /** Removing an inactive saved configuration must not interrupt the active source. */
+    suspend fun removeSavedConfiguration(protocol: RemoteProtocol) = mutex.withLock {
+        check(_source.value?.protocol != protocol) { "当前音乐源需先停用" }
+        DatabaseHelper.removeRemoteConfiguration(protocol)
     }
 
     private fun requireCurrent(song: Song): RemoteMusicProvider {

@@ -6,6 +6,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
@@ -53,7 +54,10 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
-        val exoPlayer = ExoPlayer.Builder(this)
+        val exoPlayer = ExoPlayer.Builder(
+            this,
+            DefaultRenderersFactory(this).forceDisableMediaCodecAsynchronousQueueing(),
+        )
             .setMediaSourceFactory(DefaultMediaSourceFactory(RemotePlaybackDataSource.factory(this)))
             .setAudioAttributes(
                 AudioAttributes.Builder()

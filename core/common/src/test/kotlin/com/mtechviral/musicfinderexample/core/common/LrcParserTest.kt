@@ -61,6 +61,21 @@ class LrcParserTest {
     }
 
     @Test
+    fun `缓存纯文本需补时间轴但零时刻歌词已有时间轴`() {
+        assertTrue(!LrcParser.hasTimestamps(null))
+        assertTrue(!LrcParser.hasTimestamps("First\nSecond"))
+        assertTrue(LrcParser.hasTimestamps("[00:00.000]First"))
+        assertTrue(LrcParser.hasTimestamps("[00:05.700]First\n[00:09.840]Second"))
+    }
+
+    @Test
+    fun `支持超过一百分钟的同步歌词`() {
+        val lyrics = "[100:01.005]Long track"
+        assertTrue(LrcParser.hasTimestamps(lyrics))
+        assertEquals(6_001_005L, LrcParser.parse(lyrics).single().timeMs)
+    }
+
+    @Test
     fun `结果按时间升序`() {
         val lines = LrcParser.parse("[00:30.00]后\n[00:10.00]前")
         assertEquals("前", lines[0].text)

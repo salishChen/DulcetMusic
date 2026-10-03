@@ -26,14 +26,14 @@ data class EasyTierConfig(
     /** 本节点虚拟 IPv4（可选，对应 `-i/--ipv4`）；留空由网络分配（--dhcp）。
      *  已知可用配置（官方 App 对照）建议填固定地址，如 10.0.0.7（与服务器同网段） */
     val virtualIpv4: String = "",
-    /** 本机设备名（可选，对应 `--hostname`）；留空由 EasyTier 取系统主机名 */
-    val hostname: String = "",
+    /** 旧配置字段；启动时始终使用 [DEVICE_NAME] */
+    val hostname: String = DEVICE_NAME,
     /**
      * 端口转发目标（虚拟网内 Subsonic 的 IP，如 10.0.0.222），可选。
      *
      * 无 TUN 模式下手机**无法主动访问**虚拟网内其他 IP（没有 TUN 网卡路由），
      * 必须用端口转发把「虚拟网内 Subsonic」映射到本地回环后访问。
-     * 通常**留空自动取内网地址的主机**；仅当内网地址与实际转发目标不同才手动填。
+     * 仅保存从远程配置「内网地址」解析出的主机，不接受旧配置中的手动目标。
      */
     val serverVirtualIp: String = "",
     /** 端口转发目标端口（虚拟网内 Subsonic 端口），留空时取内网地址的端口 */
@@ -91,9 +91,7 @@ data class EasyTierConfig(
         } else {
             args += "--dhcp"
         }
-        if (hostname.isNotBlank()) {
-            args += listOf("--hostname", hostname)
-        }
+        args += listOf("--hostname", DEVICE_NAME)
         peers.split(',', '，', '\n', ' ')
             .map { it.trim() }
             .filter { it.isNotEmpty() }
@@ -119,18 +117,12 @@ data class EasyTierConfig(
 
     /**
      * 解析实际转发目标（主机、端口）：
-     * - **端口始终取内网地址的端口**（不再单独设置，避免 IP/端口不一致）；
-     * - 主机优先用「转发目标 IP」手动值，留空则取内网地址主机；
-     * - 内网地址不可解析时，回退用手动主机 + 保存的端口。
+     * 主机和端口都来自远程配置的「内网地址」，避免旧的手动目标覆盖当前服务器。
      */
-    fun resolveForwardTarget(intranetUrl: String): Pair<String, Int>? {
-        val derived = parseHostPort(intranetUrl)
-            ?: return if (serverVirtualIp.isBlank()) null else serverVirtualIp to serverPort
-        val host = serverVirtualIp.ifBlank { derived.first }
-        return host to derived.second
-    }
+    fun resolveForwardTarget(intranetUrl: String): Pair<String, Int>? = parseHostPort(intranetUrl)
 
     companion object {
+        const val DEVICE_NAME = "DulcetMusic"
         /**
          * 从内网/公网 URL 推导端口转发目标（主机、端口）。
          * 解析失败（非 http(s) URL / 无主机）返回 null。

@@ -22,6 +22,7 @@ class StrictHttpDataSourceTest {
     private lateinit var thread: Thread
     private val requests = AtomicInteger()
     @Volatile private var rangeHeader: String? = null
+    @Volatile private var authorizationHeader: String? = null
 
     @Before
     fun setUp() {
@@ -37,15 +38,27 @@ class StrictHttpDataSourceTest {
                         if (header.startsWith("Range:", ignoreCase = true)) {
                             rangeHeader = header.substringAfter(':').trim()
                         }
+                        if (header.startsWith("Authorization:", ignoreCase = true)) {
+                            authorizationHeader = header.substringAfter(':').trim()
+                        }
                     }
                     requests.incrementAndGet()
-                    val response = if (path == "/range" || path == "/wrong-range") {
+                    val response = if (path == "/stream/?id=track&token=secret") {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nabcdef"
+                    } else if (path == "/range" || path == "/wrong-range") {
                         "HTTP/1.1 206 Partial Content\r\n" +
                             "Content-Range: bytes ${if (path == "/range") "2-4" else "0-2"}/6\r\n" +
                             "Content-Length: 3\r\nConnection: close\r\n\r\ncde"
                     } else {
-                        "HTTP/1.1 302 Found\r\n" +
-                            "Location: http://127.0.0.1:${server.localPort}/elsewhere\r\n" +
+                        val location = when (path) {
+                            "/stream?id=track&token=secret" -> "/stream/?id=track&token=secret"
+                            "/seek" -> "/range"
+                            "/loop" -> "/loop"
+                            "/scheme-change" -> "https://127.0.0.1:${server.localPort}/stream"
+                            else -> "http://127.0.0.1:${server.localPort + 1}/elsewhere"
+                        }
+                        "HTTP/1.1 301 Moved Permanently\r\n" +
+                            "Location: $location\r\n" +
                             "Content-Length: 0\r\nConnection: close\r\n\r\n"
                     }
                     socket.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
@@ -63,7 +76,7 @@ class StrictHttpDataSourceTest {
     }
 
     @Test
-    fun playbackNeverFollowsRedirectWithCredentials() {
+    fun playbackRejectsCrossOriginRedirectWithCredentials() {
         val source = StrictHttpDataSource.Factory().createDataSource()
         val spec = DataSpec.Builder()
             .setUri("http://127.0.0.1:${server.localPort}/stream")
@@ -71,6 +84,70 @@ class StrictHttpDataSourceTest {
             .build()
         try {
             assertThrows(IOException::class.java) { source.open(spec) }
+            assertEquals(1, requests.get())
+        } finally {
+            source.close()
+        }
+    }
+
+    @Test
+    fun playbackFollowsSameOriginTrailingSlashRedirect() {
+        val source = StrictHttpDataSource.Factory().createDataSource()
+        val spec = DataSpec.Builder()
+            .setUri("http://127.0.0.1:${server.localPort}/stream?id=track&token=secret")
+            .setHttpRequestHeaders(mapOf("Authorization" to "Basic secret"))
+            .build()
+        try {
+            assertEquals(6L, source.open(spec))
+            val bytes = ByteArray(6)
+            assertEquals(6, source.read(bytes, 0, bytes.size))
+            assertEquals("abcdef", String(bytes, Charsets.US_ASCII))
+            assertEquals("/stream/", source.uri!!.path)
+            assertEquals("id=track&token=secret", source.uri!!.query)
+            assertEquals("Basic secret", authorizationHeader)
+            assertEquals(2, requests.get())
+        } finally {
+            source.close()
+        }
+    }
+
+    @Test
+    fun seekPreservesRangeAcrossSameOriginRedirect() {
+        val source = StrictHttpDataSource.Factory().createDataSource()
+        try {
+            assertEquals(3L, source.open(DataSpec.Builder()
+                .setUri("http://127.0.0.1:${server.localPort}/seek")
+                .setPosition(2).setLength(3).build()))
+            assertEquals("bytes=2-4", rangeHeader)
+            val bytes = ByteArray(3)
+            assertEquals(3, source.read(bytes, 0, bytes.size))
+            assertEquals("cde", String(bytes, Charsets.US_ASCII))
+            assertEquals(2, requests.get())
+        } finally {
+            source.close()
+        }
+    }
+
+    @Test
+    fun playbackRejectsRedirectLoops() {
+        val source = StrictHttpDataSource.Factory().createDataSource()
+        try {
+            assertThrows(IOException::class.java) {
+                source.open(DataSpec.Builder().setUri("http://127.0.0.1:${server.localPort}/loop").build())
+            }
+            assertEquals(6, requests.get())
+        } finally {
+            source.close()
+        }
+    }
+
+    @Test
+    fun playbackRejectsSchemeChanges() {
+        val source = StrictHttpDataSource.Factory().createDataSource()
+        try {
+            assertThrows(IOException::class.java) {
+                source.open(DataSpec.Builder().setUri("http://127.0.0.1:${server.localPort}/scheme-change").build())
+            }
             assertEquals(1, requests.get())
         } finally {
             source.close()

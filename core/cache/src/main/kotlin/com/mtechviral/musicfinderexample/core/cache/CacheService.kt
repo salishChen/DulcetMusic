@@ -33,6 +33,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.OkHttpClient
+import com.mtechviral.musicfinderexample.core.network.SameOriginRedirectInterceptor
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
@@ -118,6 +119,7 @@ object CacheService {
 
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .followRedirects(false)
+        .addInterceptor(SameOriginRedirectInterceptor)
         .followSslRedirects(false)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)

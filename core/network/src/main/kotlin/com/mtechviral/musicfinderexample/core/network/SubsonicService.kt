@@ -740,8 +740,22 @@ object SubsonicService {
         null
     }
 
-    /** 获取歌词文本（LRC），失败返回 null */
-    suspend fun getLyrics(artist: String, title: String): String? = try {
+    /** 优先按远程歌曲 ID 读取带时间轴的歌词，旧服务回退到 artist/title 接口。 */
+    suspend fun getLyrics(artist: String, title: String, songId: String? = null): String? {
+        if (!songId.isNullOrBlank()) {
+            try {
+                val response = request("getLyricsBySongId", listOf("id" to songId))
+                structuredLyricsToLrc(response)?.let { return it }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("读取同步歌词失败，回退旧歌词接口: ${e.message}")
+            }
+        }
+        return getLegacyLyrics(artist, title)
+    }
+
+    private suspend fun getLegacyLyrics(artist: String, title: String): String? = try {
         val response = request("getLyrics", listOf("artist" to artist, "title" to title))
         val lyrics = response.optJSONObject("lyrics")?.optString("value")
         if (!lyrics.isNullOrBlank()) {
@@ -751,6 +765,8 @@ object SubsonicService {
             log("歌词为空 - $artist - $title")
             null
         }
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: Exception) {
         log("获取歌词失败 - $artist - $title: ${e.message}")
         null

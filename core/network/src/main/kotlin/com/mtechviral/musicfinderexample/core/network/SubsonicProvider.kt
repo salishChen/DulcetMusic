@@ -48,5 +48,5 @@ class SubsonicProvider(override val source: RemoteSource) : RemoteMusicProvider 
         song.coverArtId?.let { SubsonicService.getCoverArt(it) }
 
     override suspend fun lyrics(song: Song): String? =
-        SubsonicService.getLyrics(song.artist ?: "", song.title)
+        SubsonicService.getLyrics(song.artist ?: "", song.title, song.remoteId)
 }

@@ -96,7 +96,6 @@ import com.mtechviral.musicfinderexample.core.media.MetadataScanService
 import com.mtechviral.musicfinderexample.core.media.ScanProgress
 import com.mtechviral.musicfinderexample.core.media.ScanResult
 import com.mtechviral.musicfinderexample.core.model.Song
-import com.mtechviral.musicfinderexample.core.network.SubsonicService
 import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
 import com.mtechviral.musicfinderexample.core.player.PlayerController
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
@@ -123,7 +122,7 @@ private val DangerRed = Color(0xFFF44336)
 /**
  * 扫描音乐一级页面（对应 Dart `ScanPage`）。
  *
- * @param onOpenSubsonicConfig 打开"远程配置"页（未配置 Subsonic 时提示去配置）
+ * @param onOpenSubsonicConfig 打开"远程配置"页（未配置远程音乐源时提示去配置）
  */
 @Composable
 fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
@@ -148,6 +147,7 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
     var manualPathDialogVisible by remember { mutableStateOf(false) }
     var manualPath by remember { mutableStateOf("") }
     var showClearConfirm by remember { mutableStateOf(false) }
+    val remoteSource by RemoteSessionManager.source.collectAsState()
     val remoteScan by RemoteSessionManager.scanState.collectAsState()
     val remoteScanning = remoteScan.phase == RemoteSessionManager.ScanPhase.RUNNING &&
         remoteScan.sourceId == RemoteSessionManager.activeSourceId
@@ -214,14 +214,14 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
         }
     }
 
-    /** 从 Subsonic 导入全部歌曲并入库（对应 Dart `_scanRemote`） */
+    /** 从当前配置的远程音乐源扫描歌曲并导入曲库。 */
     fun runRemoteScan() {
         if (!RemoteSessionManager.isConfigured) {
             // Dart：SnackBar('请先在"远程配置"页面配置 Subsonic 服务器')；
             // 原生端补充"去配置"动作直接跳转配置页
             scope.launch {
                 val result = snackbarHostState.showSnackbar(
-                    message = "请先在远程配置页面选择服务器",
+                    message = "请先在远程配置页面配置音乐源",
                     actionLabel = "去配置",
                     duration = SnackbarDuration.Short,
                 )
@@ -349,11 +349,9 @@ fun ScanScreen(onOpenSubsonicConfig: () -> Unit = {}) {
             SourceCard(
                 icon = Icons.Filled.CloudDownload,
                 title = "扫描远程音乐",
-                subtitle = if (RemoteSessionManager.isConfigured) {
-                    "从 Subsonic 服务器扫描音乐并入库"
-                } else {
-                    "请先在\"远程配置\"中配置服务器"
-                },
+                subtitle = remoteSource?.let {
+                    "从当前 ${it.protocol.label} 音乐源扫描并导入曲库"
+                } ?: "支持 Subsonic、Navidrome、WebDAV 和 Emby，请先配置远程音乐源",
                 colors = listOf(RemoteRed, RemoteOrange),
                 enabled = !scanning && !remoteScanning,
                 onClick = { runRemoteScan() },

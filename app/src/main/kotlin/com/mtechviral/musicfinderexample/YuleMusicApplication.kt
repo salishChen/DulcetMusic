@@ -70,10 +70,11 @@ class YuleMusicApplication : Application() {
             }
 
             // EasyTier 组网（省电策略，耗电优化，doc/耗电分析报告.md §4）：
-            // 不在启动时拉起 —— 组网与数据源**解耦**（可先配组网再配数据源），
+            // 不在启动时拉起；转发目标从当前数据源的内网地址解析，
             // Subsonic/Navidrome 数据源按需唤醒，实际隧道流量经租约保活，
             // 空闲 15 分钟自动休眠；直连数据源不启动/不保活引擎
             EasyTierEngine.init(this@YuleMusicApplication)
+            EasyTierEngine.intranetUrlProvider = { RemoteSessionManager.source.value?.intranetUrl }
             SubsonicService.tunnelEligible = { easyTierEligibleForActiveSource() }
             EasyTierEngine.onActiveBaseUrlChanged = { base ->
                 SubsonicService.easyTierBaseUrl = base.takeIf { easyTierEligibleForActiveSource() }

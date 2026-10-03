@@ -19,6 +19,7 @@ dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:database"))
     implementation(project(":core:network"))
+    implementation(project(":core:easytier"))
     implementation(project(":core:media"))
     implementation(libs.kotlinx.coroutines.android)
 }

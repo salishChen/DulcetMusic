@@ -97,6 +97,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         createArtistsMeta(db)
         createSubsonicConfig(db)
         createRemoteSources(db)
+        createRemoteConfigurations(db)
         createVisibleSongsView(db)
     }
 
@@ -149,6 +150,13 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         if (oldVersion < 12) {
             db.execSQL("""UPDATE remote_sources SET password = ''
                 WHERE id != COALESCE((SELECT activeSourceId FROM remote_state WHERE singletonId = 1), '')""")
+        }
+        if (oldVersion < 13) {
+            createRemoteConfigurations(db)
+            // Only the active configuration was retained by v12; history is not a saved profile.
+            db.execSQL("""INSERT OR IGNORE INTO remote_configurations(protocol, sourceId)
+                SELECT protocol, id FROM remote_sources
+                WHERE id = (SELECT activeSourceId FROM remote_state WHERE singletonId = 1)""")
         }
     }
 
@@ -248,6 +256,13 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_songs_remote_source ON songs(sourceId, remoteId) WHERE sourceId IS NOT NULL AND remoteId IS NOT NULL")
     }
 
+    private fun createRemoteConfigurations(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS remote_configurations (
+            protocol TEXT PRIMARY KEY NOT NULL,
+            sourceId TEXT NOT NULL REFERENCES remote_sources(id)
+        )""")
+    }
+
     private fun createVisibleSongsView(db: SQLiteDatabase) {
         db.execSQL("DROP VIEW IF EXISTS visible_songs")
         db.execSQL("""
@@ -302,7 +317,7 @@ class MusicDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         const val DB_NAME = "music_player.db"
-        const val DB_VERSION = 12
+        const val DB_VERSION = 13
 
         // ---- songs 表列名 ----
         const val TABLE_SONGS = "songs"

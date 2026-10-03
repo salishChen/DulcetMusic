@@ -108,7 +108,7 @@ class RemoteSourceMigrationTest {
         }
         MusicDatabase(context).use { helper ->
             val db = helper.readableDatabase
-            assertEquals(12, db.version)
+            assertEquals(MusicDatabase.DB_VERSION, db.version)
             db.rawQuery("SELECT libraryId FROM remote_sources WHERE id = 'source'", null).use {
                 assertTrue(it.moveToFirst())
                 assertEquals("", it.getString(0))
@@ -137,7 +137,7 @@ class RemoteSourceMigrationTest {
         }
         MusicDatabase(context).use { helper ->
             val db = helper.readableDatabase
-            assertEquals(12, db.version)
+            assertEquals(MusicDatabase.DB_VERSION, db.version)
             val passwords = mutableMapOf<String, String>()
             db.rawQuery("SELECT id, password FROM remote_sources", null).use {
                 while (it.moveToNext()) passwords[it.getString(0)] = it.getString(1)

@@ -17,7 +17,10 @@ data class LrcLine(val timeMs: Long, val text: String)
  */
 object LrcParser {
 
-    private val TIME_TAG = Regex("""\[(\d{1,2}):(\d{1,2})(?:[.:](\d{1,3}))?]""")
+    private val TIME_TAG = Regex("""\[(\d+):(\d{1,2})(?:[.:](\d{1,3}))?]""")
+
+    /** Detect timing tags even when the only timed line starts at 00:00. */
+    fun hasTimestamps(raw: String?): Boolean = raw != null && TIME_TAG.containsMatchIn(raw)
 
     fun parse(raw: String?): List<LrcLine> {
         if (raw.isNullOrBlank()) return emptyList()

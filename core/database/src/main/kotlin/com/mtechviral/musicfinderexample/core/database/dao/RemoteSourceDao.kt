@@ -6,7 +6,7 @@ import com.mtechviral.musicfinderexample.core.database.MusicDatabase
 import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
 import com.mtechviral.musicfinderexample.core.model.RemoteSource
 
-/** A single active source; inactive records only retain song provenance. */
+/** Independent saved configuration per protocol, with one source active at a time. */
 class RemoteSourceDao(private val database: MusicDatabase) {
     private val db get() = database.writableDatabase
 
@@ -15,6 +15,10 @@ class RemoteSourceDao(private val database: MusicDatabase) {
     ).use { if (it.moveToFirst()) it.getString(0) else null }
 
     fun activeSource(): RemoteSource? = activeSourceId()?.let(::sourceById)
+
+    fun configuration(protocol: RemoteProtocol): RemoteSource? = db.rawQuery(
+        "SELECT sourceId FROM remote_configurations WHERE protocol = ?", arrayOf(protocol.name),
+    ).use { if (it.moveToFirst()) it.getString(0) else null }?.let(::sourceById)
 
     fun sourceById(id: String): RemoteSource? = db.query(
         "remote_sources", null, "id = ?", arrayOf(id), null, null, null, "1",
@@ -57,7 +61,10 @@ class RemoteSourceDao(private val database: MusicDatabase) {
                 db.insertOrThrow("remote_sources", null, values)
             }
             db.execSQL("UPDATE remote_state SET activeSourceId = ? WHERE singletonId = 1", arrayOf(source.id))
-            db.execSQL("UPDATE remote_sources SET password = '' WHERE id != ?", arrayOf(source.id))
+            db.execSQL("INSERT OR REPLACE INTO remote_configurations(protocol, sourceId) VALUES (?, ?)",
+                arrayOf(source.protocol.name, source.id))
+            // Keep credentials only for the independently saved profiles, never superseded history.
+            db.execSQL("UPDATE remote_sources SET password = '' WHERE id NOT IN (SELECT sourceId FROM remote_configurations)")
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -65,10 +72,16 @@ class RemoteSourceDao(private val database: MusicDatabase) {
     }
 
     fun deactivate() {
+        activeSource()?.protocol?.let(::removeConfiguration)
+    }
+
+    fun removeConfiguration(protocol: RemoteProtocol) {
         db.beginTransaction()
         try {
-            db.execSQL("UPDATE remote_state SET activeSourceId = NULL WHERE singletonId = 1")
-            db.execSQL("UPDATE remote_sources SET password = ''")
+            db.execSQL("""UPDATE remote_state SET activeSourceId = NULL WHERE singletonId = 1
+                AND activeSourceId IN (SELECT id FROM remote_sources WHERE protocol = ?)""", arrayOf(protocol.name))
+            db.delete("remote_configurations", "protocol = ?", arrayOf(protocol.name))
+            db.execSQL("UPDATE remote_sources SET password = '' WHERE protocol = ?", arrayOf(protocol.name))
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()

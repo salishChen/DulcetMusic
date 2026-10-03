@@ -22,7 +22,6 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
@@ -48,10 +47,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.mtechviral.musicfinderexample.core.designsystem.component.PrimaryAppBar
 import com.mtechviral.musicfinderexample.core.cache.CacheService
+import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.easytier.EasyTierEngine
 import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
 import com.mtechviral.musicfinderexample.core.model.RemoteSource
-import com.mtechviral.musicfinderexample.core.network.RemoteLibrary
 import com.mtechviral.musicfinderexample.core.player.PlayerController
 import com.mtechviral.musicfinderexample.core.player.PlaylistRepository
 import com.mtechviral.musicfinderexample.core.remote.RemoteSessionManager
@@ -88,24 +87,41 @@ fun SubsonicConfigScreen() {
     var password by remember { mutableStateOf("") }
     var rootPath by remember { mutableStateOf("") }
     var libraryId by remember { mutableStateOf("") }
-    var libraries by remember { mutableStateOf<List<RemoteLibrary>>(emptyList()) }
+    var savedSource by remember { mutableStateOf<RemoteSource?>(null) }
+    val drafts = remember { mutableMapOf<RemoteProtocol, RemoteSource>() }
     var busy by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf("") }
     var sameServerWithNewAddress by remember { mutableStateOf(false) }
 
+    fun fillForm(option: RemoteProtocol, stored: RemoteSource?) {
+        val draft = drafts[option] ?: stored
+        protocol = option
+        savedSource = stored
+        sourceId = stored?.id
+        name = draft?.displayName.orEmpty()
+        intranet = draft?.intranetUrl.orEmpty()
+        publicUrl = draft?.publicUrl.orEmpty()
+        username = draft?.username.orEmpty()
+        password = draft?.password.orEmpty()
+        rootPath = draft?.rootPath.orEmpty()
+        libraryId = draft?.libraryId.orEmpty()
+        sameServerWithNewAddress = false
+        result = ""
+    }
+
+    fun rememberDraft() {
+        drafts[protocol] = RemoteSource(
+            id = sourceId.orEmpty(), protocol = protocol, displayName = name,
+            intranetUrl = intranet, publicUrl = publicUrl, username = username,
+            password = password, rootPath = rootPath, libraryId = libraryId,
+        )
+    }
+
     LaunchedEffect(Unit) {
         RemoteSessionManager.load()
         RemoteSessionManager.source.value?.let { current ->
-            sourceId = current.id
-            protocol = current.protocol
-            name = current.displayName
-            intranet = current.intranetUrl
-            publicUrl = current.publicUrl
-            username = current.username
-            password = current.password
-            rootPath = current.rootPath
-            libraryId = current.libraryId
+            fillForm(current.protocol, current)
             // 已有配置：直接进入该音乐源的配置页（跳过类型选择）
             step = ConfigStep.CONFIG
         }
@@ -116,7 +132,7 @@ fun SubsonicConfigScreen() {
         require(intranet.isNotBlank() || publicUrl.isNotBlank()) { "请填写内网或公网地址" }
         require(username.isNotBlank()) { "请填写用户名" }
         require(password.isNotBlank()) { "请填写密码" }
-        val current = RemoteSessionManager.source.value
+        val current = savedSource
         val sameSource = current?.protocol == protocol && current.username == username.trim() &&
             (protocol != RemoteProtocol.WEBDAV || current.rootPath == rootPath.trim()) &&
             current.libraryId == (if (protocol == RemoteProtocol.WEBDAV) "" else libraryId.trim()) &&
@@ -130,10 +146,40 @@ fun SubsonicConfigScreen() {
             publicUrl = publicUrl.trim(),
             username = username.trim(),
             password = password,
-            rootPath = rootPath.trim(),
-            libraryId = if (protocol == RemoteProtocol.WEBDAV) "" else libraryId.trim(),
+            rootPath = if (protocol == RemoteProtocol.WEBDAV) rootPath.trim() else "",
+            libraryId = if (sameSource && protocol != RemoteProtocol.WEBDAV) libraryId.trim() else "",
             serverIdentity = if (sameSource) current?.serverIdentity else null,
         )
+    }
+
+    fun saveCandidate() {
+        scope.launch {
+            busy = true
+            try {
+                val next = candidate()
+                val previousId = RemoteSessionManager.activeSourceId
+                if (previousId != null) {
+                    PlayerController.stopRemoteForSourceSwitch()
+                    CacheService.cancelPending()
+                    if (previousId != next.id) EasyTierEngine.stop()
+                }
+                RemoteSessionManager.activate(next, verifyConnection = false)
+                if (previousId != null && previousId != next.id) {
+                    val old = PlaylistRepository.current.filter { it.sourceId == previousId }.map { it.path }
+                    if (old.isNotEmpty()) {
+                        PlayerController.pause()
+                        PlaylistRepository.removeSongs(old)
+                    }
+                }
+                sourceId = next.id
+                savedSource = next
+                drafts[next.protocol] = next
+                result = "已保存并启用 ${next.protocol.label}；可用「测试连接」验证服务器"
+            } catch (e: Exception) {
+                result = "保存失败：${e.message ?: "未知错误"}"
+            }
+            busy = false
+        }
     }
 
     Scaffold(
@@ -144,13 +190,19 @@ fun SubsonicConfigScreen() {
         if (step == ConfigStep.SELECT) {
             SourceTypeSelect(
                 modifier = Modifier.fillMaxSize().padding(padding),
+                enabled = !busy,
                 onSelect = { option ->
-                    if (protocol != option) {
-                        protocol = option
-                        libraryId = ""
-                        libraries = emptyList()
+                    scope.launch {
+                        busy = true
+                        try {
+                            fillForm(option, DatabaseHelper.remoteConfiguration(option))
+                            step = ConfigStep.CONFIG
+                        } catch (e: Exception) {
+                            snackbar.showSnackbar("读取配置失败：${e.message ?: "未知错误"}")
+                        } finally {
+                            busy = false
+                        }
                     }
-                    step = ConfigStep.CONFIG
                 },
             )
             return@Scaffold
@@ -163,7 +215,7 @@ fun SubsonicConfigScreen() {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("音乐源类型：${protocol.label}", fontWeight = FontWeight.Medium)
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { step = ConfigStep.SELECT }) { Text("更换类型") }
+                TextButton(enabled = !busy, onClick = { rememberDraft(); step = ConfigStep.SELECT }) { Text("更换类型") }
             }
             ConfigTextField(name, { name = it }, "服务器名称", "例如：家里的音乐服务器", Icons.Filled.Dns)
             ConfigTextField(intranet, { intranet = it }, "内网地址", "http://192.168.1.2:4533", Icons.Filled.Home)
@@ -181,41 +233,7 @@ fun SubsonicConfigScreen() {
                 password, { password = it }, "密码", "", Icons.Filled.Lock,
                 visualTransformation = PasswordVisualTransformation(),
             )
-            if (protocol != RemoteProtocol.WEBDAV) {
-                OutlinedButton(enabled = !busy, onClick = {
-                    scope.launch {
-                        busy = true
-                        result = try {
-                            val next = candidate()
-                            if (RemoteSessionManager.activeSourceId != null) {
-                                PlayerController.stopRemoteForSourceSwitch()
-                                CacheService.cancelPending()
-                            }
-                            libraries = RemoteSessionManager.libraries(next)
-                            if (libraries.none { it.id == libraryId }) libraryId = ""
-                            if (libraries.isEmpty()) "没有可选音乐库，将扫描所有可访问音频"
-                                else "已读取 ${libraries.size} 个音乐库"
-                        } catch (e: Exception) { "读取音乐库失败：${e.message ?: "未知错误"}" }
-                        busy = false
-                    }
-                }) { Text("读取音乐库") }
-                if (libraryId.isNotBlank() || libraries.isNotEmpty()) {
-                    if (libraryId.isNotBlank() && libraries.none { it.id == libraryId }) {
-                        Text("当前音乐库 ID：$libraryId（可重新读取列表）")
-                    }
-                    FilterChip(selected = libraryId.isBlank(), onClick = { libraryId = "" },
-                        label = { Text("全部可访问音乐") })
-                    libraries.forEach { library ->
-                        FilterChip(selected = libraryId == library.id,
-                            onClick = { libraryId = library.id }, label = { Text(library.name) })
-                    }
-                }
-            }
-            val current = RemoteSessionManager.source.value
-            if (current != null && current.protocol == protocol &&
-                current.libraryId != libraryId && protocol != RemoteProtocol.WEBDAV) {
-                Text("切换音乐库会建立新的曲库归属，旧库歌曲和缓存仍保留。")
-            }
+            val current = savedSource
             if (current != null && current.protocol == protocol &&
                 current.username == username.trim() &&
                 (current.intranetUrl != intranet.trim() || current.publicUrl != publicUrl.trim())) {
@@ -243,59 +261,38 @@ fun SubsonicConfigScreen() {
                         busy = false
                     }
                 }) { Text("测试连接") }
-                Button(enabled = !busy, onClick = {
-                    scope.launch {
-                        busy = true
-                        try {
-                            val next = candidate()
-                            val previousId = RemoteSessionManager.activeSourceId
-                            if (previousId != null) {
-                                PlayerController.stopRemoteForSourceSwitch()
-                                CacheService.cancelPending()
-                                if (previousId != next.id) EasyTierEngine.stop()
-                            }
-                            RemoteSessionManager.activate(next)
-                            if (previousId != null && previousId != next.id) {
-                                val old = PlaylistRepository.current.filter { it.sourceId == previousId }.map { it.path }
-                                if (old.isNotEmpty()) {
-                                    PlayerController.pause()
-                                    PlaylistRepository.removeSongs(old)
-                                }
-                            }
-                            sourceId = next.id
-                            result = "已保存并启用 ${next.protocol.label}"
-                        } catch (e: Exception) {
-                            result = "保存失败：${e.message ?: "未知错误"}"
-                        }
-                        busy = false
-                    }
-                }) { Text("保存并使用") }
+                Button(enabled = !busy, onClick = { saveCandidate() }) { Text("保存并使用") }
             }
             if (sourceId != null) {
                 OutlinedButton(enabled = !busy, onClick = {
                     scope.launch {
                         busy = true
-                        val previousId = RemoteSessionManager.activeSourceId
-                        if (previousId != null) {
-                            PlayerController.stopRemoteForSourceSwitch()
-                            CacheService.cancelPending()
-                            EasyTierEngine.stop()
-                        }
-                        RemoteSessionManager.deactivate()
-                        if (previousId != null) {
-                            val old = PlaylistRepository.current.filter { it.sourceId == previousId }.map { it.path }
-                            if (old.isNotEmpty()) {
-                                PlayerController.pause()
-                                PlaylistRepository.removeSongs(old)
+                        try {
+                            if (RemoteSessionManager.source.value?.protocol == protocol) {
+                                val previousId = RemoteSessionManager.activeSourceId
+                                PlayerController.stopRemoteForSourceSwitch()
+                                CacheService.cancelPending()
+                                EasyTierEngine.stop()
+                                RemoteSessionManager.deactivate()
+                                val old = PlaylistRepository.current.filter { it.sourceId == previousId }.map { it.path }
+                                if (old.isNotEmpty()) {
+                                    PlayerController.pause()
+                                    PlaylistRepository.removeSongs(old)
+                                }
+                            } else {
+                                RemoteSessionManager.removeSavedConfiguration(protocol)
                             }
+                            drafts.remove(protocol)
+                            fillForm(protocol, null)
+                            snackbar.showSnackbar("已移除 ${protocol.label} 配置，历史曲库和缓存仍保留")
+                            step = ConfigStep.SELECT
+                        } catch (e: Exception) {
+                            result = "移除配置失败：${e.message ?: "未知错误"}"
+                        } finally {
+                            busy = false
                         }
-                        sourceId = null
-                        result = "已移除当前配置，历史曲库和缓存仍保留"
-                        // 移除后回到类型选择页（下次进入重新走首次流程）
-                        step = ConfigStep.SELECT
-                        busy = false
                     }
-                }) { Text("移除当前配置") }
+                }) { Text("移除 ${protocol.label} 配置") }
             }
         }
     }
@@ -322,6 +319,7 @@ private val kSourceTypeItems = listOf(
 @Composable
 private fun SourceTypeSelect(
     onSelect: (RemoteProtocol) -> Unit,
+    enabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -331,7 +329,7 @@ private fun SourceTypeSelect(
         Text("选择远程音乐源", fontWeight = FontWeight.Bold)
         Text("先选择你的音乐来源类型，再进行具体配置。")
         kSourceTypeItems.forEach { item ->
-            OutlinedCard(modifier = Modifier.fillMaxWidth().clickable { onSelect(item.protocol) }) {
+            OutlinedCard(modifier = Modifier.fillMaxWidth().clickable(enabled = enabled) { onSelect(item.protocol) }) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically,

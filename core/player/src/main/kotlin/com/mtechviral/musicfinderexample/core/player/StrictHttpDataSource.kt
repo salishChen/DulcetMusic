@@ -5,6 +5,7 @@ import androidx.media3.common.C
 import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import com.mtechviral.musicfinderexample.core.network.SameOriginRedirectInterceptor
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -14,12 +15,13 @@ import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
-/** Keeps source-scoped credentials on the exact URL chosen by the provider. */
+/** Follows server path redirects while keeping credentials on the provider's origin. */
 internal class StrictHttpDataSource private constructor(private val client: OkHttpClient) : BaseDataSource(true) {
     class Factory : DataSource.Factory {
         private val client = OkHttpClient.Builder()
             .followRedirects(false)
             .followSslRedirects(false)
+            .addInterceptor(SameOriginRedirectInterceptor)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .build()
@@ -67,7 +69,7 @@ internal class StrictHttpDataSource private constructor(private val client: OkHt
                 nextResponse.code == 200 -> (body.contentLength() - position).coerceAtLeast(0)
                 else -> body.contentLength()
             }
-            uri = dataSpec.uri
+            uri = Uri.parse(nextResponse.request.url.toString())
             opened = true
             transferStarted(dataSpec)
             return remaining

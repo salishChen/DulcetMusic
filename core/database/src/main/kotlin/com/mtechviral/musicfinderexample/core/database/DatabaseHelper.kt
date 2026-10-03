@@ -16,6 +16,7 @@ import com.mtechviral.musicfinderexample.core.model.Playlist
 import com.mtechviral.musicfinderexample.core.model.Song
 import com.mtechviral.musicfinderexample.core.model.SubsonicConfig
 import com.mtechviral.musicfinderexample.core.model.RemoteSource
+import com.mtechviral.musicfinderexample.core.model.RemoteProtocol
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -106,6 +107,12 @@ object DatabaseHelper {
         io { songDao.querySongByRemoteId(sourceId, remoteId) }
 
     suspend fun activeRemoteSource(): RemoteSource? = io { remoteSourceDao.activeSource() }
+
+    suspend fun remoteConfiguration(protocol: RemoteProtocol): RemoteSource? =
+        io { remoteSourceDao.configuration(protocol) }
+
+    suspend fun removeRemoteConfiguration(protocol: RemoteProtocol) =
+        writeMutex.withLock { io { remoteSourceDao.removeConfiguration(protocol); invalidateCache() } }
 
     suspend fun activateRemoteSource(source: RemoteSource) = writeMutex.withLock {
         io { remoteSourceDao.activate(source); invalidateCache() }

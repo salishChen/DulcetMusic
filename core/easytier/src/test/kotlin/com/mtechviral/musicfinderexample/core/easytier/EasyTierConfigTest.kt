@@ -65,12 +65,12 @@ class EasyTierConfigTest {
     }
 
     @Test
-    fun `fixed virtual ip and hostname produce args`() {
+    fun `fixed virtual ip and forced hostname produce args`() {
         val args = base.copy(virtualIpv4 = "10.0.0.7", hostname = "my-phone").toArgs()
         val ipIdx = args.indexOf("--ipv4")
         assertEquals("10.0.0.7", args[ipIdx + 1])
         val hostIdx = args.indexOf("--hostname")
-        assertEquals("my-phone", args[hostIdx + 1])
+        assertEquals("DulcetMusic", args[hostIdx + 1])
     }
 
     @Test
@@ -93,25 +93,21 @@ class EasyTierConfigTest {
     }
 
     @Test
-    fun `forward port always follows intranet url`() {
-        // 端口始终取内网地址端口；主机留空取内网地址主机
+    fun `forward target always follows intranet url`() {
+        // 旧配置的手动目标不能覆盖远程配置中的内网地址。
         assertEquals(
             "10.0.0.222" to 8002,
             base.copy(serverVirtualIp = "", serverPort = 4533)
                 .resolveForwardTarget("http://10.0.0.222:8002"),
         )
-        // 手动指定转发主机时，端口仍同步内网地址端口
+        // 即使保存过其他目标，主机和端口也从内网地址读取。
         assertEquals(
-            "10.0.0.9" to 8002,
+            "10.0.0.222" to 8002,
             base.copy(serverVirtualIp = "10.0.0.9", serverPort = 4533)
                 .resolveForwardTarget("http://10.0.0.222:8002"),
         )
-        // 内网地址不可解析时回退手动主机 + 保存端口
-        assertEquals(
-            "10.0.0.9" to 4533,
-            base.copy(serverVirtualIp = "10.0.0.9", serverPort = 4533)
-                .resolveForwardTarget(""),
-        )
+        // 未配置内网地址时不能继续使用旧的目标。
+        assertEquals(null, base.resolveForwardTarget(""))
         assertEquals(
             null,
             base.copy(serverVirtualIp = "", serverPort = 4533).resolveForwardTarget(""),

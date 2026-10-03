@@ -77,6 +77,9 @@ object EasyTierEngine {
      */
     var onActiveBaseUrlChanged: ((String?) -> Unit)? = null
 
+    /** 当前远程配置中的内网地址，由应用层注入；每次启动重新解析转发目标。 */
+    var intranetUrlProvider: (() -> String?)? = null
+
     private var process: Process? = null
     private var startedConfig: EasyTierConfig? = null
 
@@ -224,7 +227,17 @@ object EasyTierEngine {
             _state.value = State.Error("配置不完整：网络名 / 网络密码 必填")
             return false
         }
-        if (process?.isAlive == true && startedConfig == config) {
+        val target = config.resolveForwardTarget(intranetUrlProvider?.invoke().orEmpty())
+        if (target == null) {
+            _state.value = State.Error("请先在远程配置中填写有效的内网地址")
+            return false
+        }
+        val effectiveConfig = config.copy(
+            hostname = EasyTierConfig.DEVICE_NAME,
+            serverVirtualIp = target.first,
+            serverPort = target.second,
+        )
+        if (process?.isAlive == true && startedConfig == effectiveConfig) {
             return true
         }
         stopInternal()
@@ -245,7 +258,7 @@ object EasyTierEngine {
         return try {
             val workDir = File(context.filesDir, "easytier").apply { mkdirs() }
             val logFile = File(workDir, "easytier.log")
-            val command = mutableListOf(binary.absolutePath) + config.toArgs()
+            val command = mutableListOf(binary.absolutePath) + effectiveConfig.toArgs()
             val pb = ProcessBuilder(command)
                 .directory(workDir)
                 // 输出重定向到文件：避免管道写满阻塞子进程
@@ -253,7 +266,7 @@ object EasyTierEngine {
                 .redirectErrorStream(true)
             val p = pb.start()
             process = p
-            startedConfig = config
+            startedConfig = effectiveConfig
 
             // 等待片刻确认进程存活（启动即崩时收集日志尾部报错）
             Thread.sleep(500)
@@ -267,19 +280,15 @@ object EasyTierEngine {
             // 注入本地转发地址（仅配置了端口转发时）：
             // Subsonic 探测顺序变为 EasyTier → 内网 → 公网。
             // 无 TUN 模式下虚拟网地址只能经端口转发访问，直填虚拟 IP 不通
-            val baseUrl = if (config.hasPortForward) config.localBaseUrl else null
+            val baseUrl = effectiveConfig.localBaseUrl
             forwardPrefix = baseUrl
             onActiveBaseUrlChanged?.invoke(baseUrl)
             _state.value = State.Running(
-                if (config.hasPortForward) {
-                    config.localBaseUrl + " → ${config.serverVirtualIp}:${config.serverPort}"
-                } else {
-                    "已组网（未配置端口转发）"
-                },
+                effectiveConfig.localBaseUrl + " → ${target.first}:${target.second}",
             )
             // 空闲看门狗随引擎生命周期启停
             startWatchdog()
-            Log.i(TAG, "EasyTier 已启动: ${config.localBaseUrl}")
+            Log.i(TAG, "EasyTier 已启动: ${effectiveConfig.localBaseUrl}")
             true
         } catch (e: Exception) {
             Log.w(TAG, "EasyTier 启动异常: ${e.message}")

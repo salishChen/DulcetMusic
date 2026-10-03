@@ -18,6 +18,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.mtechviral.musicfinderexample.core.cache.CacheService
 import com.mtechviral.musicfinderexample.core.common.AppVisibility
+import com.mtechviral.musicfinderexample.core.common.LrcParser
 import com.mtechviral.musicfinderexample.core.database.DatabaseHelper
 import com.mtechviral.musicfinderexample.core.database.MusicLibrary
 import com.mtechviral.musicfinderexample.core.media.ArtworkCache
@@ -864,8 +865,8 @@ object PlayerController {
         song.id?.let { id -> ioScope.launch { DatabaseHelper.incrementPlayCount(id) } }
         // 推测性预取下一首（已播歌曲的补全由 CacheService.onTapClosedIncomplete 触发）
         scheduleSpeculativePrefetch(song)
-        // 后台获取歌词（仅当歌曲尚无歌词时）
-        if (song.isRemote && song.lyrics.isNullOrEmpty()) {
+        // 旧 getLyrics 会缓存无时间轴的纯文本；下次播放时自动补取同步歌词。
+        if (song.isRemote && !LrcParser.hasTimestamps(song.lyrics)) {
             fetchLyricsInBackground(song)
         }
     }
@@ -908,8 +909,8 @@ object PlayerController {
     /**
      * 后台获取远程歌曲歌词。
      *
-     * 注意：歌词获取仅依赖 artist 与 title，不依赖 song.id；
-     * 初次从在线列表播放的歌曲尚未入库（id 为 null）时同样可获取。
+     * 使用 remoteId 查询同步歌词，不依赖本地数据库 song.id；
+     * 初次从在线列表播放的歌曲尚未入库时同样可获取。
      */
     private fun fetchLyricsInBackground(song: Song) {
         if (song.title.isBlank()) return

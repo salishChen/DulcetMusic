@@ -25,8 +25,7 @@ import kotlinx.coroutines.launch
  * 「组网设置」一级页面（侧边栏「设置」按钮上方的入口）。
  *
  * EasyTier 组网配置从远程配置页**提取**为独立页面：
- * 组网是正交于具体音乐源的能力（隧道接入 + 端口转发），单独管理更清晰。
- * 内容复用 [EasyTierSection] 卡片；「内网地址」取当前远程源配置用于推导转发目标。
+ * 组网设置独立展示，转发目标由当前远程源的「内网地址」推导。
  */
 @Composable
 fun MeshSettingsScreen() {

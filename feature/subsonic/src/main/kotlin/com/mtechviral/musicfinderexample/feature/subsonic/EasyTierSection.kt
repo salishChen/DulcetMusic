@@ -10,7 +10,6 @@ package com.mtechviral.musicfinderexample.feature.subsonic
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -65,7 +64,7 @@ import kotlinx.coroutines.launch
 /**
  * EasyTier 组网卡片。
  *
- * @param intranetUrl 主表单的「内网地址」：用于自动推导端口转发目标
+ * @param intranetUrl 当前远程配置的「内网地址」：用于自动推导端口转发目标
  *   （无 TUN 模式下虚拟网地址必须经端口转发访问，不能直连）
  * @param onMessage 提示条消息（复用远程配置页的 Snackbar）
  */
@@ -81,7 +80,6 @@ fun EasyTierSection(
     var obscureSecret by remember { mutableStateOf(true) }
     var connecting by remember { mutableStateOf(false) }
     var showLog by remember { mutableStateOf(false) }
-    var serverPortText by remember { mutableStateOf(config.serverPort.toString()) }
     val engineState by EasyTierEngine.state.collectAsStateWithLifecycle()
 
     Column(
@@ -203,61 +201,26 @@ fun EasyTierSection(
             isError = false,
         )
         Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(12.dp))
         ConfigTextField(
-            value = config.serverVirtualIp,
-            onValueChange = { config = config.copy(serverVirtualIp = it) },
-            label = "转发目标 IP（默认取内网地址）",
-            hint = "留空自动取内网地址主机，如 10.0.0.222",
+            value = config.virtualIpv4,
+            onValueChange = { config = config.copy(virtualIpv4 = it.trim()) },
+            label = "本机虚拟 IP（建议填）",
+            hint = "如 10.0.0.7",
             leadingIcon = Icons.Filled.Public,
             isError = false,
         )
-        // 先组网后配数据源：没有「内网地址」可推导端口时，手动填写转发端口
-        if (intranetUrl.isBlank()) {
-            Spacer(Modifier.height(12.dp))
-            ConfigTextField(
-                value = serverPortText,
-                onValueChange = { input -> serverPortText = input.filter { it.isDigit() }.take(5) },
-                label = "转发目标端口（虚拟网内音乐服务端口）",
-                hint = "如 4533",
-                leadingIcon = Icons.Filled.Public,
-                isError = false,
-            )
-        }
-        Spacer(Modifier.height(12.dp))
-        Row {
-            Box(modifier = Modifier.weight(1f)) {
-                ConfigTextField(
-                    value = config.virtualIpv4,
-                    onValueChange = { config = config.copy(virtualIpv4 = it.trim()) },
-                    label = "本机虚拟 IP（建议填）",
-                    hint = "如 10.0.0.7",
-                    leadingIcon = Icons.Filled.Public,
-                    isError = false,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Box(modifier = Modifier.weight(1f)) {
-                ConfigTextField(
-                    value = config.hostname,
-                    onValueChange = { config = config.copy(hostname = it.trim()) },
-                    label = "设备名（可选）",
-                    hint = "留空取系统名",
-                    leadingIcon = Icons.Filled.Dns,
-                    isError = false,
-                )
-            }
-        }
         Spacer(Modifier.height(4.dp))
         Text(
             text = "本机虚拟 IP 建议与服务器同网段且不与其它设备重复" +
-                "（对照官方 App 的固定 IP 方式，如 10.0.0.7）；设备名仅用于在服务器侧标识本机，可留空。",
+                "（对照官方 App 的固定 IP 方式，如 10.0.0.7）；设备名固定为 DulcetMusic。",
             fontSize = 11.sp,
             color = MaterialTheme.ytTextSecondary.copy(alpha = 0.6f),
             lineHeight = 16.sp,
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "转发端口自动取「内网地址」里的端口（未配置数据源时用上方「转发目标端口」），" +
+            text = "转发目标 IP 和端口自动取远程配置的「内网地址」，" +
                 "本地回环端口自动使用 " + config.localPort + "，无需单独设置。",
             fontSize = 11.sp,
             color = MaterialTheme.ytTextSecondary.copy(alpha = 0.6f),
@@ -287,7 +250,12 @@ fun EasyTierSection(
             TextButton(
                 onClick = {
                     scope.launch {
-                        onMessage(EasyTierEngine.probeForward(config))
+                        val target = config.resolveForwardTarget(intranetUrl)
+                        onMessage(if (target == null) "请先在远程配置中填写有效的内网地址"
+                            else EasyTierEngine.probeForward(config.copy(
+                                serverVirtualIp = target.first,
+                                serverPort = target.second,
+                            )))
                     }
                 },
             ) {
@@ -296,7 +264,7 @@ fun EasyTierSection(
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "内网地址照常填虚拟网地址（如 http://10.0.0.222:8002）：" +
+            text = "请先在远程配置填写虚拟网内的服务地址（如 http://10.0.0.222:8002）：" +
                 "无 TUN 模式下不能直连虚拟网 IP，系统会自动把该地址端口转发到本地回环" +
                 "（127.0.0.1:" + config.localPort + "）并优先访问，失败时自动回退公网地址。",
             fontSize = 11.sp,
@@ -312,33 +280,21 @@ fun EasyTierSection(
                         onMessage("网络名 / 网络密码 必填")
                         return@Button
                     }
-                    // 先组网后配数据源：没有「内网地址」可推导端口时，取手动「转发目标端口」
-                    val manualPort = serverPortText.toIntOrNull()?.takeIf { it in 1..65535 }
-                    val effective = if (intranetUrl.isBlank() && manualPort != null) {
-                        config.copy(serverPort = manualPort)
-                    } else {
-                        config
-                    }
-                    // 转发目标自动解析（优化：端口优先取内网地址端口）：
-                    // 主机优先手动「转发目标 IP」，留空取内网地址主机
-                    val target = effective.resolveForwardTarget(intranetUrl)
+                    val target = config.resolveForwardTarget(intranetUrl)
                     if (target == null) {
-                        onMessage(
-                            "无法推导转发目标：请填写「转发目标 IP" +
-                                (if (intranetUrl.isBlank()) "」和「转发目标端口" else "」") +
-                                "，或在数据源中填写「内网地址」",
-                        )
+                        onMessage("请先在远程配置中填写有效的内网地址（如 http://10.0.0.222:8002）")
                         return@Button
                     }
-                    val snapshot = effective.copy(
+                    val snapshot = config.copy(
                         enabled = true,
+                        hostname = EasyTierConfig.DEVICE_NAME,
                         serverVirtualIp = target.first,
                         serverPort = target.second,
                     )
                     config = snapshot
                     connecting = true
                     scope.launch {
-                        // 组网与数据源解耦：无需先保存数据源，也不绑定特定数据源
+                        // 转发目标已经从当前远程配置解析，不使用旧的手动目标。
                         EasyTierConfigStore.save(context, snapshot)
                         val ok = EasyTierEngine.start(context, snapshot)
                         connecting = false
